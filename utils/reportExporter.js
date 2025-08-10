@@ -15,6 +15,9 @@ function formatDate(val) {
 
 const EXPORT_COLUMNS = [
   { key: 'portfolio', label: 'Portfolio' },
+  { key: 'custodian', label: 'Custodian' },
+  { key: 'deal_number', label: 'Deal Number' },
+  { key: 'face_value', label: 'Face Value' },
   { key: 'value_date', label: 'Value Date' },
   { key: 'maturity_date', label: 'Maturity Date' },
   { key: 'isin', label: 'ISIN' },
@@ -93,6 +96,9 @@ exports.export = async (format, data) => {
     // Table setup with alignment options
     const columns = [
       { key: 'portfolio', label: 'Portfolio', width: 60, align: 'left' },
+      { key: 'custodian', label: 'Custodian', width: 70, align: 'left' },
+      { key: 'deal_number', label: 'Deal Number', width: 70, align: 'left' },
+      { key: 'face_value', label: 'Face Value', width: 60, align: 'right' },
       { key: 'value_date', label: 'Value Date', width: 70, align: 'center' },
       { key: 'maturity_date', label: 'Maturity Date', width: 80, align: 'center' },
       { key: 'isin', label: 'ISIN', width: 90, align: 'left' },

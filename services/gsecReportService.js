@@ -8,7 +8,7 @@ function truncate4(val) {
 
 exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityDate, page, pageSize }) => {
   // Build query with filters
-  let sql = `SELECT portfolio, value_date, maturity_date, isin, coupon_interest, clean_price, yield, face_value, counterparty FROM gsec WHERE 1=1`;
+  let sql = `SELECT portfolio, custodian, deal_number, face_value, value_date, maturity_date, isin, coupon_interest, clean_price, yield, counterparty FROM gsec WHERE 1=1`;
   const params = [];
   if (portfolio) {
     sql += ' AND portfolio = ?';
@@ -68,6 +68,9 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     }
     return {
       portfolio: row.portfolio,
+      custodian: row.custodian || '',
+      deal_number: row.deal_number || '',
+      face_value: row.face_value !== undefined ? Number(row.face_value).toFixed(2) : '',
       value_date: row.value_date,
       maturity_date: row.maturity_date,
       isin: row.isin,
