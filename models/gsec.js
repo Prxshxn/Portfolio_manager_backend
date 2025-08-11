@@ -3,115 +3,147 @@ const LimitSetup = require('./limitSetupModel');
 
 const Gsec = {
   create: async (data) => {
-    // Handle the financial calculation requirements
-    // Ensure accrued interest and clean price are truncated (not rounded) to 4 decimal places
-    if (data.accruedInterest) {
-      // Truncate to 4 decimal places
-      const accruedInterest = Math.floor(parseFloat(data.accruedInterest) * 10000) / 10000;
-      data.accruedInterest = accruedInterest;
-    }
-    
-    if (data.cleanPrice) {
-      // Truncate to 4 decimal places
-      const cleanPrice = Math.floor(parseFloat(data.cleanPrice) * 10000) / 10000;
-      data.cleanPrice = cleanPrice;
-    }
-    
-    // Calculate dirty price as clean price + accrued interest
-    if (data.cleanPrice && data.accruedInterest) {
-      data.dirtyPrice = parseFloat(data.cleanPrice) + parseFloat(data.accruedInterest);
-    }
-    
-    const currentDate = new Date();
-    
-    // Calculate per_day_accrual: couponInterest / numberOfDaysForCouponPeriod
-    let perDayAccrual = null;
-    if (data.couponInterest && data.numberOfDaysForCouponPeriod) {
-      const ci = parseFloat(data.couponInterest);
-      const nd = parseFloat(data.numberOfDaysForCouponPeriod);
-      if (ci && nd) {
-        perDayAccrual = Math.floor((ci / nd) * 100000000) / 100000000; // truncate to 8 decimals
-      }
-    }
-    data.per_day_accrual = perDayAccrual;
-
-    const sql = `INSERT INTO gsec (
-      trade_type, transaction_type, counterparty, deal_number, isin, face_value, value_date, next_coupon_date, 
-      last_coupon_date, number_of_days_interest_accrued, number_of_days_for_coupon_period, accrued_interest, 
-      coupon_interest, clean_price, dirty_price, accrued_interest_calculation, accrued_interest_six_decimals, 
-      accrued_interest_for_100, settlement_amount, settlement_mode, issue_date, maturity_date, coupon_dates, 
-      yield, brokerage, currency, portfolio, strategy, broker, accrued_interest_adjustment, clean_price_adjustment, 
-      per_day_accrual, status, created_by, created_at, current_approval_level, custodian
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-    
-    const values = [
-      data.tradeType,
-      data.transactionType,
-      data.counterparty,
-      data.dealNumber,
-      data.isin,
-      data.faceValue,
-      data.valueDate,
-      data.nextCouponDate,
-      data.lastCouponDate,
-      data.numberOfDaysInterestAccrued,
-      data.numberOfDaysForCouponPeriod,
-      data.accruedInterest,
-      data.couponInterest,
-      data.cleanPrice,
-      data.dirtyPrice,
-      data.accruedInterestCalculation,
-      data.accruedInterestSixDecimals,
-      data.accruedInterestFor100,
-      data.settlementAmount,
-      data.settlementMode,
-      data.issueDate,
-      data.maturityDate,
-      data.couponDates,
-      data.yield,
-      data.brokerage,
-      data.currency || 'LKR',
-      data.portfolio,
-      data.strategy,
-      data.broker,
-      data.accruedInterestAdjustment,
-      data.cleanPriceAdjustment,
-      data.per_day_accrual,
-      'pending', // Default status for authorization workflow
-      data.userId || null, // Creator's user ID
-      currentDate, // Creation timestamp
-      'front_office', // Default approval level
-      data.custodian || null
-    ];
-    
-    try {
-      // First check if this would exceed the counterparty limit
-      if (data.counterparty) {
-        try {
-          // We need to implement a promise-based version of checkGsecLimit
-          const limitCheck = await Gsec.checkGsecLimitAsync(data);
-          
-          if (!limitCheck.allowed) {
-            const error = {
-              status: 400,
-              message: 'GSec limit exceeded',
-              details: limitCheck.message,
-              limitDetails: limitCheck
-            };
-            throw error;
-          }
-        } catch (limitErr) {
-          throw limitErr;
+    // Auto-generate deal_number if not provided
+    const MAX_ATTEMPTS = 5;
+    let attempt = 0;
+    let lastError;
+    while (attempt < MAX_ATTEMPTS) {
+      // Always (re)generate deal_number if not provided or after a retry
+      if (!data.dealNumber && data.valueDate) {
+        let dateObj = new Date(data.valueDate);
+        if (!isNaN(dateObj.getTime())) {
+          const dateStr = dateObj.getFullYear().toString() +
+            String(dateObj.getMonth() + 1).padStart(2, '0') +
+            String(dateObj.getDate()).padStart(2, '0');
+          console.log('[DEBUG] valueDate:', data.valueDate);
+          console.log('[DEBUG] dateStr for deal number:', dateStr);
+          data.dealNumber = await Gsec.generateNextDealNumber(dateStr);
+          console.log('[DEBUG] dealNumber after generation:', data.dealNumber);
         }
       }
+      // Handle the financial calculation requirements
+      // Ensure accrued interest and clean price are truncated (not rounded) to 4 decimal places
+      if (data.accruedInterest) {
+        // Truncate to 4 decimal places
+        const accruedInterest = Math.floor(parseFloat(data.accruedInterest) * 10000) / 10000;
+        data.accruedInterest = accruedInterest;
+      }
       
-      // If limit check passes or no counterparty, proceed with the insert
-      const [result] = await db.query(sql, values);
-      return result;
-    } catch (error) {
-      console.error('Error in create:', error);
-      throw error;
+      if (data.cleanPrice) {
+        // Truncate to 4 decimal places
+        const cleanPrice = Math.floor(parseFloat(data.cleanPrice) * 10000) / 10000;
+        data.cleanPrice = cleanPrice;
+      }
+      
+      // Calculate dirty price as clean price + accrued interest
+      if (data.cleanPrice && data.accruedInterest) {
+        data.dirtyPrice = parseFloat(data.cleanPrice) + parseFloat(data.accruedInterest);
+      }
+      
+      const currentDate = new Date();
+      
+      // Calculate per_day_accrual: couponInterest / numberOfDaysForCouponPeriod
+      let perDayAccrual = null;
+      if (data.couponInterest && data.numberOfDaysForCouponPeriod) {
+        const ci = parseFloat(data.couponInterest);
+        const nd = parseFloat(data.numberOfDaysForCouponPeriod);
+        if (ci && nd) {
+          perDayAccrual = Math.floor((ci / nd) * 100000000) / 100000000; // truncate to 8 decimals
+        }
+      }
+      data.per_day_accrual = perDayAccrual;
+
+      const sql = `INSERT INTO gsec (
+        trade_type, transaction_type, counterparty, deal_number, isin, face_value, value_date, next_coupon_date, 
+        last_coupon_date, number_of_days_interest_accrued, number_of_days_for_coupon_period, accrued_interest, 
+        coupon_interest, clean_price, dirty_price, accrued_interest_calculation, accrued_interest_six_decimals, 
+        accrued_interest_for_100, settlement_amount, settlement_mode, issue_date, maturity_date, coupon_dates, 
+        yield, brokerage, currency, portfolio, strategy, broker, accrued_interest_adjustment, clean_price_adjustment, 
+        per_day_accrual, status, created_by, created_at, current_approval_level, custodian
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+      
+      const values = [
+        data.tradeType,
+        data.transactionType,
+        data.counterparty,
+        data.dealNumber,
+        data.isin,
+        data.faceValue,
+        data.valueDate,
+        data.nextCouponDate,
+        data.lastCouponDate,
+        data.numberOfDaysInterestAccrued,
+        data.numberOfDaysForCouponPeriod,
+        data.accruedInterest,
+        data.couponInterest,
+        data.cleanPrice,
+        data.dirtyPrice,
+        data.accruedInterestCalculation,
+        data.accruedInterestSixDecimals,
+        data.accruedInterestFor100,
+        data.settlementAmount,
+        data.settlementMode,
+        data.issueDate,
+        data.maturityDate,
+        data.couponDates,
+        data.yield,
+        data.brokerage,
+        data.currency || 'LKR',
+        data.portfolio,
+        data.strategy,
+        data.broker,
+        data.accruedInterestAdjustment,
+        data.cleanPriceAdjustment,
+        data.per_day_accrual,
+        'pending', // Default status for authorization workflow
+        data.userId || null, // Creator's user ID
+        currentDate, // Creation timestamp
+        'front_office', // Default approval level
+        data.custodian || null
+      ];
+      try {
+        // First check if this would exceed the counterparty limit
+        if (data.counterparty) {
+          try {
+            // We need to implement a promise-based version of checkGsecLimit
+            const limitCheck = await Gsec.checkGsecLimitAsync(data);
+            if (!limitCheck.allowed) {
+              const error = {
+                status: 400,
+                message: 'GSec limit exceeded',
+                details: limitCheck.message,
+                limitDetails: limitCheck
+              };
+              throw error;
+            }
+          } catch (limitErr) {
+            throw limitErr;
+          }
+        }
+        // If limit check passes or no counterparty, proceed with the insert
+        const [result] = await db.query(sql, values);
+        return result;
+      } catch (error) {
+        if (error.code === 'ER_DUP_ENTRY' && String(error.sqlMessage).includes('unique_deal_number')) {
+          attempt++;
+          // Regenerate deal number and retry
+          if (data.valueDate) {
+            let dateObj = new Date(data.valueDate);
+            if (!isNaN(dateObj.getTime())) {
+              const dateStr = dateObj.getFullYear().toString() +
+                String(dateObj.getMonth() + 1).padStart(2, '0') +
+                String(dateObj.getDate()).padStart(2, '0');
+              data.dealNumber = await Gsec.generateNextDealNumber(dateStr);
+              console.warn(`[RETRY] Duplicate deal_number, retrying with new dealNumber: ${data.dealNumber}`);
+            }
+          }
+          continue;
+        }
+        lastError = error;
+        break;
+      }
     }
+    throw lastError || new Error('Failed to generate unique deal number after retries');
   },
   
   // Promise-based version of checkGsecLimit
@@ -467,13 +499,51 @@ const Gsec = {
 };
 
 Gsec.getLatestDealNumber = async (date) => {
-  // Find the latest deal_number for Gsec transactions on or before the given date
+  // date should be in YYYYMMDD format for the new pattern
   const [results] = await db.query(
-    'SELECT deal_number FROM gsec WHERE trade_date <= ? ORDER BY trade_date DESC, id DESC LIMIT 1',
-    [date]
+    'SELECT deal_number FROM gsec WHERE deal_number LIKE ? ORDER BY deal_number DESC LIMIT 1',
+    [`${date}/GSEC/%`]
   );
-  return results[0] ? results[0].deal_number : null;
+  const latest = results[0] ? results[0].deal_number : null;
+  console.log('[DEBUG] getLatestDealNumber for', date, ':', latest);
+  return latest;
 };
+
+/**
+ * Generate the next deal number for GSec in the format GSEC-YYYY-MM-DD-###
+ * @param {string} date - in YYYY-MM-DD format
+ * @returns {string} nextDealNumber
+ */
+Gsec.generateNextDealNumber = async (date) => {
+  try {
+    // Get the latest deal number for this date
+    const latest = await Gsec.getLatestDealNumber(date);
+    let nextSeq = 1;
+    
+    if (latest) {
+      console.log('[DEBUG] Latest deal found:', latest);
+      const parts = latest.split('/');
+      if (parts.length >= 3) {
+        const seqStr = parts[2]; // Get the sequence part (0001, 0002, etc.)
+        const seqNum = parseInt(seqStr, 10);
+        if (!isNaN(seqNum)) {
+          nextSeq = seqNum + 1;
+        }
+      }
+    }
+    
+    const padded = String(nextSeq).padStart(4, '0');
+    const nextDeal = `${date}/GSEC/${padded}`;
+    console.log('[DEBUG] Generated next deal number:', nextDeal);
+    return nextDeal;
+  } catch (error) {
+    console.error('[ERROR] Failed to generate deal number:', error);
+    // Fallback to timestamp-based unique number
+    const timestamp = Date.now().toString().slice(-4);
+    return `${date}/GSEC/${timestamp}`;
+  }
+};
+
 
 /**
  * Get all GSec transactions at a specific approval level

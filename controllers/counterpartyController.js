@@ -19,23 +19,4 @@ exports.getCounterpartyById = async (req, res) => {
   }
 };
 
-exports.createCounterparty = (req, res) => {
-  Counterparty.create(req.body, (err, result) => {
-    if (err) return res.status(500).json({ error: err });
-    res.status(201).json({ id: result.insertId, ...req.body });
-  });
-};
 
-exports.updateCounterparty = (req, res) => {
-  Counterparty.update(req.params.id, req.body, (err) => {
-    if (err) return res.status(500).json({ error: err });
-    res.json({ id: req.params.id, ...req.body });
-  });
-};
-
-exports.deleteCounterparty = (req, res) => {
-  Counterparty.delete(req.params.id, (err) => {
-    if (err) return res.status(500).json({ error: err });
-    res.status(204).end();
-  });
-};
