@@ -38,9 +38,20 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
 
   // Aggregate balance by ISIN
   const isinBalances = {};
+  const isinWapMap = {};
   rows.forEach(row => {
     if (!isinBalances[row.isin]) isinBalances[row.isin] = 0;
     isinBalances[row.isin] += Number(row.face_value);
+
+    // Aggregate for WAP calculation
+    const isin = row.isin;
+    const fv = Number(row.face_value) || 0;
+    const cp = Number(row.clean_price) || 0;
+    if (!isinWapMap[isin]) {
+      isinWapMap[isin] = { sumFV: 0, sumFVCP: 0 };
+    }
+    isinWapMap[isin].sumFV += fv;
+    isinWapMap[isin].sumFVCP += fv * cp;
   });
 
   // Helper to safely parse ISO date strings
@@ -72,6 +83,13 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       yield: truncate4(row.yield).toFixed(4),
       dtm,
       balance: truncate4(isinBalances[row.isin]).toFixed(4),
+      wap: (function() {
+        const wapData = isinWapMap[row.isin];
+        if (wapData && wapData.sumFV) {
+          return (Math.floor((wapData.sumFVCP / wapData.sumFV) * 10000) / 10000).toFixed(4);
+        }
+        return '';
+      })(),
       repo_collateral: '',
       counterparty: row.counterparty
     };
