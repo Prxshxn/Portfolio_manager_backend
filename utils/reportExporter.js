@@ -24,7 +24,8 @@ const EXPORT_COLUMNS = [
   { key: 'coupon_interest', label: 'Coupon Interest' },
   { key: 'yield', label: 'Yield' },
   { key: 'dtm', label: 'DTM' },
-  { key: 'balance', label: 'Balance' }
+  { key: 'balance', label: 'Balance' },
+  { key: 'wap', label: 'WAP' }
 ];
 
 function formatNumber2(val) {
@@ -41,6 +42,19 @@ function formatNumber2(val) {
 }
 
 function preprocessExportData(data) {
+  // Compute WAP per ISIN
+  const isinMap = {};
+  data.forEach(row => {
+    const isin = row.isin;
+    const fv = Number(row.face_value) || 0;
+    const cp = Number(row.clean_price) || 0;
+    if (!isinMap[isin]) {
+      isinMap[isin] = { sumFV: 0, sumFVCP: 0 };
+    }
+    isinMap[isin].sumFV += fv;
+    isinMap[isin].sumFVCP += fv * cp;
+  });
+  // Attach WAP to each row
   return data.map(row => {
     const mapped = {};
     EXPORT_COLUMNS.forEach(col => {
@@ -60,6 +74,11 @@ function preprocessExportData(data) {
       if (col.key === 'dtm') {
         const n = Number(val);
         val = isNaN(n) ? val : Math.trunc(n).toString();
+      }
+      if (col.key === 'wap') {
+        const isin = row.isin;
+        const wap = isinMap[isin] && isinMap[isin].sumFV ? (isinMap[isin].sumFVCP / isinMap[isin].sumFV) : 0;
+        val = formatNumber2(wap);
       }
       mapped[col.key] = val !== undefined && val !== null ? val : '';
     });
@@ -83,8 +102,8 @@ exports.export = async (format, data) => {
     return workbook.xlsx.writeBuffer();
   }
   if (format === 'pdf') {
-    // Pretty PDF table matching the screenshot
-    const doc = new PDFDocument({ margin: 40, size: 'A4' });
+    // Use landscape orientation for wider tables
+    const doc = new PDFDocument({ margin: 40, size: 'A4', layout: 'landscape' });
     const buffers = [];
     doc.on('data', buffers.push.bind(buffers));
     doc.on('end', () => {});
@@ -105,12 +124,28 @@ exports.export = async (format, data) => {
       { key: 'coupon_interest', label: 'Coupon Interest', width: 70, align: 'right' },
       { key: 'yield', label: 'Yield', width: 45, align: 'right' },
       { key: 'dtm', label: 'DTM', width: 50, align: 'center' },
-      { key: 'balance', label: 'Balance', width: 80, align: 'right' }
-        ]; // keep in sync with EXPORT_COLUMNS
+      { key: 'balance', label: 'Balance', width: 80, align: 'right' },
+      { key: 'wap', label: 'WAP', width: 70, align: 'right' }
+    ];
+
+    // --- Auto-scale columns to fit PDF page ---
+    function scaleColumnsToPage(columns, doc) {
+      const maxWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+      const totalWidth = columns.reduce((sum, col) => sum + col.width, 0);
+      if (totalWidth > maxWidth) {
+        const scale = maxWidth / totalWidth;
+        columns.forEach(col => { col.width = Math.floor(col.width * scale); });
+      }
+      return columns;
+    }
+
     const tableTop = doc.y + 8;
     const rowHeight = 30; // Increased for more vertical space
     const cellPadding = 6;
     const startX = doc.page.margins.left;
+
+    // Auto-scale columns to fit page width
+    scaleColumnsToPage(columns, doc);
 
     // Draw header row background
     doc.rect(startX, tableTop, columns.reduce((a, c) => a + c.width, 0), rowHeight).fillAndStroke('#f8fafc', '#e5e7eb');
@@ -120,7 +155,8 @@ exports.export = async (format, data) => {
       doc.text(col.label, x + cellPadding, tableTop + 8, { 
         width: col.width - 2 * cellPadding, 
         align: col.align || 'left', 
-        continued: false 
+        continued: false,
+        lineBreak: false // Prevent text wrapping in header
       });
       x += col.width;
     });
@@ -142,7 +178,8 @@ exports.export = async (format, data) => {
         doc.fillColor('#222').text(String(val), x + cellPadding, y + (rowHeight - 12) / 2, { 
           width: col.width - 2 * cellPadding, 
           align: col.align || 'left', 
-          continued: false 
+          continued: false,
+          lineBreak: false // Prevent text wrapping in cell
         });
         // Vertical grid line
         doc.moveTo(x + col.width, tableTop).lineTo(x + col.width, y + rowHeight).stroke('#e5e7eb');
