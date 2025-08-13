@@ -5,9 +5,16 @@ const db = require('../models/gsec'); // Adjust if your DB/model import is diffe
 // GET /api/gsec?approval_level=1 - fetch all GSec transactions at a given approval level
 // GET /api/gsec?approval_level=1 - fetch all GSec transactions at a given approval level
 router.get('/', async (req, res) => {
-  const approvalLevel = req.query.approval_level;
+  const { portfolio, approval_level } = req.query;
   try {
-    const transactions = await db.getTransactionsByApprovalLevel(approvalLevel);
+    let transactions;
+    if (portfolio) {
+      transactions = await db.getTransactionsByPortfolio(portfolio);
+    } else if (approval_level) {
+      transactions = await db.getTransactionsByApprovalLevel(approval_level);
+    } else {
+      transactions = await db.getAllTransactions(); // fallback, or return []
+    }
     res.json(transactions);
   } catch (err) {
     console.error('Error fetching GSec transactions:', err);

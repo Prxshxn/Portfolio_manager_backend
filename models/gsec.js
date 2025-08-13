@@ -613,4 +613,10 @@ Gsec.advanceApprovalLevel = async (id) => {
   return updated[0];
 };
 
+Gsec.getTransactionsByPortfolio = async (portfolioId) => {
+  const sql = 'SELECT * FROM gsec WHERE portfolio = ?';
+  const [rows] = await db.query(sql, [portfolioId]);
+  return rows;
+};
+
 module.exports = Gsec;
