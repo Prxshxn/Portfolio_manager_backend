@@ -98,7 +98,7 @@ const Gsec = {
         'pending', // Default status for authorization workflow
         data.userId || null, // Creator's user ID
         currentDate, // Creation timestamp
-        'front_office', // Default approval level
+        data.current_approval_level !== undefined ? data.current_approval_level : 1, // Use frontend value or default to 1
         data.custodian || null
       ];
       try {
@@ -611,6 +611,12 @@ Gsec.advanceApprovalLevel = async (id) => {
     }
   }
   return updated[0];
+};
+
+Gsec.getTransactionsByPortfolio = async (portfolioId) => {
+  const sql = 'SELECT * FROM gsec WHERE portfolio = ?';
+  const [rows] = await db.query(sql, [portfolioId]);
+  return rows;
 };
 
 module.exports = Gsec;
