@@ -35,4 +35,15 @@ router.post('/:id/approve', async (req, res) => {
   }
 });
 
+// GET /api/gsec/buy-deals - fetch only the Buy deals
+router.get('/buy-deals', async (req, res) => {
+  try {
+    const deals = await db.getBuyDeals();
+    res.json({ success: true, data: deals });
+  } catch (err) {
+    console.error('Error fetching Buy GSec deals:', err);
+    res.status(500).json({ success: false, error: 'Failed to fetch Buy GSec deals' });
+  }
+});
+
 module.exports = router;

@@ -383,6 +383,28 @@ const Gsec = {
       throw error;
     }
   },
+
+  /**
+   * Get only GSec deals with transaction_type = 'Buy'
+   */
+  getBuyDeals: async () => {
+    const sql = `SELECT * FROM gsec WHERE transaction_type = 'Buy' ORDER BY id DESC`;
+    try {
+      const [results] = await db.query(sql);
+      // Format results for frontend (truncate/format decimals as in getRecent)
+      return results.map(transaction => ({
+        ...transaction,
+        accrued_interest: transaction.accrued_interest ? parseFloat(transaction.accrued_interest).toFixed(4) : null,
+        clean_price: transaction.clean_price ? parseFloat(transaction.clean_price).toFixed(4) : null,
+        dirty_price: transaction.dirty_price ? parseFloat(transaction.dirty_price).toFixed(4) : null,
+        face_value: transaction.face_value ? parseFloat(transaction.face_value).toFixed(2) : null,
+        counterparty_name: 'Unknown'
+      }));
+    } catch (error) {
+      console.error('Error in getBuyDeals:', error);
+      throw error;
+    }
+  },
   
   /**
    * Update an existing GSec transaction
@@ -614,7 +636,7 @@ Gsec.advanceApprovalLevel = async (id) => {
 };
 
 Gsec.getTransactionsByPortfolio = async (portfolioId) => {
-  const sql = 'SELECT * FROM gsec WHERE portfolio = ?';
+  const sql = "SELECT * FROM gsec WHERE portfolio = ? AND transaction_type = 'Buy'";
   const [rows] = await db.query(sql, [portfolioId]);
   return rows;
 };
