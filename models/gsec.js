@@ -99,9 +99,28 @@ const Gsec = {
         data.userId || null, // Creator's user ID
         currentDate, // Creation timestamp
         data.current_approval_level !== undefined ? data.current_approval_level : 1, // Use frontend value or default to 1
-        data.custodian || null
+        data.custodian || null,
+        data.buyDealNumber || null
       ];
       try {
+        // Backend-side validation: prevent overselling from a Buy deal
+        if (data.transactionType === 'Sell' && data.buyDealNumber) {
+          // Find the referenced Buy deal
+          const [buyRows] = await db.query('SELECT * FROM gsec WHERE deal_number = ? AND transaction_type = "Buy"', [data.buyDealNumber]);
+          if (!buyRows.length) {
+            throw { status: 400, message: 'Referenced Buy deal not found for Sell transaction.' };
+          }
+          const buyDeal = buyRows[0];
+          // Sum all previous sells for this buy_deal_number
+          const [sellAgg] = await db.query('SELECT SUM(face_value) AS total_sold FROM gsec WHERE transaction_type = "Sell" AND buy_deal_number = ?', [data.buyDealNumber]);
+          const totalSold = parseFloat(sellAgg[0].total_sold || 0);
+          const originalFace = parseFloat(buyDeal.face_value || 0);
+          const remaining = Math.max(0, originalFace - totalSold);
+          const sellAmount = parseFloat(data.faceValue || 0);
+          if (sellAmount > remaining) {
+            throw { status: 400, message: `Sell amount (${sellAmount}) exceeds remaining face value (${remaining}) for Buy deal ${data.buyDealNumber}.` };
+          }
+        }
         // First check if this would exceed the counterparty limit
         if (data.counterparty) {
           try {
@@ -376,10 +395,92 @@ const Gsec = {
           counterparty_name: 'Unknown'
         };
       });
-      
       return formattedResults;
     } catch (error) {
       console.error('Error in getRecent:', error);
+      throw error;
+    }
+  },
+  
+  // ... (rest of the code remains the same)
+
+  /**
+   * Get Buy deals with remaining face value (original - total sold from this deal)
+   * Only for display, does not update Buy record. Uses buy_deal_number in Sell transactions.
+   * Filtered by ISIN and/or portfolio if provided.
+   */
+  getBuyDealsWithBalanceFiltered: async (isin, portfolio) => {
+    // Build SQL with optional filters
+    let sql = `SELECT * FROM gsec WHERE transaction_type = 'Buy' AND (remaining_face_value > 0 OR remaining_face_value IS NULL)`;
+    const params = [];
+    if (isin) {
+      sql += ' AND isin = ?';
+      params.push(isin);
+    }
+    if (portfolio) {
+      sql += ' AND portfolio = ?';
+      params.push(portfolio);
+    }
+    const [rows] = await db.query(sql, params);
+    return rows;
+  },
+
+  /**
+   * Get all Buy deals with remaining face value (original - total sold from this deal)
+   * Only for display, does not update Buy record. Uses buy_deal_number in Sell transactions.
+   */
+  getBuyDealsWithBalance: async () => {
+    // Get all Buy deals
+    const buySql = `SELECT * FROM gsec WHERE transaction_type = 'Buy' ORDER BY id DESC`;
+    // Get total sold per buy_deal_number (Sell transactions reference Buy deals)
+    const sellSql = `SELECT buy_deal_number, SUM(face_value) AS total_sold FROM gsec WHERE transaction_type = 'Sell' GROUP BY buy_deal_number`;
+    try {
+      const [buyDeals] = await db.query(buySql);
+      const [sellAgg] = await db.query(sellSql);
+      // Map of buy_deal_number => total_sold
+      const soldMap = {};
+      for (const row of sellAgg) {
+        soldMap[row.buy_deal_number] = parseFloat(row.total_sold || 0);
+      }
+      // Compose results
+      return buyDeals.map(deal => {
+        const originalFace = parseFloat(deal.face_value || 0);
+        const sold = soldMap[deal.deal_number] || 0;
+        const remaining = Math.max(0, originalFace - sold);
+        return {
+          ...deal,
+          accrued_interest: deal.accrued_interest ? parseFloat(deal.accrued_interest).toFixed(4) : null,
+          clean_price: deal.clean_price ? parseFloat(deal.clean_price).toFixed(4) : null,
+          dirty_price: deal.dirty_price ? parseFloat(deal.dirty_price).toFixed(4) : null,
+          face_value: (Math.trunc(originalFace * 10000) / 10000).toFixed(4),
+          remaining_face_value: (Math.trunc(remaining * 10000) / 10000).toFixed(4),
+          counterparty_name: 'Unknown'
+        };
+      });
+    } catch (error) {
+      console.error('Error in getBuyDealsWithBalance:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Get only GSec deals with transaction_type = 'Buy'
+   */
+  getBuyDeals: async () => {
+    const sql = `SELECT * FROM gsec WHERE transaction_type = 'Buy' ORDER BY id DESC`;
+    try {
+      const [results] = await db.query(sql);
+      // Format results for frontend (truncate/format decimals as in getRecent)
+      return results.map(transaction => ({
+        ...transaction,
+        accrued_interest: transaction.accrued_interest ? parseFloat(transaction.accrued_interest).toFixed(4) : null,
+        clean_price: transaction.clean_price ? parseFloat(transaction.clean_price).toFixed(4) : null,
+        dirty_price: transaction.dirty_price ? parseFloat(transaction.dirty_price).toFixed(4) : null,
+        face_value: transaction.face_value ? parseFloat(transaction.face_value).toFixed(2) : null,
+        counterparty_name: 'Unknown'
+      }));
+    } catch (error) {
+      console.error('Error in getBuyDeals:', error);
       throw error;
     }
   },
@@ -614,7 +715,7 @@ Gsec.advanceApprovalLevel = async (id) => {
 };
 
 Gsec.getTransactionsByPortfolio = async (portfolioId) => {
-  const sql = 'SELECT * FROM gsec WHERE portfolio = ?';
+  const sql = "SELECT * FROM gsec WHERE portfolio = ? AND transaction_type = 'Buy'";
   const [rows] = await db.query(sql, [portfolioId]);
   return rows;
 };

@@ -6,6 +6,19 @@ const Gsec = require('../models/gsec');
 
 module.exports = {
   /**
+   * Get all Buy deals with remaining face value, filtered by ISIN and/or portfolio if provided
+   * GET /api/isin-master/gsec/buy-deals?isin=...&portfolio=...
+   */
+  getBuyDealsWithBalance: async (req, res) => {
+    try {
+      const { isin, portfolio } = req.query;
+      const deals = await Gsec.getBuyDealsWithBalanceFiltered(isin, portfolio);
+      res.json({ success: true, data: deals });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  },
+  /**
    * Get the latest deal number for Gsec transactions up to a given date
    * GET /api/isin-master/gsec-latest-deal-number?date=YYYY-MM-DD
    */
@@ -161,13 +174,38 @@ module.exports = {
       // Set default status to 'pending' for authorization workflow
       const formData = {
         ...req.body,
+        transaction_type: req.body.transaction_type || req.body.transactionType, // Ensure always set
         status: 'pending',
         created_by: req.body.userId || null,
         created_at: new Date()
       };
       
       const result = await Gsec.create(formData);
-      res.json({ success: true, message: 'Gsec transaction saved', id: result.insertId });
+
+    // --- SELL DEALS LOGIC WITH DEBUG LOGGING ---
+    const { sell_deals } = req.body;
+    console.log('Received sell_deals:', sell_deals);
+    console.log('formData.transaction_type:', formData.transaction_type);
+    if (Array.isArray(sell_deals) && String(formData.transaction_type).toLowerCase() === 'sell') {
+      for (const sell of sell_deals) {
+        console.log('Processing sell deal:', sell);
+        const [buyDeals] = await db.query('SELECT * FROM gsec WHERE deal_number = ? AND transaction_type = "Buy"', [sell.buy_deal_number]);
+        if (buyDeals && buyDeals.length > 0) {
+          const buyDeal = buyDeals[0];
+          const original = parseFloat(buyDeal.remaining_face_value || buyDeal.face_value || 0);
+          const sold = parseFloat(sell.amountToSell || 0);
+          let newRemaining = original - sold;
+          newRemaining = Math.trunc(newRemaining * 10000) / 10000;
+          console.log(`Updating buy deal ${buyDeal.deal_number}: ${original} - ${sold} = ${newRemaining}`);
+          await db.query('UPDATE gsec SET remaining_face_value = ? WHERE id = ?', [newRemaining.toFixed(4), buyDeal.id]);
+        } else {
+          console.log('No buy deal found for:', sell.buy_deal_number);
+        }
+      }
+    }
+    // --- END SELL DEALS LOGIC ---
+
+    res.json({ success: true, message: 'Gsec transaction saved', id: result.insertId });
     } catch (err) {
       console.error('Error in saveGsec:', err);
       const statusCode = err.status || 500;

@@ -75,6 +75,8 @@ router.get('/:isin/coupon-months', isinMasterController.getCouponMonths);
  */
 // Gsec transaction routes
 router.post('/gsec', isinMasterController.saveGsec);
+// Get buy deals with remaining face value, filtered by ISIN and portfolio
+router.get('/gsec/buy-deals', isinMasterController.getBuyDealsWithBalance);
 
 /**
  * @swagger
