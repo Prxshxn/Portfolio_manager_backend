@@ -99,9 +99,28 @@ const Gsec = {
         data.userId || null, // Creator's user ID
         currentDate, // Creation timestamp
         data.current_approval_level !== undefined ? data.current_approval_level : 1, // Use frontend value or default to 1
-        data.custodian || null
+        data.custodian || null,
+        data.buyDealNumber || null
       ];
       try {
+        // Backend-side validation: prevent overselling from a Buy deal
+        if (data.transactionType === 'Sell' && data.buyDealNumber) {
+          // Find the referenced Buy deal
+          const [buyRows] = await db.query('SELECT * FROM gsec WHERE deal_number = ? AND transaction_type = "Buy"', [data.buyDealNumber]);
+          if (!buyRows.length) {
+            throw { status: 400, message: 'Referenced Buy deal not found for Sell transaction.' };
+          }
+          const buyDeal = buyRows[0];
+          // Sum all previous sells for this buy_deal_number
+          const [sellAgg] = await db.query('SELECT SUM(face_value) AS total_sold FROM gsec WHERE transaction_type = "Sell" AND buy_deal_number = ?', [data.buyDealNumber]);
+          const totalSold = parseFloat(sellAgg[0].total_sold || 0);
+          const originalFace = parseFloat(buyDeal.face_value || 0);
+          const remaining = Math.max(0, originalFace - totalSold);
+          const sellAmount = parseFloat(data.faceValue || 0);
+          if (sellAmount > remaining) {
+            throw { status: 400, message: `Sell amount (${sellAmount}) exceeds remaining face value (${remaining}) for Buy deal ${data.buyDealNumber}.` };
+          }
+        }
         // First check if this would exceed the counterparty limit
         if (data.counterparty) {
           try {
