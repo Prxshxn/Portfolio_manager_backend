@@ -8,7 +8,7 @@ function truncate4(val) {
 
 exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityDate, page, pageSize }) => {
   // Build query with filters
-  let sql = `SELECT portfolio, custodian, deal_number, face_value, value_date, maturity_date, isin, coupon_interest, clean_price, yield, counterparty FROM gsec WHERE 1=1`;
+  let sql = `SELECT portfolio, custodian, deal_number, face_value, value_date, maturity_date, isin, coupon_interest, clean_price, yield, counterparty, transaction_type FROM gsec WHERE 1=1`;
   const params = [];
   if (portfolio) {
     sql += ' AND portfolio = ?';
@@ -26,15 +26,9 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     sql += ' AND maturity_date = ?';
     params.push(maturityDate);
   }
+
   sql += ' ORDER BY isin, maturity_date';
 
-    if (deal_number) {
-    sql += ' AND deal number = ?';
-    params.push(deal_number);
-  }
-  sql += ' ORDER BY deal number, deal_number';
-    
-  
   // Pagination
   const offset = (page - 1) * pageSize;
   sql += ' LIMIT ? OFFSET ?';
@@ -44,14 +38,20 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
   const [rows] = await db.query(sql, params);
 
   // Aggregate balance by ISIN
+  // Calculate balance per ISIN: buys addition, sells subtraction
   const isinBalances = {};
   const isinWapMap = {};
   rows.forEach(row => {
-    if (!isinBalances[row.isin]) isinBalances[row.isin] = 0;
-    isinBalances[row.isin] += Number(row.face_value);
+    const isin = row.isin;
+    if (!isinBalances[isin]) isinBalances[isin] = 0;
+    if (row.transaction_type && row.transaction_type.toLowerCase() === 'sell') {
+      isinBalances[isin] -= Number(row.face_value);
+    } else {
+      // Treat as buy by default
+      isinBalances[isin] += Number(row.face_value);
+    }
 
     // Aggregate for WAP calculation
-    const isin = row.isin;
     const fv = Number(row.face_value) || 0;
     const cp = Number(row.clean_price) || 0;
     if (!isinWapMap[isin]) {
