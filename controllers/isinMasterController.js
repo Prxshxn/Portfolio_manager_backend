@@ -6,6 +6,19 @@ const Gsec = require('../models/gsec');
 
 module.exports = {
   /**
+   * Get all Buy deals with remaining face value, filtered by ISIN and/or portfolio if provided
+   * GET /api/isin-master/gsec/buy-deals?isin=...&portfolio=...
+   */
+  getBuyDealsWithBalance: async (req, res) => {
+    try {
+      const { isin, portfolio } = req.query;
+      const deals = await Gsec.getBuyDealsWithBalanceFiltered(isin, portfolio);
+      res.json({ success: true, data: deals });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  },
+  /**
    * Get the latest deal number for Gsec transactions up to a given date
    * GET /api/isin-master/gsec-latest-deal-number?date=YYYY-MM-DD
    */

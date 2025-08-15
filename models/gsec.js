@@ -395,12 +395,34 @@ const Gsec = {
           counterparty_name: 'Unknown'
         };
       });
-      
       return formattedResults;
     } catch (error) {
       console.error('Error in getRecent:', error);
       throw error;
     }
+  },
+  
+  // ... (rest of the code remains the same)
+
+  /**
+   * Get Buy deals with remaining face value (original - total sold from this deal)
+   * Only for display, does not update Buy record. Uses buy_deal_number in Sell transactions.
+   * Filtered by ISIN and/or portfolio if provided.
+   */
+  getBuyDealsWithBalanceFiltered: async (isin, portfolio) => {
+    // Build SQL with optional filters
+    let sql = `SELECT * FROM gsec WHERE transaction_type = 'Buy' AND (remaining_face_value > 0 OR remaining_face_value IS NULL)`;
+    const params = [];
+    if (isin) {
+      sql += ' AND isin = ?';
+      params.push(isin);
+    }
+    if (portfolio) {
+      sql += ' AND portfolio = ?';
+      params.push(portfolio);
+    }
+    const [rows] = await db.query(sql, params);
+    return rows;
   },
 
   /**
