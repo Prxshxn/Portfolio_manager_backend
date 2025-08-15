@@ -46,4 +46,15 @@ router.get('/buy-deals', async (req, res) => {
   }
 });
 
+// GET /api/gsec/buy-deals-with-balance - fetch Buy deals with remaining face value
+router.get('/buy-deals-with-balance', async (req, res) => {
+  try {
+    const deals = await db.getBuyDealsWithBalance();
+    res.json({ success: true, data: deals });
+  } catch (err) {
+    console.error('Error fetching Buy GSec deals with balance:', err);
+    res.status(500).json({ success: false, error: 'Failed to fetch Buy GSec deals with balance' });
+  }
+});
+
 module.exports = router;

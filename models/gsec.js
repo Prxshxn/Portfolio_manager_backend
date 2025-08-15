@@ -385,6 +385,44 @@ const Gsec = {
   },
 
   /**
+   * Get all Buy deals with remaining face value (original - total sold from this deal)
+   * Only for display, does not update Buy record. Uses buy_deal_number in Sell transactions.
+   */
+  getBuyDealsWithBalance: async () => {
+    // Get all Buy deals
+    const buySql = `SELECT * FROM gsec WHERE transaction_type = 'Buy' ORDER BY id DESC`;
+    // Get total sold per buy_deal_number (Sell transactions reference Buy deals)
+    const sellSql = `SELECT buy_deal_number, SUM(face_value) AS total_sold FROM gsec WHERE transaction_type = 'Sell' GROUP BY buy_deal_number`;
+    try {
+      const [buyDeals] = await db.query(buySql);
+      const [sellAgg] = await db.query(sellSql);
+      // Map of buy_deal_number => total_sold
+      const soldMap = {};
+      for (const row of sellAgg) {
+        soldMap[row.buy_deal_number] = parseFloat(row.total_sold || 0);
+      }
+      // Compose results
+      return buyDeals.map(deal => {
+        const originalFace = parseFloat(deal.face_value || 0);
+        const sold = soldMap[deal.deal_number] || 0;
+        const remaining = Math.max(0, originalFace - sold);
+        return {
+          ...deal,
+          accrued_interest: deal.accrued_interest ? parseFloat(deal.accrued_interest).toFixed(4) : null,
+          clean_price: deal.clean_price ? parseFloat(deal.clean_price).toFixed(4) : null,
+          dirty_price: deal.dirty_price ? parseFloat(deal.dirty_price).toFixed(4) : null,
+          face_value: (Math.trunc(originalFace * 10000) / 10000).toFixed(4),
+          remaining_face_value: (Math.trunc(remaining * 10000) / 10000).toFixed(4),
+          counterparty_name: 'Unknown'
+        };
+      });
+    } catch (error) {
+      console.error('Error in getBuyDealsWithBalance:', error);
+      throw error;
+    }
+  },
+
+  /**
    * Get only GSec deals with transaction_type = 'Buy'
    */
   getBuyDeals: async () => {
