@@ -51,14 +51,16 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       isinBalances[isin] += Number(row.face_value);
     }
 
-    // Aggregate for WAP calculation
-    const fv = Number(row.face_value) || 0;
-    const cp = Number(row.clean_price) || 0;
-    if (!isinWapMap[isin]) {
-      isinWapMap[isin] = { sumFV: 0, sumFVCP: 0 };
+    // Aggregate for WAP calculation (ignore 'Sell' deals)
+    if (!row.transaction_type || row.transaction_type.toLowerCase() !== 'sell') {
+      const fv = Number(row.face_value) || 0;
+      const cp = Number(row.clean_price) || 0;
+      if (!isinWapMap[isin]) {
+        isinWapMap[isin] = { sumFV: 0, sumFVCP: 0 };
+      }
+      isinWapMap[isin].sumFV += fv;
+      isinWapMap[isin].sumFVCP += fv * cp;
     }
-    isinWapMap[isin].sumFV += fv;
-    isinWapMap[isin].sumFVCP += fv * cp;
   });
 
   // Helper to safely parse ISO date strings
