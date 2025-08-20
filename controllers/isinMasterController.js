@@ -122,7 +122,7 @@ module.exports = {
         }
         // Fetch and return saved ISIN
         const savedRecord = await IsinMaster.getByIsinNumber(req.body.isin_number);
-        return res.status(201).json({ success: true, data: savedRecord });
+        return res.status(201).json({ success: true, data: savedRecord, message: 'ISIN saved successfully' });
       } catch (e) {
         console.log('[ISIN] Exception in coupon schedule logic:', e);
         return res.status(500).json({ success: false, error: e.message });
