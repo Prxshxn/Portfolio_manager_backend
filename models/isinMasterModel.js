@@ -33,6 +33,11 @@ const IsinMaster = {
     return results[0];
   },
 
+  getByIsinNumber: async (isin_number) => {
+    const [results] = await db.query('SELECT * FROM isin_master WHERE isin_number = ?', [isin_number]);
+    return results[0];
+  },
+
 };
 
 module.exports = IsinMaster;

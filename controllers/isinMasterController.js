@@ -75,16 +75,11 @@ module.exports = {
     });
   },
 
-  createIsin: (req, res) => {
-    IsinMaster.create(req.body, (err, result) => {
-      if (err) {
-        if (err.code === 'ER_DUP_ENTRY') {
-          console.log('[ISIN] Duplicate entry error:', err);
-          return res.status(409).json({ success: false, error: 'ISIN number already exists.' });
-        }
-        console.log('[ISIN] Other DB error:', err);
-        return res.status(500).json({ success: false, error: err.message || err });
-      }
+  createIsin: async (req, res) => {
+    try {
+      // Insert ISIN record
+      const result = await IsinMaster.create(req.body);
+      // Coupon schedule logic (non-blocking for main ISIN creation)
       try {
         const data = req.body;
         const isin = data.isin_number;
@@ -110,6 +105,7 @@ module.exports = {
           currentDate = nextDate;
           couponNumber++;
         }
+        // Add maturity coupon
         schedule.push({
           isin,
           coupon_number: couponNumber,
@@ -117,19 +113,24 @@ module.exports = {
           coupon_amount: couponAmount,
           principal: faceValue
         });
-        IsinCouponSchedule.bulkInsert(schedule, (err2) => {
-          if (err2) {
-            console.log('[ISIN] Coupon schedule bulk insert error:', err2);
-          return res.status(500).json({ success: false, error: err2.message || err2 });
-          }
-          console.log('[ISIN] ISIN saved successfully:', result.insertId);
-        return res.status(201).json({ success: true, message: 'ISIN saved successfully', id: result.insertId, coupon_schedule_created: true });
-        });
+        if (schedule.length > 0) {
+          IsinCouponSchedule.bulkInsert(schedule, (err2) => {
+            if (err2) {
+              console.log('[ISIN] Coupon schedule DB error:', err2);
+            }
+          });
+        }
+        // Fetch and return saved ISIN
+        const savedRecord = await IsinMaster.getByIsinNumber(req.body.isin_number);
+        return res.status(201).json({ success: true, data: savedRecord });
       } catch (e) {
         console.log('[ISIN] Exception in coupon schedule logic:', e);
-      return res.status(500).json({ success: false, error: e.message });
+        return res.status(500).json({ success: false, error: e.message });
       }
-    });
+    } catch (err) {
+      console.error('Error in createIsin:', err);
+      res.status(500).json({ success: false, error: err.message || err });
+    }
   },
   getAllIsins: async (req, res) => {
     try {
