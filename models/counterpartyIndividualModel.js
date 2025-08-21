@@ -7,8 +7,8 @@ const CounterpartyIndividual = {
   },
   create: async (data) => {
     const sql = `INSERT INTO counterparty_master_individual (
-      title, short_name, long_name, id_type, house_number, street_name, province, postal_code, city, country, telephone, email, mobile
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+      title, short_name, long_name, id_type, house_number, street_name, province, postal_code, city, country, telephone, email, mobile, custodian_bank, cds_account
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
     const values = [
       data.title,
       data.short_name,
@@ -22,7 +22,9 @@ const CounterpartyIndividual = {
       data.country,
       data.telephone,
       data.email,
-      data.mobile
+      data.mobile,
+      data.custodian_bank,
+      data.cds_account
     ];
     const [result] = await db.query(sql, values);
     return result;
