@@ -3,9 +3,9 @@ const router = express.Router();
 const counterpartyIndividualController = require('../controllers/counterpartyIndividualController');
 
 // POST /api/counterparty-individual
-router.post('/counterparty-individual', counterpartyIndividualController.createCounterpartyIndividual);
+router.post('/', counterpartyIndividualController.createCounterpartyIndividual);
 
 // GET /api/counterparty-individual
-router.get('/counterparty-individual', counterpartyIndividualController.getAllCounterpartyIndividuals);
+router.get('/', counterpartyIndividualController.getAllCounterpartyIndividuals);
 
 module.exports = router;
