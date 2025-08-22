@@ -5,6 +5,46 @@ const db = require('../config/database');
 const Gsec = require('../models/gsec');
 
 module.exports = {
+  // Save both legs of a G-Sec buyback as a single row in buyback_gsec
+  saveGsecBuyback: async (req, res) => {
+    try {
+      const { leg1, leg2 } = req.body;
+      // Map fields to match your buyback_gsec table
+      const buybackRow = {
+        isin: leg1.isin || leg2.isin,
+        buy_trade_date: leg1.tradeDate,
+        buy_value_date: leg1.valueDate,
+        buy_counterparty: leg1.counterparty,
+        buy_face_value: leg1.faceValue,
+        buy_accrued_interest: leg1.accruedInterest,
+        buy_clean_price: leg1.cleanPrice,
+        buy_dirty_price: leg1.dirtyPrice,
+        buy_portfolio: leg1.portfolio,
+        buy_strategy: leg1.strategy,
+        sell_trade_date: leg2.tradeDate,
+        sell_value_date: leg2.valueDate,
+        sell_counterparty: leg2.counterparty,
+        sell_face_value: leg2.faceValue,
+        sell_accrued_interest: leg2.accruedInterest,
+        sell_clean_price: leg2.cleanPrice,
+        sell_dirty_price: leg2.dirtyPrice,
+        sell_portfolio: leg2.portfolio,
+        sell_strategy: leg2.strategy,
+        status: 'pending',
+        created_at: new Date(),
+        updated_at: new Date()
+      };
+      const db = require('../config/database');
+      // Insert the row using a raw query (MySQL style)
+      const placeholders = Object.keys(buybackRow).map(() => '?').join(',');
+      const sql = `INSERT INTO buyback_gsec (${Object.keys(buybackRow).join(',')}) VALUES (${placeholders})`;
+      await db.query(sql, Object.values(buybackRow));
+      res.status(201).json({ success: true, message: 'Buyback saved successfully' });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message || 'Failed to save buyback' });
+    }
+  },
+
   /**
    * Get all Buy deals with remaining face value, filtered by ISIN and/or portfolio if provided
    * GET /api/isin-master/gsec/buy-deals?isin=...&portfolio=...
