@@ -75,6 +75,34 @@ router.get('/:isin/coupon-months', isinMasterController.getCouponMonths);
  */
 // Gsec transaction routes
 router.post('/gsec', isinMasterController.saveGsec);
+
+/**
+ * @swagger
+ * /isin-master/gsec-buyback:
+ *   post:
+ *     summary: Save both legs of a G-Sec buyback as an atomic transaction (single row)
+ *     tags: [Fixed Income G-Sec]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               leg1:
+ *                 type: object
+ *                 description: G-Sec buyback leg 1 form data
+ *               leg2:
+ *                 type: object
+ *                 description: G-Sec buyback leg 2 form data
+ *     responses:
+ *       201:
+ *         description: Buyback saved successfully
+ *       500:
+ *         description: Failed to save buyback
+ */
+router.post('/gsec-buyback', isinMasterController.saveGsecBuyback);
+
 // Get buy deals with remaining face value, filtered by ISIN and portfolio
 router.get('/gsec/buy-deals', isinMasterController.getBuyDealsWithBalance);
 

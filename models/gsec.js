@@ -194,10 +194,21 @@ const Gsec = {
           counterpartyType = 'joint';
           return await Gsec.checkLimitsAsync(counterpartyId, counterpartyType, amount, currency);
         } else {
-          return {
-            allowed: false,
-            message: 'Invalid counterparty ID'
-          };
+          // Check if it's a corporate counterparty
+          const [corporateRows] = await db.query(
+            'SELECT id, "corporate" as type FROM counterparty_master_corporate WHERE id = ?',
+            [counterpartyId]
+          );
+          
+          if (corporateRows && corporateRows.length > 0) {
+            counterpartyType = 'corporate';
+            return await Gsec.checkLimitsAsync(counterpartyId, counterpartyType, amount, currency);
+          } else {
+            return {
+              allowed: false,
+              message: 'Invalid counterparty ID'
+            };
+          }
         }
       }
     } catch (error) {

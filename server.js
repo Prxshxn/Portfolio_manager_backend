@@ -69,6 +69,9 @@ const authRoutes = require('./routes/authRoutes');
 const transactionRoutes = require('./routes/transactions');
 const accountingRoutes = require('./routes/accounting');
 const isinMasterRoutes = require('./routes/isinMasterRoutes');
+
+// Mount the ISIN Master routes at /isin-master
+app.use('/isin-master', isinMasterRoutes);
 const counterpartyIndividualRoutes = require('./routes/counterpartyIndividualRoutes');
 const counterpartyJointRoutes = require('./routes/counterpartyJointRoutes');
 const limitStatusRoutes = require('./routes/limitStatusRoutes');
