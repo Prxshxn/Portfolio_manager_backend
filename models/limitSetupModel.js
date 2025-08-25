@@ -6,6 +6,8 @@ const LimitSetup = {
       SELECT id, short_name AS name, 'individual' AS type FROM counterparty_master_individual
       UNION ALL
       SELECT id, short_name AS name, 'joint' AS type FROM counterparty_master_joint
+      UNION ALL
+      SELECT id, short_name AS name, 'corporate' AS type FROM counterparty_master_corporate
       ORDER BY name
     `;
     const [rows] = await db.query(sql);

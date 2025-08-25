@@ -29,6 +29,7 @@ router.use('/brokers', require('./brokerRoutes'));
 router.use('/counterparties', require('./counterparties'));
 router.use('/counterparty-individual', require('./counterpartyIndividualRoutes'));
 router.use('/counterparty-joint', require('./counterpartyJointRoutes'));
+router.use('/counterparty-corporate', require('./counterpartyCorporateRoutes'));
 router.use('/isin-master', require('./isinMasterRoutes'));
 router.use('/limit-setup', require('./limitSetupRoutes'));
 router.use('/limit-status', require('./limitStatusRoutes'));
