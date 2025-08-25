@@ -3,11 +3,26 @@ const pool = require('../config/db');
 // Get all counterparties from individual, joint, and corporate tables
 async function getAll() {
   const sql = `
-    SELECT id, short_name, long_name, 'individual' AS type FROM counterparty_master_individual
+    SELECT 
+      id, 
+      short_name COLLATE utf8mb4_unicode_ci AS short_name, 
+      long_name COLLATE utf8mb4_unicode_ci AS long_name, 
+      'individual' AS type 
+    FROM counterparty_master_individual
     UNION ALL
-    SELECT id, short_name, long_name, 'joint' AS type FROM counterparty_master_joint
+    SELECT 
+      id, 
+      short_name COLLATE utf8mb4_unicode_ci AS short_name, 
+      long_name COLLATE utf8mb4_unicode_ci AS long_name, 
+      'joint' AS type 
+    FROM counterparty_master_joint
     UNION ALL
-    SELECT id, short_name, COALESCE(long_name, company_name) AS long_name, 'corporate' AS type FROM counterparty_master_corporate
+    SELECT 
+      id, 
+      short_name COLLATE utf8mb4_unicode_ci AS short_name, 
+      COALESCE(long_name, company_name) COLLATE utf8mb4_unicode_ci AS company_name, 
+      'corporate' AS type 
+    FROM counterparty_master_corporate
     ORDER BY short_name
   `;
   const [rows] = await pool.query(sql);
