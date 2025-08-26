@@ -51,22 +51,15 @@ CREATE TABLE IF NOT EXISTS buyback_deals (
   coupon_date1 VARCHAR(5), -- MM-DD format
   coupon_date2 VARCHAR(5), -- MM-DD format
   
-  -- Deal status and tracking (3-tier approval)
+  -- Deal status and tracking
   deal_status ENUM('Draft', 'Pending_Verification', 'Verified', 'Approved', 'Rejected', 'Settled') DEFAULT 'Draft',
   created_by INT,
   verified_by INT NULL,
   approved_by INT NULL,
-  rejected_by INT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   verified_at TIMESTAMP NULL,
   approved_at TIMESTAMP NULL,
-  rejected_at TIMESTAMP NULL,
-  
-  -- Approval comments and reasons
-  verifier_comments TEXT NULL,
-  approver_comments TEXT NULL,
-  rejection_reason TEXT NULL,
   
   -- Additional metadata
   notes TEXT,
@@ -76,7 +69,6 @@ CREATE TABLE IF NOT EXISTS buyback_deals (
   FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
   FOREIGN KEY (verified_by) REFERENCES users(id) ON DELETE SET NULL,
   FOREIGN KEY (approved_by) REFERENCES users(id) ON DELETE SET NULL,
-  FOREIGN KEY (rejected_by) REFERENCES users(id) ON DELETE SET NULL,
   
   -- Indexes for performance
   INDEX idx_deal_number (deal_number),

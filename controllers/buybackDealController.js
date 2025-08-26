@@ -168,7 +168,7 @@ const buybackDealController = {
   updateDealStatus: async (req, res) => {
     try {
       const { id } = req.params;
-      const { status, action, comments } = req.body;
+      const { status, action } = req.body;
       const userId = req.user?.id || 1; // TODO: Get from auth middleware
 
       const validStatuses = ['Verified', 'Approved', 'Rejected'];
@@ -182,9 +182,8 @@ const buybackDealController = {
       // Determine which field to update based on action
       let field = 'verified_by';
       if (action === 'approve') field = 'approved_by';
-      if (action === 'reject') field = 'rejected_by';
 
-      const result = await BuybackDeal.updateStatus(id, status, userId, comments, field);
+      const result = await BuybackDeal.updateStatus(id, status, userId, field);
       
       if (result.affectedRows === 0) {
         return res.status(404).json({

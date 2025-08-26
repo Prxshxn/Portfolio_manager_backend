@@ -100,28 +100,12 @@ const BuybackDeal = {
     return rows;
   },
 
-  // Update deal status with comments
-  updateStatus: async (id, status, userId, comments = null, field = 'verified_by') => {
-    let sql = `UPDATE buyback_deals 
-               SET deal_status = ?, ${field} = ?, ${field.replace('_by', '_at')} = NOW()`;
-    let values = [status, userId];
-
-    // Add comments based on the field type
-    if (field === 'verified_by' && comments) {
-      sql += ', verifier_comments = ?';
-      values.push(comments);
-    } else if (field === 'approved_by' && comments) {
-      sql += ', approver_comments = ?';
-      values.push(comments);
-    } else if (field === 'rejected_by' && comments) {
-      sql += ', rejection_reason = ?';
-      values.push(comments);
-    }
-
-    sql += ' WHERE id = ?';
-    values.push(id);
-
-    const [result] = await db.query(sql, values);
+  // Update deal status
+  updateStatus: async (id, status, userId, field = 'verified_by') => {
+    const sql = `UPDATE buyback_deals 
+                 SET deal_status = ?, ${field} = ?, ${field.replace('_by', '_at')} = NOW()
+                 WHERE id = ?`;
+    const [result] = await db.query(sql, [status, userId, id]);
     return result;
   },
 
