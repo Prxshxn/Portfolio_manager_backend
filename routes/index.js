@@ -15,6 +15,7 @@ const reportMoneyMarketRoutes = require('./reportMoneyMarket');
 router.use('/portfolio-master', portfolioMasterRoutes);
 router.use('/payment-master', paymentMasterRoutes);
 router.use('/authorizers', authorizerRoutes);
+router.use('/authorizers/buyback', require('./buybackAuthorizerRoutes'));
 router.use('/settlement-accounts', settlementAccountRoutes);
 router.use('/system-day', systemDayRoutes);
 router.use('/money-market', moneyMarketEodRoutes);
