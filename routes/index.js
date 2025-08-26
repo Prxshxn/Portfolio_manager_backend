@@ -26,6 +26,7 @@ router.use('/strategy-master', strategyMasterRoutes);
 router.use('/accounts', require('./accounts'));
 router.use('/auth', require('./authRoutes'));
 router.use('/brokers', require('./brokerRoutes'));
+router.use('/buyback', require('./buybackRoutes'));
 router.use('/counterparties', require('./counterparties'));
 router.use('/counterparty-individual', require('./counterpartyIndividualRoutes'));
 router.use('/counterparty-joint', require('./counterpartyJointRoutes'));
