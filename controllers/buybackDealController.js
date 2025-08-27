@@ -179,11 +179,19 @@ const buybackDealController = {
         });
       }
 
-      // Determine which field to update based on action
+      // Determine which field to update based on action and status
       let field = 'verified_by';
-      if (action === 'approve') field = 'approved_by';
+      let timestampField = 'verified_at';
+      
+      if (action === 'approve' || status === 'Approved') {
+        field = 'approved_by';
+        timestampField = 'approved_at';
+      } else if (action === 'verify' || status === 'Verified') {
+        field = 'verified_by';
+        timestampField = 'verified_at';
+      }
 
-      const result = await BuybackDeal.updateStatus(id, status, userId, field);
+      const result = await BuybackDeal.updateStatus(id, status, userId, field, timestampField);
       
       if (result.affectedRows === 0) {
         return res.status(404).json({
@@ -194,7 +202,13 @@ const buybackDealController = {
 
       res.json({
         success: true,
-        message: `Deal ${action || 'updated'} successfully`
+        message: `Deal ${action || 'updated'} successfully`,
+        data: {
+          id,
+          status,
+          updated_by: userId,
+          field
+        }
       });
 
     } catch (error) {
