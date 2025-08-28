@@ -141,7 +141,7 @@ const buybackDealController = {
   getDealsByStatus: async (req, res) => {
     try {
       const { status } = req.params;
-      const validStatuses = ['Draft', 'Pending_Verification', 'Verified', 'Approved', 'Rejected', 'Settled'];
+      const validStatuses = ['Draft', 'Pending_Verification', 'Verified', 'Pending_Final_Approval', 'Approved', 'Rejected', 'Settled'];
       
       if (!validStatuses.includes(status)) {
         return res.status(400).json({
@@ -171,7 +171,7 @@ const buybackDealController = {
       const { status, action } = req.body;
       const userId = req.user?.id || 1; // TODO: Get from auth middleware
 
-      const validStatuses = ['Verified', 'Approved', 'Rejected'];
+      const validStatuses = ['Verified', 'Pending_Final_Approval', 'Approved', 'Rejected'];
       if (!validStatuses.includes(status)) {
         return res.status(400).json({
           success: false,
@@ -187,6 +187,10 @@ const buybackDealController = {
         field = 'approved_by';
         timestampField = 'approved_at';
       } else if (action === 'verify' || status === 'Verified') {
+        field = 'verified_by';
+        timestampField = 'verified_at';
+      } else if (status === 'Pending_Final_Approval') {
+        // This is when back office verifier approves, we need to track who verified it
         field = 'verified_by';
         timestampField = 'verified_at';
       }
