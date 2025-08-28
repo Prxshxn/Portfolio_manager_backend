@@ -731,4 +731,32 @@ Gsec.getTransactionsByPortfolio = async (portfolioId) => {
   return rows;
 };
 
+// Get maturities by date (without deal status filtering as requested)
+Gsec.getMaturitiesByDate = async (date) => {
+  const query = `
+    SELECT 
+      g.isin,
+      g.counterparty,
+      COALESCE(
+        corp.short_name,
+        ind.short_name,
+        joint.short_name,
+        g.counterparty
+      ) as counterparty_name,
+      g.face_value,
+      g.maturity_date,
+      g.status as deal_status,
+      DATEDIFF(g.maturity_date, CURDATE()) as days_to_maturity
+    FROM gsec g
+    LEFT JOIN counterparty_master_corporate corp ON g.counterparty = corp.id
+    LEFT JOIN counterparty_master_individual ind ON g.counterparty = ind.id
+    LEFT JOIN counterparty_master_joint joint ON g.counterparty = joint.id
+    WHERE g.maturity_date <= ?
+    ORDER BY g.maturity_date ASC
+  `;
+  
+  const [rows] = await db.query(query, [date]);
+  return rows;
+};
+
 module.exports = Gsec;
