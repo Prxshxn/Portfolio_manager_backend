@@ -141,7 +141,7 @@ const buybackDealController = {
   getDealsByStatus: async (req, res) => {
     try {
       const { status } = req.params;
-      const validStatuses = ['Draft', 'Pending_Verification', 'Verified', 'Approved', 'Rejected', 'Settled'];
+      const validStatuses = ['Draft', 'Pending_Verification', 'Verified', 'Pending_Final_Approval', 'Approved', 'Rejected', 'Settled'];
       
       if (!validStatuses.includes(status)) {
         return res.status(400).json({
@@ -171,7 +171,7 @@ const buybackDealController = {
       const { status, action } = req.body;
       const userId = req.user?.id || 1; // TODO: Get from auth middleware
 
-      const validStatuses = ['Verified', 'Approved', 'Rejected'];
+      const validStatuses = ['Verified', 'Pending_Final_Approval', 'Approved', 'Rejected'];
       if (!validStatuses.includes(status)) {
         return res.status(400).json({
           success: false,
@@ -179,11 +179,23 @@ const buybackDealController = {
         });
       }
 
-      // Determine which field to update based on action
+      // Determine which field to update based on action and status
       let field = 'verified_by';
-      if (action === 'approve') field = 'approved_by';
+      let timestampField = 'verified_at';
+      
+      if (action === 'approve' || status === 'Approved') {
+        field = 'approved_by';
+        timestampField = 'approved_at';
+      } else if (action === 'verify' || status === 'Verified') {
+        field = 'verified_by';
+        timestampField = 'verified_at';
+      } else if (status === 'Pending_Final_Approval') {
+        // This is when back office verifier approves, we need to track who verified it
+        field = 'verified_by';
+        timestampField = 'verified_at';
+      }
 
-      const result = await BuybackDeal.updateStatus(id, status, userId, field);
+      const result = await BuybackDeal.updateStatus(id, status, userId, field, timestampField);
       
       if (result.affectedRows === 0) {
         return res.status(404).json({
@@ -194,7 +206,13 @@ const buybackDealController = {
 
       res.json({
         success: true,
-        message: `Deal ${action || 'updated'} successfully`
+        message: `Deal ${action || 'updated'} successfully`,
+        data: {
+          id,
+          status,
+          updated_by: userId,
+          field
+        }
       });
 
     } catch (error) {

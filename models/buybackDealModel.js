@@ -101,9 +101,9 @@ const BuybackDeal = {
   },
 
   // Update deal status
-  updateStatus: async (id, status, userId, field = 'verified_by') => {
+  updateStatus: async (id, status, userId, field = 'verified_by', timestampField = 'verified_at') => {
     const sql = `UPDATE buyback_deals 
-                 SET deal_status = ?, ${field} = ?, ${field.replace('_by', '_at')} = NOW()
+                 SET deal_status = ?, ${field} = ?, ${timestampField} = NOW()
                  WHERE id = ?`;
     const [result] = await db.query(sql, [status, userId, id]);
     return result;

@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS buyback_deals (
   coupon_date2 VARCHAR(5), -- MM-DD format
   
   -- Deal status and tracking
-  deal_status ENUM('Draft', 'Pending_Verification', 'Verified', 'Approved', 'Rejected', 'Settled') DEFAULT 'Draft',
+  deal_status ENUM('Draft', 'Pending_Verification', 'Verified', 'Pending_Final_Approval', 'Approved', 'Rejected', 'Settled') DEFAULT 'Draft',
   created_by INT,
   verified_by INT NULL,
   approved_by INT NULL,
