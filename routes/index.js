@@ -35,6 +35,7 @@ router.use('/isin-master', require('./isinMasterRoutes'));
 router.use('/limit-setup', require('./limitSetupRoutes'));
 router.use('/limit-status', require('./limitStatusRoutes'));
 router.use('/money-market-deals', require('./moneyMarketDeals'));
+router.use('/repo-deals', require('./repoRoutes'));
 router.use('/securities', require('./securities'));
 router.use('/user', require('./userRoutes'));
 // Mount voucher router under /money-market for correct nested voucher download route

@@ -20,7 +20,7 @@ async function getMaturitiesByDate(date) {
       ) as counterparty_name,
       mmd.principal_amount,
       mmd.maturity_date,
-      mmd.deal_status,
+      mmd.status as deal_status,
       DATEDIFF(mmd.maturity_date, CURDATE()) as days_to_maturity
     FROM money_market_deals mmd
     LEFT JOIN counterparty_master_corporate corp ON mmd.counterparty_id = corp.id
