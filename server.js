@@ -80,6 +80,8 @@ const moneyMarketDealsRoutes = require('./routes/moneyMarketDeals');
 const voucherRoutes = require('./routes/voucher');
 const paymentMasterRoutes = require('./routes/paymentMasterRoutes');
 const strategyMasterRoutes = require('./routes/strategyMasterRoutes');
+const maturityRoutes = require('./routes/maturity');
+const repoRoutes = require('./routes/repoRoutes');
 
 // Use routes
 app.use('/api/accounts', accountRoutes);
@@ -87,6 +89,8 @@ app.use('/api/portfolios', portfolioRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api', require('./routes/index'));
 app.use('/api/money-market-deals', moneyMarketDealsRoutes);
+app.use('/api/maturity', maturityRoutes);
+app.use('/api/repo-deals', repoRoutes);
 
 
 // Add a direct register endpoint that will definitely work
