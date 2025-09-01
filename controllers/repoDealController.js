@@ -4,11 +4,10 @@ const repoDealController = {
   // Create a new repo deal
   create: async (req, res) => {
     try {
-      const {
-        dealType,
-        counterparty,
-        counterpartyType,
-        tradeDate,
+             const {
+         dealType,
+         counterparty,
+         tradeDate,
         valueDate,
         maturityDate,
         principalAmount,
@@ -23,14 +22,14 @@ const repoDealController = {
         faceValue
       } = req.body;
 
-      // Validation
-      if (!dealType || !counterparty || !counterpartyType || !tradeDate || !valueDate || !maturityDate || 
-          !principalAmount || !rate || !tenor || !calculationDayBasis || !isin) {
-        return res.status(400).json({
-          success: false,
-          message: 'Missing required fields'
-        });
-      }
+             // Validation
+       if (!dealType || !counterparty || !tradeDate || !valueDate || !maturityDate || 
+           !principalAmount || !rate || !tenor || !calculationDayBasis || !isin) {
+         return res.status(400).json({
+           success: false,
+           message: 'Missing required fields'
+         });
+       }
 
       // Validate deal type
       if (!['Repo', 'Reverse Repo'].includes(dealType)) {
@@ -40,13 +39,7 @@ const repoDealController = {
         });
       }
 
-      // Validate counterparty type
-      if (!['corporate', 'individual', 'joint'].includes(counterpartyType)) {
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid counterparty type. Must be "corporate", "individual", or "joint"'
-        });
-      }
+      
 
       // Validate dates
       const trade = new Date(tradeDate);
@@ -83,12 +76,11 @@ const repoDealController = {
         });
       }
 
-      // Create deal data object
-      const dealData = {
-        dealType,
-        counterparty,
-        counterpartyType,
-        tradeDate,
+             // Create deal data object
+       const dealData = {
+         dealType,
+         counterparty,
+         tradeDate,
         valueDate,
         maturityDate,
         principalAmount: parseFloat(principalAmount),

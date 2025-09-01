@@ -36,10 +36,7 @@ const repoDealController = require('../controllers/repoDealController');
  *         counterparty:
  *           type: integer
  *           description: Counterparty ID from the respective counterparty table
- *         counterpartyType:
- *           type: string
- *           enum: [corporate, individual, joint]
- *           description: Type of counterparty table to reference
+
  *         tradeDate:
  *           type: string
  *           format: date

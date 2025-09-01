@@ -4,20 +4,19 @@ const RepoDeal = {
   // Create a new repo deal
   create: async (dealData) => {
     try {
-      const sql = `
-        INSERT INTO repo_deals (
-          deal_type, counterparty_id, counterparty_type, trade_date, value_date, maturity_date,
-          principal_amount, interest_amount, rate, maturity_amount, tenor,
-          calculation_day_basis, isin_number, issue_date, haircut, face_value,
-          status, created_by
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `;
-      
-      const values = [
-        dealData.dealType,
-        dealData.counterparty,
-        dealData.counterpartyType,
-        dealData.tradeDate,
+             const sql = `
+         INSERT INTO repo_deals (
+           deal_type, counterparty_id, trade_date, value_date, maturity_date,
+           principal_amount, interest_amount, rate, maturity_amount, tenor,
+           calculation_day_basis, isin_number, issue_date, haircut, face_value,
+           status, created_by
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       `;
+       
+       const values = [
+         dealData.dealType,
+         dealData.counterparty,
+         dealData.tradeDate,
         dealData.valueDate,
         dealData.maturityDate,
         dealData.principalAmount,
@@ -45,27 +44,27 @@ const RepoDeal = {
   // Get all repo deals with optional filters
   getAll: async (filters = {}) => {
     try {
-      let sql = `
-        SELECT 
-          rd.*,
-          COALESCE(
-            corp.short_name, 
-            ind.short_name, 
-            joint.short_name
-          ) as counterparty_name,
-          COALESCE(
-            corp.long_name, 
-            ind.long_name, 
-            joint.long_name
-          ) as counterparty_long_name,
-          u.username as created_by_name
-        FROM repo_deals rd
-        LEFT JOIN counterparty_master_corporate corp ON rd.counterparty_id = corp.id AND rd.counterparty_type = 'corporate'
-        LEFT JOIN counterparty_master_individual ind ON rd.counterparty_id = ind.id AND rd.counterparty_type = 'individual'
-        LEFT JOIN counterparty_master_joint joint ON rd.counterparty_id = joint.id AND rd.counterparty_type = 'joint'
-        LEFT JOIN users u ON rd.created_by = u.id
-        WHERE 1=1
-      `;
+             let sql = `
+         SELECT 
+           rd.*,
+           COALESCE(
+             corp.short_name, 
+             ind.short_name, 
+             joint.short_name
+           ) as counterparty_name,
+           COALESCE(
+             corp.long_name, 
+             ind.long_name, 
+             joint.long_name
+           ) as counterparty_long_name,
+           u.username as created_by_name
+         FROM repo_deals rd
+         LEFT JOIN counterparty_master_corporate corp ON rd.counterparty_id = corp.id
+         LEFT JOIN counterparty_master_individual ind ON rd.counterparty_id = ind.id
+         LEFT JOIN counterparty_master_joint joint ON rd.counterparty_id = joint.id
+         LEFT JOIN users u ON rd.created_by = u.id
+         WHERE 1=1
+       `;
       
       const values = [];
       
@@ -107,27 +106,27 @@ const RepoDeal = {
   // Get repo deal by ID
   getById: async (id) => {
     try {
-      const sql = `
-        SELECT 
-          rd.*,
-          COALESCE(
-            corp.short_name, 
-            ind.short_name, 
-            joint.short_name
-          ) as counterparty_name,
-          COALESCE(
-            corp.long_name, 
-            ind.long_name, 
-            joint.long_name
-          ) as counterparty_long_name,
-          u.username as created_by_name
-        FROM repo_deals rd
-        LEFT JOIN counterparty_master_corporate corp ON rd.counterparty_id = corp.id AND rd.counterparty_type = 'corporate'
-        LEFT JOIN counterparty_master_individual ind ON rd.counterparty_id = ind.id AND rd.counterparty_type = 'individual'
-        LEFT JOIN counterparty_master_joint joint ON rd.counterparty_id = joint.id AND rd.counterparty_type = 'joint'
-        LEFT JOIN users u ON rd.created_by = u.id
-        WHERE rd.id = ?
-      `;
+             const sql = `
+         SELECT 
+           rd.*,
+           COALESCE(
+             corp.short_name, 
+             ind.short_name, 
+             joint.short_name
+           ) as counterparty_name,
+           COALESCE(
+             corp.long_name, 
+             ind.long_name, 
+             joint.long_name
+           ) as counterparty_long_name,
+           u.username as created_by_name
+         FROM repo_deals rd
+         LEFT JOIN counterparty_master_corporate corp ON rd.counterparty_id = corp.id
+         LEFT JOIN counterparty_master_individual ind ON rd.counterparty_id = ind.id
+         LEFT JOIN counterparty_master_joint joint ON rd.counterparty_id = joint.id
+         LEFT JOIN users u ON rd.created_by = u.id
+         WHERE rd.id = ?
+       `;
       
       const [results] = await db.query(sql, [id]);
       return results[0] || null;
@@ -140,12 +139,12 @@ const RepoDeal = {
   // Update repo deal
   update: async (id, updateData) => {
     try {
-      const allowedFields = [
-        'deal_type', 'counterparty_id', 'counterparty_type', 'trade_date', 'value_date', 'maturity_date',
-        'principal_amount', 'interest_amount', 'rate', 'maturity_amount', 'tenor',
-        'calculation_day_basis', 'isin_number', 'issue_date', 'haircut', 'face_value',
-        'status'
-      ];
+             const allowedFields = [
+         'deal_type', 'counterparty_id', 'trade_date', 'value_date', 'maturity_date',
+         'principal_amount', 'interest_amount', 'rate', 'maturity_amount', 'tenor',
+         'calculation_day_basis', 'isin_number', 'issue_date', 'haircut', 'face_value',
+         'status'
+       ];
       
       const updates = [];
       const values = [];

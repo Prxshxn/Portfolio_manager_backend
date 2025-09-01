@@ -7,7 +7,7 @@ const createRepoDealsTable = async () => {
           id INT AUTO_INCREMENT PRIMARY KEY,
           deal_type ENUM('Repo', 'Reverse Repo') NOT NULL,
           counterparty_id INT NOT NULL,
-          counterparty_type ENUM('corporate', 'individual', 'joint') NOT NULL,
+          
           trade_date DATE NOT NULL,
           value_date DATE NOT NULL,
           maturity_date DATE NOT NULL,
@@ -26,7 +26,7 @@ const createRepoDealsTable = async () => {
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
           INDEX idx_deal_type (deal_type),
-          INDEX idx_counterparty (counterparty_id, counterparty_type),
+                     INDEX idx_counterparty (counterparty_id),
           INDEX idx_trade_date (trade_date),
           INDEX idx_maturity_date (maturity_date),
           INDEX idx_status (status),
@@ -40,10 +40,9 @@ const createRepoDealsTable = async () => {
     // Add some sample data for testing
     const sampleData = [
       {
-        deal_type: 'Repo',
-        counterparty_id: 1,
-        counterparty_type: 'corporate',
-        trade_date: '2025-01-15',
+                 deal_type: 'Repo',
+         counterparty_id: 1,
+         trade_date: '2025-01-15',
         value_date: '2025-01-16',
         maturity_date: '2025-02-15',
         principal_amount: 1000000.00,
@@ -60,10 +59,9 @@ const createRepoDealsTable = async () => {
         created_by: 1
       },
       {
-        deal_type: 'Reverse Repo',
-        counterparty_id: 1,
-        counterparty_type: 'corporate',
-        trade_date: '2025-01-20',
+                 deal_type: 'Reverse Repo',
+         counterparty_id: 1,
+         trade_date: '2025-01-20',
         value_date: '2025-01-21',
         maturity_date: '2025-03-20',
         principal_amount: 500000.00,
@@ -83,20 +81,20 @@ const createRepoDealsTable = async () => {
 
     for (const deal of sampleData) {
       const insertSql = `
-        INSERT INTO repo_deals (
-          deal_type, counterparty_id, counterparty_type, trade_date, value_date, maturity_date,
-          principal_amount, interest_amount, rate, maturity_amount, tenor,
-          calculation_day_basis, isin_number, issue_date, haircut, face_value,
-          status, created_by
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 INSERT INTO repo_deals (
+           deal_type, counterparty_id, trade_date, value_date, maturity_date,
+           principal_amount, interest_amount, rate, maturity_amount, tenor,
+           calculation_day_basis, isin_number, issue_date, haircut, face_value,
+           status, created_by
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `;
       
-      await db.query(insertSql, [
-        deal.deal_type, deal.counterparty_id, deal.counterparty_type, deal.trade_date, deal.value_date, deal.maturity_date,
-        deal.principal_amount, deal.interest_amount, deal.rate, deal.maturity_amount, deal.tenor,
-        deal.calculation_day_basis, deal.isin_number, deal.issue_date, deal.haircut, deal.face_value,
-        deal.status, deal.created_by
-      ]);
+             await db.query(insertSql, [
+         deal.deal_type, deal.counterparty_id, deal.trade_date, deal.value_date, deal.maturity_date,
+         deal.principal_amount, deal.interest_amount, deal.rate, deal.maturity_amount, deal.tenor,
+         deal.calculation_day_basis, deal.isin_number, deal.issue_date, deal.haircut, deal.face_value,
+         deal.status, deal.created_by
+       ]);
     }
     
     console.log('✅ Sample repo deals data inserted successfully');
