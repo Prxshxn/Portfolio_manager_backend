@@ -11,6 +11,7 @@ CREATE TABLE repo_deals (
   id INT AUTO_INCREMENT PRIMARY KEY,
   deal_type ENUM('Repo', 'Reverse Repo') NOT NULL,
   counterparty_id INT NOT NULL,
+  counterparty_type ENUM('corporate', 'individual', 'joint') NOT NULL,
   trade_date DATE NOT NULL,
   value_date DATE NOT NULL,
   maturity_date DATE NOT NULL,
@@ -28,10 +29,21 @@ CREATE TABLE repo_deals (
   created_by INT,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  FOREIGN KEY (counterparty_id) REFERENCES counterparties(id),
-  FOREIGN KEY (created_by) REFERENCES users(id)
+  INDEX idx_deal_type (deal_type),
+  INDEX idx_counterparty (counterparty_id, counterparty_type),
+  INDEX idx_trade_date (trade_date),
+  INDEX idx_maturity_date (maturity_date),
+  INDEX idx_status (status),
+  INDEX idx_isin (isin_number)
 );
 ```
+
+**Note**: This table works with the existing three counterparty tables:
+- `counterparty_master_corporate`
+- `counterparty_master_individual` 
+- `counterparty_master_joint`
+
+The `counterparty_type` field determines which table to join with when fetching counterparty details.
 
 ## API Endpoints
 
@@ -139,6 +151,7 @@ The migration script includes sample data for testing:
 {
   dealType: 'Repo' | 'Reverse Repo',
   counterparty: number, // counterparty ID
+  counterpartyType: 'corporate' | 'individual' | 'joint', // counterparty table type
   tradeDate: 'YYYY-MM-DD',
   valueDate: 'YYYY-MM-DD',
   maturityDate: 'YYYY-MM-DD',
