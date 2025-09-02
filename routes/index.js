@@ -10,6 +10,7 @@ const accountingRoutes = require('./accounting');
 const transactionsRoutes = require('./transactions');
 const strategyMasterRoutes = require('./strategyMasterRoutes');
 const reportMoneyMarketRoutes = require('./reportMoneyMarket');
+const markToMarketRoutes = require('./markToMarketRoutes');
 
 // Portfolio Master API
 router.use('/portfolio-master', portfolioMasterRoutes);
@@ -21,6 +22,7 @@ router.use('/money-market', moneyMarketEodRoutes);
 router.use('/accounting', accountingRoutes);
 router.use('/transactions', transactionsRoutes);
 router.use('/strategy-master', strategyMasterRoutes);
+router.use('/mark-to-market', markToMarketRoutes);
 
 // Additional routes for full API coverage
 router.use('/accounts', require('./accounts'));

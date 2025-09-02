@@ -69,6 +69,7 @@ const authRoutes = require('./routes/authRoutes');
 const transactionRoutes = require('./routes/transactions');
 const accountingRoutes = require('./routes/accounting');
 const isinMasterRoutes = require('./routes/isinMasterRoutes');
+const markToMarketRoutes = require('./routes/markToMarketRoutes'); // FIXED: Correct path
 
 // Mount the ISIN Master routes at /isin-master
 app.use('/isin-master', isinMasterRoutes);
@@ -91,7 +92,7 @@ app.use('/api', require('./routes/index'));
 app.use('/api/money-market-deals', moneyMarketDealsRoutes);
 app.use('/api/maturity', maturityRoutes);
 app.use('/api/repo-deals', repoRoutes);
-
+app.use('/api/mark-to-market', markToMarketRoutes); // FIXED: Mark-to-Market routes mounted
 
 // Add a direct register endpoint that will definitely work
 app.post('/api/auth/register', async (req, res) => {

@@ -88,7 +88,7 @@ exports.login = async (req, res) => {
     if (username === 'admin' && password === 'Admin@321') {
       console.log('Admin login successful');
       const adminPayload = { id: 0, username: 'admin', role: 'admin' };
-      const token = jwt.sign(adminPayload, JWT_SECRET, { expiresIn: '1d' });
+      const token = jwt.sign(adminPayload, JWT_SECRET, { expiresIn: '7d' });
       return res.json({
         success: true,
         user: adminPayload,
@@ -143,7 +143,7 @@ exports.login = async (req, res) => {
       username: user.username,
       role: effectiveRole
     };
-    const token = jwt.sign(userPayload, JWT_SECRET, { expiresIn: '1d' });
+    const token = jwt.sign(userPayload, JWT_SECRET, { expiresIn: '7d' });
     res.json({
       success: true,
       user: {

@@ -1,7 +1,7 @@
 const mysql = require('mysql2/promise');
 require('dotenv').config();
 
-// Create a connection pool
+// Create a connection pool with improved settings
 const pool = mysql.createPool({
   host: process.env.DB_HOST || 'localhost',
   port: process.env.DB_PORT || 3306,
@@ -10,7 +10,10 @@ const pool = mysql.createPool({
   database: process.env.DB_NAME || 'portfolio_manager',
   waitForConnections: true,
   connectionLimit: 10,
-  queueLimit: 0
+  queueLimit: 0,
+  acquireTimeout: 60000, // 60 seconds
+  timeout: 60000, // 60 seconds
+  idleTimeout: 300000 // 5 minutes
 });
 
 // Test the connection and create database/tables if needed
@@ -45,23 +48,56 @@ const initDatabase = async () => {
 // Initialize database
 initDatabase();
 
+// Retry function for database operations
+const retryQuery = async (operation, maxRetries = 3) => {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      console.log(`Database query attempt ${attempt} failed:`, error.message);
+      
+      if (attempt === maxRetries) {
+        throw error;
+      }
+      
+      // Wait before retrying (exponential backoff)
+      await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+    }
+  }
+};
+
 module.exports = {
   query: async (sql, params = []) => {
-    const connection = await pool.getConnection();
-    const result = await connection.query(sql, params);
-    connection.release();
-    return result;
+    return retryQuery(async () => {
+      const connection = await pool.getConnection();
+      try {
+        const result = await connection.query(sql, params);
+        return result;
+      } finally {
+        connection.release();
+      }
+    });
   },
   get: async (sql, params = []) => {
-    const connection = await pool.getConnection();
-    const result = await connection.query(sql, params);
-    connection.release();
-    return result[0];
+    return retryQuery(async () => {
+      const connection = await pool.getConnection();
+      try {
+        const result = await connection.query(sql, params);
+        return result[0];
+      } finally {
+        connection.release();
+      }
+    });
   },
   run: async (sql, params = []) => {
-    const connection = await pool.getConnection();
-    const result = await connection.query(sql, params);
-    connection.release();
-    return result;
+    return retryQuery(async () => {
+      const connection = await pool.getConnection();
+      try {
+        const result = await connection.query(sql, params);
+        return result;
+      } finally {
+        connection.release();
+      }
+    });
   }
 };
