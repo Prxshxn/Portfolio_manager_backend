@@ -99,6 +99,25 @@ class ExcelProcessingService {
   }
 
   /**
+   * Check if a row contains actual data (not just headers or empty rows)
+   */
+  isDataRow(row) {
+    if (!row || row.length === 0) return false;
+    
+    // Check if row has at least 3 non-empty cells
+    const nonEmptyCells = row.filter(cell => cell && cell.toString().trim() !== '');
+    if (nonEmptyCells.length < 3) return false;
+    
+    // Check if the series cell (index 2) looks like a series name (contains %)
+    const seriesCell = row[2];
+    if (seriesCell && typeof seriesCell === 'string' && seriesCell.includes('%')) {
+      return true;
+    }
+    
+    return false;
+  }
+
+  /**
    * Parse treasury bond data from Excel rows
    */
   parseTreasuryBondData(rows, headerRowIndex = 0) {
@@ -107,35 +126,18 @@ class ExcelProcessingService {
     
     console.log('📋 Excel headers found:', headers);
     
-    // Map column indices based on your table structure
+    // Map column indices based on your specific Excel file structure
+    // Based on the debug output, the columns are at specific indices
     const columnMap = {
-      series: this.findColumnIndex(headers, [
-        'treasury bond by series', 'series', 'bond series', 'instrument'
-      ]),
-      maturityPeriod: this.findColumnIndex(headers, [
-        'maturity period (years)', 'maturity period', 'years to maturity', 'period', 'tenor'
-      ]),
-      maturityDate: this.findColumnIndex(headers, [
-        'maturity date (dd/mm/yy)', 'maturity date', 'maturity', 'due date', 'expiry'
-      ]),
-      daysToMaturity: this.findColumnIndex(headers, [
-        'days to maturity', 'days', 'tenor days'
-      ]),
-      buyingPrice: this.findColumnIndex(headers, [
-        'average buying price', 'buying price', 'buy price', 'avg buying', 'buy'
-      ]),
-      buyingYield: this.findColumnIndex(headers, [
-        'yield', 'buying yield', 'buy yield', 'yield buying', 'buy yield'
-      ]),
-      sellingPrice: this.findColumnIndex(headers, [
-        'average selling price', 'selling price', 'sell price', 'avg selling', 'sell'
-      ]),
-      sellingYield: this.findColumnIndex(headers, [
-        'yield', 'selling yield', 'sell yield', 'yield selling', 'sell yield'
-      ]),
-      spread: this.findColumnIndex(headers, [
-        'buying & selling spread', 'spread', 'price spread', 'bid-ask spread'
-      ])
+      series: 2,        // "Treasury Bond By Series" - contains series like "22.50%2025A"
+      maturityPeriod: 3, // "Maturity Period (Years)" - contains years like 3, 8
+      maturityDate: 4,   // "Maturity Date (DD/MM/YY)" - contains Excel date numbers
+      daysToMaturity: 5, // "Days to Maturity" - contains days like -201, 72
+      buyingPrice: 6,    // "Average Buying Price" - contains prices like 100.44
+      buyingYield: 7,    // "Yield" (first yield column) - contains yields like 0.078
+      sellingPrice: 8,   // "Average Selling Price" - contains prices like 100.48
+      sellingYield: 9,   // "Yield" (second yield column) - contains yields like 0.075
+      spread: 10         // "Buying & Selling Spread" - contains spreads like 0.044
     };
     
     console.log('🔗 Column mapping:', columnMap);
@@ -144,8 +146,8 @@ class ExcelProcessingService {
     
     dataRows.forEach((row, index) => {
       try {
-        // Skip empty rows
-        if (row.every(cell => !cell || cell.toString().trim() === '')) {
+        // Skip empty rows or non-data rows
+        if (!this.isDataRow(row)) {
           return;
         }
         

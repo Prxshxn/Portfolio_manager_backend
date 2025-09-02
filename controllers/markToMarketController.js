@@ -23,7 +23,9 @@ class MarkToMarketController {
       console.log(`📁 Processing file: ${originalname} (${filename})`);
 
       // Process Excel file using excelProcessingService
-      const extractedData = await excelProcessingService.processExcelFile(filename);
+      // Pass the full path including uploads directory
+      const filePath = `uploads/${filename}`;
+      const extractedData = await excelProcessingService.processExcelFile(filePath);
       
       if (!extractedData || extractedData.length === 0) {
         return res.status(400).json({

@@ -6,9 +6,12 @@ const markToMarketController = require('../controllers/markToMarketController');
 const auth = require('../middlewares/auth');
 
 // Configure multer for Excel file uploads
+const uploadConfig = require('../config/upload');
+
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    cb(null, 'uploads/'); // Files will be stored in uploads/ directory
+    // Use environment-specific upload path
+    cb(null, uploadConfig.uploadPath);
   },
   filename: function (req, file, cb) {
     // Generate unique filename with timestamp
@@ -40,7 +43,7 @@ const upload = multer({
   storage: storage,
   fileFilter: fileFilter,
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB max file size
+    fileSize: uploadConfig.maxFileSize, // Environment-specific file size limit
     files: 1 // Only allow 1 file per request
   }
 });

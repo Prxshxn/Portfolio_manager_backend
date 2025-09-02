@@ -1,0 +1,26 @@
+// Upload configuration for different environments
+
+const config = {
+  development: {
+    storage: 'local',
+    uploadPath: './uploads/',
+    maxFileSize: 10 * 1024 * 1024, // 10MB
+    allowedTypes: ['.xls', '.xlsx']
+  },
+  
+  production: {
+    storage: 'cloud', // AWS S3, Google Cloud, etc.
+    uploadPath: process.env.CLOUD_UPLOAD_PATH,
+    maxFileSize: 50 * 1024 * 1024, // 50MB
+    allowedTypes: ['.xls', '.xlsx']
+  },
+  
+  test: {
+    storage: 'memory',
+    uploadPath: null,
+    maxFileSize: 5 * 1024 * 1024, // 5MB
+    allowedTypes: ['.xls', '.xlsx']
+  }
+};
+
+module.exports = config[process.env.NODE_ENV || 'development'];
