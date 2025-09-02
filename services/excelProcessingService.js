@@ -45,8 +45,12 @@ class ExcelProcessingService {
       
       console.log(`📊 Processing ${jsonData.length} rows from sheet: ${sheetName}`);
       
-      // Parse the data
-      const extractedData = this.parseTreasuryBondData(jsonData);
+      // Find the actual header row
+      const headerRowIndex = this.findHeaderRow(jsonData);
+      console.log(`📋 Using header row at index: ${headerRowIndex}`);
+      
+      // Parse the data starting from the header row
+      const extractedData = this.parseTreasuryBondData(jsonData, headerRowIndex);
       
       console.log(`✅ Successfully extracted ${extractedData.length} treasury bond records`);
       return extractedData;
@@ -78,24 +82,41 @@ class ExcelProcessingService {
   }
 
   /**
+   * Find the header row in Excel data
+   */
+  findHeaderRow(rows) {
+    for (let i = 0; i < Math.min(20, rows.length); i++) {
+      const row = rows[i];
+      if (row && row.length > 0) {
+        const headerText = row.map(h => h ? h.toString().toLowerCase() : '').join(' ');
+        if (headerText.includes('treasury') && headerText.includes('series')) {
+          console.log(`🎯 Found header row at index ${i}:`, row);
+          return i;
+        }
+      }
+    }
+    return 0; // Default to first row
+  }
+
+  /**
    * Parse treasury bond data from Excel rows
    */
-  parseTreasuryBondData(rows) {
-    const headers = rows[0].map(h => h ? h.toString().toLowerCase().trim() : '');
-    const dataRows = rows.slice(1);
+  parseTreasuryBondData(rows, headerRowIndex = 0) {
+    const headers = rows[headerRowIndex].map(h => h ? h.toString().toLowerCase().trim() : '');
+    const dataRows = rows.slice(headerRowIndex + 1);
     
     console.log('📋 Excel headers found:', headers);
     
     // Map column indices based on your table structure
     const columnMap = {
       series: this.findColumnIndex(headers, [
-        'series', 'treasury bond by series', 'bond series', 'instrument'
+        'treasury bond by series', 'series', 'bond series', 'instrument'
       ]),
       maturityPeriod: this.findColumnIndex(headers, [
-        'maturity period', 'years to maturity', 'period', 'tenor'
+        'maturity period (years)', 'maturity period', 'years to maturity', 'period', 'tenor'
       ]),
       maturityDate: this.findColumnIndex(headers, [
-        'maturity date', 'maturity', 'due date', 'expiry'
+        'maturity date (dd/mm/yy)', 'maturity date', 'maturity', 'due date', 'expiry'
       ]),
       daysToMaturity: this.findColumnIndex(headers, [
         'days to maturity', 'days', 'tenor days'
@@ -113,7 +134,7 @@ class ExcelProcessingService {
         'yield', 'selling yield', 'sell yield', 'yield selling', 'sell yield'
       ]),
       spread: this.findColumnIndex(headers, [
-        'spread', 'buying & selling spread', 'price spread', 'bid-ask spread'
+        'buying & selling spread', 'spread', 'price spread', 'bid-ask spread'
       ])
     };
     
@@ -171,7 +192,7 @@ class ExcelProcessingService {
   findColumnIndex(headers, keywords) {
     for (let i = 0; i < headers.length; i++) {
       const header = headers[i];
-      if (keywords.some(keyword => header.includes(keyword))) {
+      if (header && typeof header === 'string' && keywords.some(keyword => header.includes(keyword))) {
         console.log(`🔍 Found column "${keywords.find(k => header.includes(k))}" at index ${i}`);
         return i;
       }
