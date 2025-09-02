@@ -175,6 +175,32 @@ class MarkToMarketController {
     }
   }
 
+  /**
+   * Health check endpoint
+   * @param {Object} req - Express request object
+   * @param {Object} res - Express response object
+   */
+  async healthCheck(req, res) {
+    try {
+      const stats = await markToMarketService.getSummaryStatistics();
+      
+      res.json({
+        success: true,
+        message: 'Mark-to-Market service is healthy',
+        timestamp: new Date().toISOString(),
+        stats: stats
+      });
+
+    } catch (error) {
+      console.error('❌ Health check failed:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Mark-to-Market service health check failed',
+        error: error.message
+      });
+    }
+  }
+
 }
 
 module.exports = new MarkToMarketController();
