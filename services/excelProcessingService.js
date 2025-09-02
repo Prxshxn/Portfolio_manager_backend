@@ -157,9 +157,9 @@ class ExcelProcessingService {
           maturityDate: this.parseDate(row[columnMap.maturityDate]),
           daysToMaturity: this.parseNumber(row[columnMap.daysToMaturity]),
           buyingPrice: this.parseNumber(row[columnMap.buyingPrice]),
-          buyingYield: this.parseNumber(row[columnMap.buyingYield]),
+          buyingYield: this.parseYield(row[columnMap.buyingYield]), // Convert to percentage
           sellingPrice: this.parseNumber(row[columnMap.sellingPrice]),
-          sellingYield: this.parseNumber(row[columnMap.sellingYield]),
+          sellingYield: this.parseYield(row[columnMap.sellingYield]), // Convert to percentage
           spread: this.parseNumber(row[columnMap.spread])
         };
         
@@ -242,6 +242,38 @@ class ExcelProcessingService {
       
     } catch (error) {
       console.warn('Error parsing number:', value, error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Parse yield values and convert from decimal to percentage
+   */
+  parseYield(value) {
+    if (!value) return null;
+    
+    try {
+      let num;
+      
+      // Handle percentage values (already in percentage format)
+      if (typeof value === 'string' && value.includes('%')) {
+        const cleaned = value.replace(/[^\d.-]/g, '');
+        num = parseFloat(cleaned);
+      }
+      // Handle decimal values (convert to percentage)
+      else if (typeof value === 'number') {
+        num = value * 100; // Convert decimal to percentage
+      }
+      // Handle string numbers
+      else if (typeof value === 'string') {
+        const cleaned = value.replace(/[^\d.-]/g, '');
+        num = parseFloat(cleaned) * 100; // Convert decimal to percentage
+      }
+      
+      return isNaN(num) ? null : num;
+      
+    } catch (error) {
+      console.warn('Error parsing yield:', value, error.message);
       return null;
     }
   }
