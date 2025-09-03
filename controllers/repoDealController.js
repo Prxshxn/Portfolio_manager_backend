@@ -19,7 +19,9 @@ const repoDealController = {
         isin,
         issueDate,
         haircut,
-        faceValue
+        faceValue,
+        faceValueAdjustment,
+        faceValueAsPerCounterparty
       } = req.body;
 
              // Validation
@@ -93,6 +95,8 @@ const repoDealController = {
         issueDate,
         haircut: parseFloat(haircut) || 0,
         faceValue: parseFloat(faceValue) || null,
+        faceValueAdjustment: parseFloat(faceValueAdjustment) || 0,
+        faceValueAsPerCounterparty: parseFloat(faceValueAsPerCounterparty) || null,
         createdBy: req.user.id // From auth middleware
       };
 
