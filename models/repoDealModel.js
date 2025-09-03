@@ -11,7 +11,7 @@ const RepoDeal = {
            calculation_day_basis, isin_number, issue_date, haircut, face_value,
            face_value_adjustment, face_value_as_per_counterparty,
            status, created_by
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        `;
        
        const values = [

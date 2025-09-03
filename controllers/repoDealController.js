@@ -97,7 +97,7 @@ const repoDealController = {
         faceValue: parseFloat(faceValue) || null,
         faceValueAdjustment: parseFloat(faceValueAdjustment) || 0,
         faceValueAsPerCounterparty: parseFloat(faceValueAsPerCounterparty) || null,
-        createdBy: req.user.id // From auth middleware
+        createdBy: req.user?.id || 1 // From auth middleware, fallback to user ID 1
       };
 
       // Create the repo deal
