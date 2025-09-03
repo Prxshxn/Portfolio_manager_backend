@@ -183,9 +183,41 @@ router.post('/upload', auth, upload.single('excelFile'), markToMarketController.
 
 /**
  * @swagger
- * /api/mark-to-market/data:
+ * /api/mark-to-market:
  *   get:
  *     summary: Get all mark-to-market data
+ *     tags: [Mark-to-Market]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Mark-to-market data retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/MarkToMarketRecord'
+ *                 count:
+ *                   type: integer
+ *       401:
+ *         description: Unauthorized - Authentication required
+ *       500:
+ *         description: Internal server error
+ */
+// Base route for getting all mark-to-market data
+router.get('/', auth, markToMarketController.getAllMarkToMarketData);
+
+/**
+ * @swagger
+ * /api/mark-to-market/data:
+ *   get:
+ *     summary: Get all mark-to-market data (alternative endpoint)
  *     tags: [Mark-to-Market]
  *     security:
  *       - bearerAuth: []
