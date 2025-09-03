@@ -315,7 +315,13 @@ class MarkToMarketService {
   // Utility functions
   formatDate(date) {
     if (!date) return '';
-    if (typeof date === 'string') return date;
+    if (typeof date === 'string') {
+      // Handle ISO date strings like "2015-02-28T18:30:00.000Z"
+      if (date.includes('T')) {
+        return date.split('T')[0];
+      }
+      return date;
+    }
     return date.toISOString().split('T')[0];
   }
 
@@ -324,8 +330,9 @@ class MarkToMarketService {
     const d = new Date(date);
     if (isNaN(d.getTime())) return '';
     
-    const month = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
+    // Use UTC to avoid timezone issues
+    const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(d.getUTCDate()).padStart(2, '0');
     return `${month}-${day}`;
   }
 }
