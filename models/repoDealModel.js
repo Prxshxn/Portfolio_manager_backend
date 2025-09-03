@@ -9,8 +9,9 @@ const RepoDeal = {
            deal_type, counterparty_id, trade_date, value_date, maturity_date,
            principal_amount, interest_amount, rate, maturity_amount, tenor,
            calculation_day_basis, isin_number, issue_date, haircut, face_value,
+           face_value_adjustment, face_value_as_per_counterparty,
            status, created_by
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        `;
        
        const values = [
@@ -29,6 +30,8 @@ const RepoDeal = {
         dealData.issueDate,
         dealData.haircut || 0,
         dealData.faceValue || null,
+        dealData.faceValueAdjustment || 0,
+        dealData.faceValueAsPerCounterparty || null,
         dealData.status || 'Pending',
         dealData.createdBy
       ];
@@ -143,6 +146,7 @@ const RepoDeal = {
          'deal_type', 'counterparty_id', 'trade_date', 'value_date', 'maturity_date',
          'principal_amount', 'interest_amount', 'rate', 'maturity_amount', 'tenor',
          'calculation_day_basis', 'isin_number', 'issue_date', 'haircut', 'face_value',
+         'face_value_adjustment', 'face_value_as_per_counterparty',
          'status'
        ];
       
