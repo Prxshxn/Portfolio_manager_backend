@@ -172,41 +172,86 @@ const Gsec = {
     const amount = parseFloat(data.faceValue || 0);
     const currency = data.currency || 'LKR';
     
+    // Add validation for counterparty ID
+    if (!counterpartyId || counterpartyId === null || counterpartyId === undefined || counterpartyId === '') {
+      console.error('Invalid counterparty ID: counterpartyId is null, undefined, or empty');
+      return {
+        allowed: false,
+        message: 'Counterparty ID is required and cannot be empty'
+      };
+    }
+    
+    console.log(`Checking limits for counterparty ID: ${counterpartyId}, amount: ${amount}, currency: ${currency}`);
+    
     try {
+      // Extract the original ID and type from the prefixed ID (i3 -> 3, individual)
+      let originalId, counterpartyType;
+      if (counterpartyId.startsWith('i')) {
+        originalId = counterpartyId.substring(1);
+        counterpartyType = 'individual';
+      } else if (counterpartyId.startsWith('j')) {
+        originalId = counterpartyId.substring(1);
+        counterpartyType = 'joint';
+      } else if (counterpartyId.startsWith('c')) {
+        originalId = counterpartyId.substring(1);
+        counterpartyType = 'corporate';
+      } else {
+        // Fallback for backward compatibility - try to find in any table
+        originalId = counterpartyId;
+        counterpartyType = null;
+      }
+      
+      console.log(`Extracted original ID: ${originalId}, type: ${counterpartyType}`);
+      
       // Check if it's an individual counterparty
       const [individualRows] = await db.query(
         'SELECT id, "individual" as type FROM counterparty_master_individual WHERE id = ?',
-        [counterpartyId]
+        [originalId]
       );
       
-      let counterpartyType;
       if (individualRows && individualRows.length > 0) {
         counterpartyType = 'individual';
-        return await Gsec.checkLimitsAsync(counterpartyId, counterpartyType, amount, currency);
+        console.log(`Found counterparty as individual: ${originalId}`);
+        return await Gsec.checkLimitsAsync(originalId, counterpartyType, amount, currency);
       } else {
         // Check if it's a joint counterparty
         const [jointRows] = await db.query(
           'SELECT id, "joint" as type FROM counterparty_master_joint WHERE id = ?',
-          [counterpartyId]
+          [originalId]
         );
         
         if (jointRows && jointRows.length > 0) {
           counterpartyType = 'joint';
-          return await Gsec.checkLimitsAsync(counterpartyId, counterpartyType, amount, currency);
+          console.log(`Found counterparty as joint: ${originalId}`);
+          return await Gsec.checkLimitsAsync(originalId, counterpartyType, amount, currency);
         } else {
           // Check if it's a corporate counterparty
           const [corporateRows] = await db.query(
             'SELECT id, "corporate" as type FROM counterparty_master_corporate WHERE id = ?',
-            [counterpartyId]
+            [originalId]
           );
           
           if (corporateRows && corporateRows.length > 0) {
             counterpartyType = 'corporate';
-            return await Gsec.checkLimitsAsync(counterpartyId, counterpartyType, amount, currency);
+            console.log(`Found counterparty as corporate: ${originalId}`);
+            return await Gsec.checkLimitsAsync(originalId, counterpartyType, amount, currency);
           } else {
+            // Log detailed error information
+            console.error(`Counterparty ID ${counterpartyId} (original: ${originalId}) not found in any counterparty table`);
+            
+            // Check what counterparties exist for debugging
+            const [allIndividual] = await db.query('SELECT id, short_name FROM counterparty_master_individual LIMIT 5');
+            const [allJoint] = await db.query('SELECT id, short_name FROM counterparty_master_joint LIMIT 5');
+            const [allCorporate] = await db.query('SELECT id, short_name FROM counterparty_master_corporate LIMIT 5');
+            
+            console.log('Available counterparties (first 5 of each type):');
+            console.log('Individual:', allIndividual);
+            console.log('Joint:', allJoint);
+            console.log('Corporate:', allCorporate);
+            
             return {
               allowed: false,
-              message: 'Invalid counterparty ID'
+              message: `Invalid counterparty ID: ${counterpartyId}. Please select a valid counterparty from the dropdown.`
             };
           }
         }
