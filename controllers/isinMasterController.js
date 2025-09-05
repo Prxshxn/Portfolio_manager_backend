@@ -212,6 +212,15 @@ module.exports = {
    */
   saveGsec: async (req, res) => {
     try {
+      // Validate required fields before processing
+      if (!req.body.counterparty) {
+        return res.status(400).json({
+          success: false,
+          error: 'Counterparty is required',
+          message: 'Please select a counterparty from the dropdown'
+        });
+      }
+
       // Set default status to 'pending' for authorization workflow
       const formData = {
         ...req.body,
@@ -220,6 +229,13 @@ module.exports = {
         created_by: req.body.userId || null,
         created_at: new Date()
       };
+      
+      console.log('Saving GSec transaction with data:', {
+        counterparty: formData.counterparty,
+        faceValue: formData.faceValue,
+        currency: formData.currency,
+        transaction_type: formData.transaction_type
+      });
       
       const result = await Gsec.create(formData);
 
