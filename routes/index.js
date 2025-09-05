@@ -10,6 +10,7 @@ const accountingRoutes = require('./accounting');
 const transactionsRoutes = require('./transactions');
 const strategyMasterRoutes = require('./strategyMasterRoutes');
 const reportMoneyMarketRoutes = require('./reportMoneyMarket');
+const reportMarkToMarketRoutes = require('./reportMarkToMarket');
 const markToMarketRoutes = require('./markToMarketRoutes');
 
 // Portfolio Master API
@@ -47,6 +48,9 @@ router.use('/transaction-types', require('./transactionTypes'));
 
 // Mount Money Market report API
 router.use('/reports/money-market', reportMoneyMarketRoutes);
+
+// Mount Mark to Market report API
+router.use('/reports/mark-to-market', reportMarkToMarketRoutes);
 
 // Mount GSec workflow API
 router.use('/gsec', require('./gsecRoutes'));
