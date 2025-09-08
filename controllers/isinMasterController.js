@@ -252,6 +252,9 @@ module.exports = {
       };
       
       console.log('=== SAVING GSEC TRANSACTION ===');
+      console.log('Frontend Dirty Price:', req.body.dirtyPrice);
+      console.log('Frontend Clean Price:', req.body.cleanPrice);
+      console.log('Frontend Accrued Interest:', req.body.accruedInterest);
       
       // Create GSec transaction with connection
       const result = await Gsec.createWithConnection(formData, connection);

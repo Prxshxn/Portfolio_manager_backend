@@ -37,14 +37,24 @@ const Gsec = {
         data.cleanPrice = cleanPrice;
       }
       
-      // Calculate dirty price as clean price + accrued interest
-      if (data.cleanPrice && data.accruedInterest) {
+      // Preserve the exact dirty price from frontend (don't recalculate)
+      // The frontend has already calculated the correct dirty price
+      console.log('=== BACKEND DIRTY PRICE DEBUG ===');
+      console.log('Frontend Dirty Price:', data.dirtyPrice);
+      console.log('Frontend Clean Price:', data.cleanPrice);
+      console.log('Frontend Accrued Interest:', data.accruedInterest);
+      
+      // Only recalculate if dirty price is missing (fallback)
+      if (!data.dirtyPrice && data.cleanPrice && data.accruedInterest) {
         data.dirtyPrice = parseFloat(data.cleanPrice) + parseFloat(data.accruedInterest);
+        console.log('Recalculated Dirty Price (fallback):', data.dirtyPrice);
       }
       
-      // Debug: Log dirty price calculation (simplified)
-      console.log('=== BACKEND DIRTY PRICE DEBUG ===');
-      console.log('Dirty Price:', data.dirtyPrice);
+      // Ensure dirty price is truncated to 4 decimal places (same as frontend)
+      if (data.dirtyPrice) {
+        data.dirtyPrice = Math.floor(parseFloat(data.dirtyPrice) * 10000) / 10000;
+        console.log('Final Dirty Price (truncated):', data.dirtyPrice);
+      }
       console.log('================================');
       
       const currentDate = new Date();
