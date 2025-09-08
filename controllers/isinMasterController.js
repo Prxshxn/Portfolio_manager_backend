@@ -213,11 +213,11 @@ module.exports = {
    */
   saveGsec: async (req, res) => {
     const controllerStartTime = Date.now();
-    console.log('=== SAVING GSEC CONTROLLER (START) ===');
+    console.log('=== SAVING GSEC CONTROLLER ===');
     
     // Set a timeout for the entire operation
     const timeout = setTimeout(() => {
-      console.log('=== CONTROLLER TIMEOUT - 10 seconds ===');
+      console.log('=== CONTROLLER TIMEOUT - 50 seconds ===');
       if (!res.headersSent) {
         res.status(408).json({
           success: false,
@@ -225,7 +225,7 @@ module.exports = {
           message: 'The server is taking too long to process your request. Please try again.'
         });
       }
-    }, 15000); // 15 second timeout
+    }, 50000); // 50 second timeout
     
     let connection = null;
     try {
@@ -252,9 +252,6 @@ module.exports = {
       };
       
       console.log('=== SAVING GSEC TRANSACTION ===');
-      console.log('Frontend Dirty Price:', req.body.dirtyPrice);
-      console.log('Frontend Clean Price:', req.body.cleanPrice);
-      console.log('Frontend Accrued Interest:', req.body.accruedInterest);
       
       // Create GSec transaction with connection
       const result = await Gsec.createWithConnection(formData, connection);
@@ -278,7 +275,7 @@ module.exports = {
 
       // Commit transaction
       await connection.commit();
-      console.log(`=== SAVING GSEC CONTROLLER (END) - ${Date.now() - controllerStartTime}ms ===`);
+      console.log('=== SAVING GSEC CONTROLLER (END) ===');
       
       // Clear the timeout
       clearTimeout(timeout);

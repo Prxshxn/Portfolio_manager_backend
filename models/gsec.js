@@ -39,23 +39,16 @@ const Gsec = {
       
       // Preserve the exact dirty price from frontend (don't recalculate)
       // The frontend has already calculated the correct dirty price
-      console.log('=== BACKEND DIRTY PRICE DEBUG ===');
-      console.log('Frontend Dirty Price:', data.dirtyPrice);
-      console.log('Frontend Clean Price:', data.cleanPrice);
-      console.log('Frontend Accrued Interest:', data.accruedInterest);
       
       // Only recalculate if dirty price is missing (fallback)
       if (!data.dirtyPrice && data.cleanPrice && data.accruedInterest) {
         data.dirtyPrice = parseFloat(data.cleanPrice) + parseFloat(data.accruedInterest);
-        console.log('Recalculated Dirty Price (fallback):', data.dirtyPrice);
       }
       
       // Ensure dirty price is truncated to 4 decimal places (same as frontend)
       if (data.dirtyPrice) {
         data.dirtyPrice = Math.floor(parseFloat(data.dirtyPrice) * 10000) / 10000;
-        console.log('Final Dirty Price (truncated):', data.dirtyPrice);
       }
-      console.log('================================');
       
       const currentDate = new Date();
       
@@ -173,7 +166,6 @@ const Gsec = {
   
   // Promise-based version of checkGsecLimit
   checkGsecLimitAsync: async (data, connection = null) => {
-    const startTime = Date.now();
     console.log('=== CHECKING GSEC LIMITS (START) ===');
     
     // First, determine the counterparty type
@@ -227,7 +219,7 @@ const Gsec = {
         counterpartyType = counterpartyRows[0].type;
         console.log(`Found counterparty as ${counterpartyType}: ${originalId}`);
         const result = await Gsec.checkLimitsAsync(originalId, counterpartyType, amount, currency, connection);
-        console.log(`=== CHECKING GSEC LIMITS (END) - ${Date.now() - startTime}ms ===`);
+        console.log('=== CHECKING GSEC LIMITS (END) ===');
         return result;
       } else {
             // Log detailed error information
@@ -256,7 +248,6 @@ const Gsec = {
   
   // Promise-based helper function for checking limits
   checkLimitsAsync: async (counterpartyId, counterpartyType, amount, currency, connection = null) => {
-    const limitStartTime = Date.now();
     console.log('=== CHECKING LIMITS (START) ===');
     
     try {
@@ -264,7 +255,7 @@ const Gsec = {
       
       // Quick check: If amount is 0 or negative, allow immediately
       if (amount <= 0) {
-        console.log(`=== CHECKING LIMITS (END) - ${Date.now() - limitStartTime}ms - ZERO AMOUNT ===`);
+        console.log('=== CHECKING LIMITS (END) - ZERO AMOUNT ===');
         return {
           allowed: true,
           message: 'Zero or negative amount, allowing transaction.'
@@ -283,7 +274,7 @@ const Gsec = {
       
       if (!limitRows || limitRows.length === 0) {
         // Allow transaction if no limits are configured
-        console.log(`=== CHECKING LIMITS (END) - ${Date.now() - limitStartTime}ms - NO LIMITS ===`);
+        console.log('=== CHECKING LIMITS (END) - NO LIMITS ===');
         return {
           allowed: true,
           message: 'No limits configured for this counterparty and currency, allowing transaction.'
@@ -311,7 +302,7 @@ const Gsec = {
       const newGsecExposure = currentGsecExposure + amount;
       
       if (gsecLimit > 0 && newGsecExposure > gsecLimit) {
-        console.log(`=== CHECKING LIMITS (END) - ${Date.now() - limitStartTime}ms - LIMIT EXCEEDED ===`);
+        console.log('=== CHECKING LIMITS (END) - LIMIT EXCEEDED ===');
         return {
           allowed: false,
           message: `Transaction exceeds GSec limit (${newGsecExposure} > ${gsecLimit})`,
@@ -324,7 +315,7 @@ const Gsec = {
       // For overall limit, we'd need to query all product tables
       // This is simplified for now
       
-      console.log(`=== CHECKING LIMITS (END) - ${Date.now() - limitStartTime}ms - ALLOWED ===`);
+      console.log('=== CHECKING LIMITS (END) - ALLOWED ===');
       return { allowed: true };
     } catch (error) {
       console.error('Error in checkLimitsAsync:', error);
