@@ -40,6 +40,14 @@ const Gsec = {
         data.dirtyPrice = parseFloat(data.cleanPrice) + parseFloat(data.accruedInterest);
       }
       
+      // Debug: Log dirty price calculation
+      console.log('=== BACKEND DIRTY PRICE DEBUG ===');
+      console.log('Received dirtyPrice:', data.dirtyPrice);
+      console.log('Received cleanPrice:', data.cleanPrice);
+      console.log('Received accruedInterest:', data.accruedInterest);
+      console.log('Calculated dirtyPrice:', data.dirtyPrice);
+      console.log('================================');
+      
       const currentDate = new Date();
       
       // Calculate per_day_accrual: couponInterest / numberOfDaysForCouponPeriod
@@ -451,6 +459,23 @@ const Gsec = {
           counterparty_name: 'Unknown'
         };
       });
+      
+      // Debug: Log dirty price data being returned
+      console.log('=== GETRECENT DIRTY PRICE DEBUG ===');
+      if (formattedResults.length > 0) {
+        formattedResults.forEach((tx, index) => {
+          console.log(`Transaction ${index + 1}:`, {
+            id: tx.id,
+            isin: tx.isin,
+            dirty_price: tx.dirty_price,
+            clean_price: tx.clean_price,
+            accrued_interest: tx.accrued_interest,
+            face_value: tx.face_value
+          });
+        });
+      }
+      console.log('==================================');
+      
       return formattedResults;
     } catch (error) {
       console.error('Error in getRecent:', error);
