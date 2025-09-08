@@ -217,7 +217,7 @@ module.exports = {
     
     // Set a timeout for the entire operation
     const timeout = setTimeout(() => {
-      console.log('=== CONTROLLER TIMEOUT - 15 seconds ===');
+      console.log('=== CONTROLLER TIMEOUT - 10 seconds ===');
       if (!res.headersSent) {
         res.status(408).json({
           success: false,
@@ -257,25 +257,16 @@ module.exports = {
       };
       
       console.log('=== SAVING GSEC TRANSACTION ===');
-      console.log('Counterparty:', formData.counterparty);
-      console.log('Face Value:', formData.faceValue);
-      console.log('Currency:', formData.currency);
-      console.log('Transaction Type:', formData.transaction_type);
-      console.log('Dirty Price:', formData.dirtyPrice);
-      console.log('Clean Price:', formData.cleanPrice);
-      console.log('Accrued Interest:', formData.accruedInterest);
+      console.log('Counterparty:', formData.counterparty, 'Amount:', formData.faceValue);
       console.log('===============================');
       
       // Create GSec transaction with connection
       const result = await Gsec.createWithConnection(formData, connection);
 
-      // --- SELL DEALS LOGIC WITH DEBUG LOGGING ---
+      // --- SELL DEALS LOGIC (OPTIMIZED) ---
       const { sell_deals } = req.body;
-      console.log('Received sell_deals:', sell_deals);
-      console.log('formData.transaction_type:', formData.transaction_type);
       if (Array.isArray(sell_deals) && String(formData.transaction_type).toLowerCase() === 'sell') {
         for (const sell of sell_deals) {
-          console.log('Processing sell deal:', sell);
           const [buyDeals] = await connection.query('SELECT * FROM gsec WHERE deal_number = ? AND transaction_type = "Buy"', [sell.buy_deal_number]);
           if (buyDeals && buyDeals.length > 0) {
             const buyDeal = buyDeals[0];
@@ -283,10 +274,7 @@ module.exports = {
             const sold = parseFloat(sell.amountToSell || 0);
             let newRemaining = original - sold;
             newRemaining = Math.trunc(newRemaining * 10000) / 10000;
-            console.log(`Updating buy deal ${buyDeal.deal_number}: ${original} - ${sold} = ${newRemaining}`);
             await connection.query('UPDATE gsec SET remaining_face_value = ? WHERE id = ?', [newRemaining.toFixed(4), buyDeal.id]);
-          } else {
-            console.log('No buy deal found for:', sell.buy_deal_number);
           }
         }
       }

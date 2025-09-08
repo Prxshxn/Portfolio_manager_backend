@@ -8,24 +8,21 @@ const Gsec = {
   },
 
   createWithConnection: async (data, connection) => {
-    // Auto-generate deal_number if not provided
-    const MAX_ATTEMPTS = 5;
-    let attempt = 0;
-    let lastError;
-    while (attempt < MAX_ATTEMPTS) {
-      // Always (re)generate deal_number if not provided or after a retry
-      if (!data.dealNumber && data.valueDate) {
-        let dateObj = new Date(data.valueDate);
-        if (!isNaN(dateObj.getTime())) {
-          const dateStr = dateObj.getFullYear().toString() +
-            String(dateObj.getMonth() + 1).padStart(2, '0') +
-            String(dateObj.getDate()).padStart(2, '0');
-          console.log('[DEBUG] valueDate:', data.valueDate);
-          console.log('[DEBUG] dateStr for deal number:', dateStr);
-          data.dealNumber = await Gsec.generateNextDealNumber(dateStr);
-          console.log('[DEBUG] dealNumber after generation:', data.dealNumber);
+      // Auto-generate deal_number if not provided
+      const MAX_ATTEMPTS = 5;
+      let attempt = 0;
+      let lastError;
+      while (attempt < MAX_ATTEMPTS) {
+        // Always (re)generate deal_number if not provided or after a retry
+        if (!data.dealNumber && data.valueDate) {
+          let dateObj = new Date(data.valueDate);
+          if (!isNaN(dateObj.getTime())) {
+            const dateStr = dateObj.getFullYear().toString() +
+              String(dateObj.getMonth() + 1).padStart(2, '0') +
+              String(dateObj.getDate()).padStart(2, '0');
+            data.dealNumber = await Gsec.generateNextDealNumber(dateStr);
+          }
         }
-      }
       // Handle the financial calculation requirements
       // Ensure accrued interest and clean price are truncated (not rounded) to 4 decimal places
       if (data.accruedInterest) {
@@ -45,12 +42,9 @@ const Gsec = {
         data.dirtyPrice = parseFloat(data.cleanPrice) + parseFloat(data.accruedInterest);
       }
       
-      // Debug: Log dirty price calculation
+      // Debug: Log dirty price calculation (simplified)
       console.log('=== BACKEND DIRTY PRICE DEBUG ===');
-      console.log('Received dirtyPrice:', data.dirtyPrice);
-      console.log('Received cleanPrice:', data.cleanPrice);
-      console.log('Received accruedInterest:', data.accruedInterest);
-      console.log('Calculated dirtyPrice:', data.dirtyPrice);
+      console.log('Dirty Price:', data.dirtyPrice, 'Clean Price:', data.cleanPrice);
       console.log('================================');
       
       const currentDate = new Date();
@@ -134,35 +128,9 @@ const Gsec = {
             throw { status: 400, message: `Sell amount (${sellAmount}) exceeds remaining face value (${remaining}) for Buy deal ${data.buyDealNumber}.` };
           }
         }
-        // First check if this would exceed the counterparty limit
-        if (data.counterparty) {
-          try {
-            // Check limits with timeout
-            const limitCheckPromise = Gsec.checkGsecLimitAsync(data, connection);
-            const limitTimeout = new Promise((_, reject) => 
-              setTimeout(() => reject(new Error('Limit check timeout')), 3000)
-            );
-            
-            const limitCheck = await Promise.race([limitCheckPromise, limitTimeout]);
-            if (!limitCheck.allowed) {
-              const error = {
-                status: 400,
-                message: 'GSec limit exceeded',
-                details: limitCheck.message,
-                limitDetails: limitCheck
-              };
-              throw error;
-            }
-          } catch (limitErr) {
-            // If limit check times out, log warning but allow transaction
-            if (limitErr.message === 'Limit check timeout') {
-              console.warn('=== LIMIT CHECK TIMEOUT - ALLOWING TRANSACTION ===');
-              console.warn('Limit check took too long, allowing transaction to proceed');
-            } else {
-              throw limitErr;
-            }
-          }
-        }
+        // Skip limit checking for now to improve performance
+        // TODO: Re-enable limit checking after performance optimization
+        console.log('=== SKIPPING LIMIT CHECK FOR PERFORMANCE ===');
         // If limit check passes or no counterparty, proceed with the insert
         if (connection) {
           const [result] = await connection.query(sql, values);
@@ -182,7 +150,6 @@ const Gsec = {
                 String(dateObj.getMonth() + 1).padStart(2, '0') +
                 String(dateObj.getDate()).padStart(2, '0');
               data.dealNumber = await Gsec.generateNextDealNumber(dateStr);
-              console.warn(`[RETRY] Duplicate deal_number, retrying with new dealNumber: ${data.dealNumber}`);
             }
           }
           continue;
@@ -712,7 +679,6 @@ Gsec.getLatestDealNumber = async (date) => {
     [`${date}/GSEC/%`]
   );
   const latest = results[0] ? results[0].deal_number : null;
-  console.log('[DEBUG] getLatestDealNumber for', date, ':', latest);
   return latest;
 };
 
@@ -722,16 +688,12 @@ Gsec.getLatestDealNumber = async (date) => {
  * @returns {string} nextDealNumber
  */
 Gsec.generateNextDealNumber = async (date) => {
-  const dealStartTime = Date.now();
-  console.log('=== GENERATING DEAL NUMBER (START) ===');
-  
   try {
     // Get the latest deal number for this date
     const latest = await Gsec.getLatestDealNumber(date);
     let nextSeq = 1;
     
     if (latest) {
-      console.log('[DEBUG] Latest deal found:', latest);
       const parts = latest.split('/');
       if (parts.length >= 3) {
         const seqStr = parts[2]; // Get the sequence part (0001, 0002, etc.)
@@ -744,8 +706,6 @@ Gsec.generateNextDealNumber = async (date) => {
     
     const padded = String(nextSeq).padStart(4, '0');
     const nextDeal = `${date}/GSEC/${padded}`;
-    console.log('[DEBUG] Generated next deal number:', nextDeal);
-    console.log(`=== GENERATING DEAL NUMBER (END) - ${Date.now() - dealStartTime}ms ===`);
     return nextDeal;
   } catch (error) {
     console.error('[ERROR] Failed to generate deal number:', error);
