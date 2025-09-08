@@ -1,6 +1,7 @@
 const IsinMaster = require('../models/isinMasterModel');
 const IsinCouponSchedule = require('../models/isinCouponSchedule');
 const db = require('../config/database');
+const mysql = require('mysql2/promise');
 
 const Gsec = require('../models/gsec');
 
@@ -211,6 +212,22 @@ module.exports = {
    * POST /api/gsec
    */
   saveGsec: async (req, res) => {
+    const controllerStartTime = Date.now();
+    console.log('=== SAVING GSEC CONTROLLER (START) ===');
+    
+    // Set a timeout for the entire operation
+    const timeout = setTimeout(() => {
+      console.log('=== CONTROLLER TIMEOUT - 10 seconds ===');
+      if (!res.headersSent) {
+        res.status(408).json({
+          success: false,
+          error: 'Request timeout - operation took too long',
+          message: 'The server is taking too long to process your request. Please try again.'
+        });
+      }
+    }, 15000); // 15 second timeout
+    
+    let connection = null;
     try {
       // Validate required fields before processing
       if (!req.body.counterparty) {
@@ -221,6 +238,10 @@ module.exports = {
         });
       }
 
+      // Get database connection for transaction
+      connection = await db.pool.getConnection();
+      await connection.beginTransaction();
+
       // Set default status to 'pending' for authorization workflow
       const formData = {
         ...req.body,
@@ -230,41 +251,55 @@ module.exports = {
         created_at: new Date()
       };
       
-      console.log('Saving GSec transaction with data:', {
-        counterparty: formData.counterparty,
-        faceValue: formData.faceValue,
-        currency: formData.currency,
-        transaction_type: formData.transaction_type
-      });
+      console.log('=== SAVING GSEC TRANSACTION ===');
+      console.log('Frontend Dirty Price:', req.body.dirtyPrice);
+      console.log('Frontend Clean Price:', req.body.cleanPrice);
+      console.log('Frontend Accrued Interest:', req.body.accruedInterest);
       
-      const result = await Gsec.create(formData);
+      // Create GSec transaction with connection
+      const result = await Gsec.createWithConnection(formData, connection);
 
-    // --- SELL DEALS LOGIC WITH DEBUG LOGGING ---
-    const { sell_deals } = req.body;
-    console.log('Received sell_deals:', sell_deals);
-    console.log('formData.transaction_type:', formData.transaction_type);
-    if (Array.isArray(sell_deals) && String(formData.transaction_type).toLowerCase() === 'sell') {
-      for (const sell of sell_deals) {
-        console.log('Processing sell deal:', sell);
-        const [buyDeals] = await db.query('SELECT * FROM gsec WHERE deal_number = ? AND transaction_type = "Buy"', [sell.buy_deal_number]);
-        if (buyDeals && buyDeals.length > 0) {
-          const buyDeal = buyDeals[0];
-          const original = parseFloat(buyDeal.remaining_face_value || buyDeal.face_value || 0);
-          const sold = parseFloat(sell.amountToSell || 0);
-          let newRemaining = original - sold;
-          newRemaining = Math.trunc(newRemaining * 10000) / 10000;
-          console.log(`Updating buy deal ${buyDeal.deal_number}: ${original} - ${sold} = ${newRemaining}`);
-          await db.query('UPDATE gsec SET remaining_face_value = ? WHERE id = ?', [newRemaining.toFixed(4), buyDeal.id]);
-        } else {
-          console.log('No buy deal found for:', sell.buy_deal_number);
+      // --- SELL DEALS LOGIC (OPTIMIZED) ---
+      const { sell_deals } = req.body;
+      if (Array.isArray(sell_deals) && String(formData.transaction_type).toLowerCase() === 'sell') {
+        for (const sell of sell_deals) {
+          const [buyDeals] = await connection.query('SELECT * FROM gsec WHERE deal_number = ? AND transaction_type = "Buy"', [sell.buy_deal_number]);
+          if (buyDeals && buyDeals.length > 0) {
+            const buyDeal = buyDeals[0];
+            const original = parseFloat(buyDeal.remaining_face_value || buyDeal.face_value || 0);
+            const sold = parseFloat(sell.amountToSell || 0);
+            let newRemaining = original - sold;
+            newRemaining = Math.trunc(newRemaining * 10000) / 10000;
+            await connection.query('UPDATE gsec SET remaining_face_value = ? WHERE id = ?', [newRemaining.toFixed(4), buyDeal.id]);
+          }
         }
       }
-    }
-    // --- END SELL DEALS LOGIC ---
+      // --- END SELL DEALS LOGIC ---
 
-    res.json({ success: true, message: 'Gsec transaction saved', id: result.insertId });
+      // Commit transaction
+      await connection.commit();
+      console.log(`=== SAVING GSEC CONTROLLER (END) - ${Date.now() - controllerStartTime}ms ===`);
+      
+      // Clear the timeout
+      clearTimeout(timeout);
+      
+      res.json({ success: true, message: 'Gsec transaction saved', id: result.insertId });
     } catch (err) {
+      // Clear the timeout
+      clearTimeout(timeout);
+      
+      // Rollback transaction on error
+      if (connection) {
+        try {
+          await connection.rollback();
+          console.log('=== TRANSACTION ROLLED BACK ===');
+        } catch (rollbackErr) {
+          console.error('Error during rollback:', rollbackErr);
+        }
+      }
+      
       console.error('Error in saveGsec:', err);
+      console.log(`=== SAVING GSEC CONTROLLER (ERROR) - ${Date.now() - controllerStartTime}ms ===`);
       const statusCode = err.status || 500;
       res.status(statusCode).json({ 
         success: false, 
@@ -272,6 +307,12 @@ module.exports = {
         details: err.details || null,
         limitDetails: err.limitDetails || null
       });
+    } finally {
+      // Always release connection
+      if (connection) {
+        connection.release();
+        console.log('=== CONNECTION RELEASED ===');
+      }
     }
   },
   
