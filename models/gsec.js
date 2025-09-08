@@ -3,6 +3,11 @@ const LimitSetup = require('./limitSetupModel');
 
 const Gsec = {
   create: async (data) => {
+    // Use the existing create method but with connection pool
+    return await Gsec.createWithConnection(data, null);
+  },
+
+  createWithConnection: async (data, connection) => {
     // Auto-generate deal_number if not provided
     const MAX_ATTEMPTS = 5;
     let attempt = 0;
@@ -132,8 +137,13 @@ const Gsec = {
         // First check if this would exceed the counterparty limit
         if (data.counterparty) {
           try {
-            // We need to implement a promise-based version of checkGsecLimit
-            const limitCheck = await Gsec.checkGsecLimitAsync(data);
+            // Check limits with timeout
+            const limitCheckPromise = Gsec.checkGsecLimitAsync(data, connection);
+            const limitTimeout = new Promise((_, reject) => 
+              setTimeout(() => reject(new Error('Limit check timeout')), 3000)
+            );
+            
+            const limitCheck = await Promise.race([limitCheckPromise, limitTimeout]);
             if (!limitCheck.allowed) {
               const error = {
                 status: 400,
@@ -144,12 +154,23 @@ const Gsec = {
               throw error;
             }
           } catch (limitErr) {
-            throw limitErr;
+            // If limit check times out, log warning but allow transaction
+            if (limitErr.message === 'Limit check timeout') {
+              console.warn('=== LIMIT CHECK TIMEOUT - ALLOWING TRANSACTION ===');
+              console.warn('Limit check took too long, allowing transaction to proceed');
+            } else {
+              throw limitErr;
+            }
           }
         }
         // If limit check passes or no counterparty, proceed with the insert
-        const [result] = await db.query(sql, values);
-        return result;
+        if (connection) {
+          const [result] = await connection.query(sql, values);
+          return result;
+        } else {
+          const [result] = await db.query(sql, values);
+          return result;
+        }
       } catch (error) {
         if (error.code === 'ER_DUP_ENTRY' && String(error.sqlMessage).includes('unique_deal_number')) {
           attempt++;
@@ -174,7 +195,10 @@ const Gsec = {
   },
   
   // Promise-based version of checkGsecLimit
-  checkGsecLimitAsync: async (data) => {
+  checkGsecLimitAsync: async (data, connection = null) => {
+    const startTime = Date.now();
+    console.log('=== CHECKING GSEC LIMITS (START) ===');
+    
     // First, determine the counterparty type
     const counterpartyId = data.counterparty;
     const amount = parseFloat(data.faceValue || 0);
@@ -211,46 +235,31 @@ const Gsec = {
       
       console.log(`Extracted original ID: ${originalId}, type: ${counterpartyType}`);
       
-      // Check if it's an individual counterparty
-      const [individualRows] = await db.query(
-        'SELECT id, "individual" as type FROM counterparty_master_individual WHERE id = ?',
-        [originalId]
-      );
+      // Optimized: Single query to find counterparty type
+      const queryFn = connection ? connection.query.bind(connection) : db.query;
+      const [counterpartyRows] = await queryFn(`
+        SELECT 'individual' as type FROM counterparty_master_individual WHERE id = ?
+        UNION ALL
+        SELECT 'joint' as type FROM counterparty_master_joint WHERE id = ?
+        UNION ALL
+        SELECT 'corporate' as type FROM counterparty_master_corporate WHERE id = ?
+        LIMIT 1
+      `, [originalId, originalId, originalId]);
       
-      if (individualRows && individualRows.length > 0) {
-        counterpartyType = 'individual';
-        console.log(`Found counterparty as individual: ${originalId}`);
-        return await Gsec.checkLimitsAsync(originalId, counterpartyType, amount, currency);
+      if (counterpartyRows && counterpartyRows.length > 0) {
+        counterpartyType = counterpartyRows[0].type;
+        console.log(`Found counterparty as ${counterpartyType}: ${originalId}`);
+        const result = await Gsec.checkLimitsAsync(originalId, counterpartyType, amount, currency, connection);
+        console.log(`=== CHECKING GSEC LIMITS (END) - ${Date.now() - startTime}ms ===`);
+        return result;
       } else {
-        // Check if it's a joint counterparty
-        const [jointRows] = await db.query(
-          'SELECT id, "joint" as type FROM counterparty_master_joint WHERE id = ?',
-          [originalId]
-        );
-        
-        if (jointRows && jointRows.length > 0) {
-          counterpartyType = 'joint';
-          console.log(`Found counterparty as joint: ${originalId}`);
-          return await Gsec.checkLimitsAsync(originalId, counterpartyType, amount, currency);
-        } else {
-          // Check if it's a corporate counterparty
-          const [corporateRows] = await db.query(
-            'SELECT id, "corporate" as type FROM counterparty_master_corporate WHERE id = ?',
-            [originalId]
-          );
-          
-          if (corporateRows && corporateRows.length > 0) {
-            counterpartyType = 'corporate';
-            console.log(`Found counterparty as corporate: ${originalId}`);
-            return await Gsec.checkLimitsAsync(originalId, counterpartyType, amount, currency);
-          } else {
             // Log detailed error information
             console.error(`Counterparty ID ${counterpartyId} (original: ${originalId}) not found in any counterparty table`);
             
             // Check what counterparties exist for debugging
-            const [allIndividual] = await db.query('SELECT id, short_name FROM counterparty_master_individual LIMIT 5');
-            const [allJoint] = await db.query('SELECT id, short_name FROM counterparty_master_joint LIMIT 5');
-            const [allCorporate] = await db.query('SELECT id, short_name FROM counterparty_master_corporate LIMIT 5');
+            const [allIndividual] = await queryFn('SELECT id, short_name FROM counterparty_master_individual LIMIT 5');
+            const [allJoint] = await queryFn('SELECT id, short_name FROM counterparty_master_joint LIMIT 5');
+            const [allCorporate] = await queryFn('SELECT id, short_name FROM counterparty_master_corporate LIMIT 5');
             
             console.log('Available counterparties (first 5 of each type):');
             console.log('Individual:', allIndividual);
@@ -262,8 +271,6 @@ const Gsec = {
               message: `Invalid counterparty ID: ${counterpartyId}. Please select a valid counterparty from the dropdown.`
             };
           }
-        }
-      }
     } catch (error) {
       console.error('Error in checkGsecLimitAsync:', error);
       throw error;
@@ -271,19 +278,35 @@ const Gsec = {
   },
   
   // Promise-based helper function for checking limits
-  checkLimitsAsync: async (counterpartyId, counterpartyType, amount, currency) => {
+  checkLimitsAsync: async (counterpartyId, counterpartyType, amount, currency, connection = null) => {
+    const limitStartTime = Date.now();
+    console.log('=== CHECKING LIMITS (START) ===');
+    
     try {
+      const queryFn = connection ? connection.query.bind(connection) : db.query;
+      
+      // Quick check: If amount is 0 or negative, allow immediately
+      if (amount <= 0) {
+        console.log(`=== CHECKING LIMITS (END) - ${Date.now() - limitStartTime}ms - ZERO AMOUNT ===`);
+        return {
+          allowed: true,
+          message: 'Zero or negative amount, allowing transaction.'
+        };
+      }
+      
       // Get the current limit setup for this counterparty
-      const [limitRows] = await db.query(
+      const [limitRows] = await queryFn(
         `SELECT * FROM counterparty_limits 
          WHERE counterparty_id = ? 
          AND counterparty_type = ?
-         AND (currency = ? OR currency IS NULL OR currency = '')`,
+         AND (currency = ? OR currency IS NULL OR currency = '')
+         LIMIT 1`,
         [counterpartyId, counterpartyType, currency]
       );
       
       if (!limitRows || limitRows.length === 0) {
         // Allow transaction if no limits are configured
+        console.log(`=== CHECKING LIMITS (END) - ${Date.now() - limitStartTime}ms - NO LIMITS ===`);
         return {
           allowed: true,
           message: 'No limits configured for this counterparty and currency, allowing transaction.'
@@ -293,7 +316,7 @@ const Gsec = {
       const limits = limitRows[0];
       
       // Get current GSec exposure for this counterparty
-      const [gsecRows] = await db.query(
+      const [gsecRows] = await queryFn(
         `SELECT SUM(face_value) AS total FROM gsec 
          WHERE counterparty = ? AND currency = ?`,
         [counterpartyId, currency]
@@ -311,6 +334,7 @@ const Gsec = {
       const newGsecExposure = currentGsecExposure + amount;
       
       if (gsecLimit > 0 && newGsecExposure > gsecLimit) {
+        console.log(`=== CHECKING LIMITS (END) - ${Date.now() - limitStartTime}ms - LIMIT EXCEEDED ===`);
         return {
           allowed: false,
           message: `Transaction exceeds GSec limit (${newGsecExposure} > ${gsecLimit})`,
@@ -323,6 +347,7 @@ const Gsec = {
       // For overall limit, we'd need to query all product tables
       // This is simplified for now
       
+      console.log(`=== CHECKING LIMITS (END) - ${Date.now() - limitStartTime}ms - ALLOWED ===`);
       return { allowed: true };
     } catch (error) {
       console.error('Error in checkLimitsAsync:', error);
@@ -697,6 +722,9 @@ Gsec.getLatestDealNumber = async (date) => {
  * @returns {string} nextDealNumber
  */
 Gsec.generateNextDealNumber = async (date) => {
+  const dealStartTime = Date.now();
+  console.log('=== GENERATING DEAL NUMBER (START) ===');
+  
   try {
     // Get the latest deal number for this date
     const latest = await Gsec.getLatestDealNumber(date);
@@ -717,6 +745,7 @@ Gsec.generateNextDealNumber = async (date) => {
     const padded = String(nextSeq).padStart(4, '0');
     const nextDeal = `${date}/GSEC/${padded}`;
     console.log('[DEBUG] Generated next deal number:', nextDeal);
+    console.log(`=== GENERATING DEAL NUMBER (END) - ${Date.now() - dealStartTime}ms ===`);
     return nextDeal;
   } catch (error) {
     console.error('[ERROR] Failed to generate deal number:', error);

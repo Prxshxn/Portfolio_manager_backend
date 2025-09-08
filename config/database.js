@@ -11,8 +11,8 @@ const pool = mysql.createPool({
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
-  acquireTimeout: 60000, // 60 seconds
-  timeout: 60000, // 60 seconds
+  acquireTimeout: 10000, // 10 seconds
+  timeout: 10000, // 10 seconds
   idleTimeout: 300000 // 5 minutes
 });
 
@@ -67,6 +67,7 @@ const retryQuery = async (operation, maxRetries = 3) => {
 };
 
 module.exports = {
+  pool,
   query: async (sql, params = []) => {
     return retryQuery(async () => {
       const connection = await pool.getConnection();
