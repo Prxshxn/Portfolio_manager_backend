@@ -44,7 +44,7 @@ const Gsec = {
       
       // Debug: Log dirty price calculation (simplified)
       console.log('=== BACKEND DIRTY PRICE DEBUG ===');
-      console.log('Dirty Price:', data.dirtyPrice, 'Clean Price:', data.cleanPrice);
+      console.log('Dirty Price:', data.dirtyPrice);
       console.log('================================');
       
       const currentDate = new Date();

@@ -238,13 +238,8 @@ module.exports = {
         });
       }
 
-      // Get database connection for transaction with timeout
-      const connectionPromise = db.pool.getConnection();
-      const connectionTimeout = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Database connection timeout')), 5000)
-      );
-      
-      connection = await Promise.race([connectionPromise, connectionTimeout]);
+      // Get database connection for transaction
+      connection = await db.pool.getConnection();
       await connection.beginTransaction();
 
       // Set default status to 'pending' for authorization workflow
@@ -257,8 +252,6 @@ module.exports = {
       };
       
       console.log('=== SAVING GSEC TRANSACTION ===');
-      console.log('Counterparty:', formData.counterparty, 'Amount:', formData.faceValue);
-      console.log('===============================');
       
       // Create GSec transaction with connection
       const result = await Gsec.createWithConnection(formData, connection);
@@ -282,7 +275,6 @@ module.exports = {
 
       // Commit transaction
       await connection.commit();
-      console.log('=== TRANSACTION COMMITTED ===');
       console.log(`=== SAVING GSEC CONTROLLER (END) - ${Date.now() - controllerStartTime}ms ===`);
       
       // Clear the timeout
