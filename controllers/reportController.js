@@ -11,8 +11,8 @@ exports.getGsecReport = async (req, res) => {
       valueDate,
       maturityDate,
       format,
-      page = 1,
-      pageSize = 20
+      page,
+      pageSize
     } = req.query;
 
     // Validate required params
@@ -21,15 +21,21 @@ exports.getGsecReport = async (req, res) => {
     }
 
     // Fetch report data
-    const { data, total } = await gsecReportService.getGsecReport({
+    const reportParams = {
       asAtDate,
       portfolio,
       isin,
       valueDate,
-      maturityDate,
-      page: Number(page),
-      pageSize: Number(pageSize)
-    });
+      maturityDate
+    };
+    
+    // Only add pagination if provided (for regular display)
+    if (page && pageSize) {
+      reportParams.page = Number(page);
+      reportParams.pageSize = Number(pageSize);
+    }
+    
+    const { data, total } = await gsecReportService.getGsecReport(reportParams);
 
     // Handle export formats
     if (format === 'csv' || format === 'excel' || format === 'pdf') {
@@ -39,8 +45,13 @@ exports.getGsecReport = async (req, res) => {
       return res.send(fileBuffer);
     }
 
-    // Default: return paginated JSON
-    res.json({ data, total, page: Number(page), pageSize: Number(pageSize) });
+    // Default: return JSON (paginated if page/pageSize provided, otherwise all data)
+    const response = { data, total };
+    if (page && pageSize) {
+      response.page = Number(page);
+      response.pageSize = Number(pageSize);
+    }
+    res.json(response);
   } catch (err) {
     console.error('GSec Report Error:', err);
     res.status(500).json({ error: 'Failed to generate GSec report' });

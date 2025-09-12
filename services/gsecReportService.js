@@ -38,10 +38,12 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
   sql += ' GROUP BY g.portfolio, g.custodian, g.deal_number, g.face_value, g.value_date, g.maturity_date, g.isin, g.coupon_interest, g.clean_price, g.yield, g.counterparty, g.transaction_type, im.coupon_rate, im.issue_date, im.coupon_date_1, im.coupon_date_2';
   sql += ' ORDER BY g.isin, g.maturity_date';
 
-  // Pagination
-  const offset = (page - 1) * pageSize;
-  sql += ' LIMIT ? OFFSET ?';
-  params.push(pageSize, offset);
+  // Pagination - only apply if page and pageSize are provided
+  if (page && pageSize) {
+    const offset = (page - 1) * pageSize;
+    sql += ' LIMIT ? OFFSET ?';
+    params.push(pageSize, offset);
+  }
 
   // Query DB
   const [rows] = await db.query(sql, params);
@@ -131,12 +133,18 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
   });
 
   // Get total count for pagination
+  let countParams = [];
+  if (portfolio) countParams.push(portfolio);
+  if (isin) countParams.push(isin);
+  if (valueDate) countParams.push(valueDate);
+  if (maturityDate) countParams.push(maturityDate);
+  
   const [[{ count }]] = await db.query(`SELECT COUNT(DISTINCT g.portfolio, g.custodian, g.deal_number, g.face_value, g.value_date, g.maturity_date, g.isin, g.coupon_interest, g.clean_price, g.yield, g.counterparty, g.transaction_type) as count FROM gsec g LEFT JOIN isin_master im ON g.isin = im.isin_number LEFT JOIN repo_deals rd ON g.isin COLLATE utf8mb4_unicode_ci = rd.isin_number AND rd.status IN ('Active', 'Pending') WHERE 1=1` +
     (portfolio ? ' AND g.portfolio = ?' : '') +
     (isin ? ' AND g.isin = ?' : '') +
     (valueDate ? ' AND g.value_date = ?' : '') +
     (maturityDate ? ' AND g.maturity_date = ?' : ''),
-    params.slice(0, params.length - 2)
+    countParams
   );
 
   return { data, total: count };
