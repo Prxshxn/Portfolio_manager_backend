@@ -124,23 +124,44 @@ function calculateNVP({
 
   const couponPayment = (Number(faceValue) * Number(couponRate) / 100) / frequency;
 
-  // Calculate dirty price (present value of all future cash flows)
-  let dirtyPrice = 0;
+  // Calculate dirty price using the same logic as main form
   const yieldPerPeriod = Number(yieldRate) / 100 / frequency;
   
-  // Add present value of remaining coupon payments
+  // Generate cash flows (same as main form)
+  const cashFlows = [];
   for (let i = 0; i < schedule.length; i++) {
     const couponDate = schedule[i];
     if (couponDate > settle) {
-      const periodsToCoupon = (getDaysDifference(couponDate, settle) / 365.25) * frequency;
       if (couponDate.getTime() === maturity.getTime()) {
         // Maturity payment (face value + final coupon)
-        dirtyPrice += (Number(faceValue) + couponPayment) / Math.pow(1 + yieldPerPeriod, periodsToCoupon);
+        cashFlows.push({
+          date: couponDate,
+          amount: Number(faceValue) + couponPayment,
+          periodCount: i
+        });
       } else {
         // Regular coupon payment
-        dirtyPrice += couponPayment / Math.pow(1 + yieldPerPeriod, periodsToCoupon);
+        cashFlows.push({
+          date: couponDate,
+          amount: couponPayment,
+          periodCount: i
+        });
       }
     }
+  }
+  
+  // Calculate fractional period (same as main form)
+  const nextCoupon = schedule.find(d => d > settle);
+  const lastCoupon = schedule.find(d => d <= settle);
+  const fractionalPeriod = nextCoupon && lastCoupon ? 
+    getDaysDifference(settle, lastCoupon) / getDaysDifference(nextCoupon, lastCoupon) : 0;
+  
+  // Calculate present value of each cash flow (same as main form)
+  let dirtyPrice = 0;
+  for (const cf of cashFlows) {
+    const t = fractionalPeriod + cf.periodCount;
+    const pv = cf.amount / Math.pow(1 + yieldPerPeriod, t);
+    dirtyPrice += pv;
   }
 
   // Convert dirty price to per 100 basis
@@ -148,7 +169,9 @@ function calculateNVP({
   const truncatedDirtyPrice = Math.floor(dirtyPricePer100 * 10000) / 10000;
 
   // Calculate accrued interest per 100 (same logic as main form)
-  const accruedInterestPer100 = (couponPayment * daysSinceLastCoupon) / daysInCouponPeriod;
+  // First calculate coupon payment per 100 face value
+  const couponPer100 = (Number(couponRate) / 100) / frequency * 100; // Per 100 basis
+  const accruedInterestPer100 = (couponPer100 * daysSinceLastCoupon) / daysInCouponPeriod;
   const truncatedAccruedInterestPer100 = Math.floor(accruedInterestPer100 * 10000) / 10000;
 
   // Clean price is dirty price minus accrued interest (same logic as main form)
