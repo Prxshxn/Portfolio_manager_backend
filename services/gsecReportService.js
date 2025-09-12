@@ -1,5 +1,6 @@
 const db = require('../db'); // adjust if you use a different db import
 const { differenceInDays, parseISO } = require('date-fns');
+const { calculateNVP } = require('../utils/bondPricingNVP');
 
 // Helper to truncate to 4 decimals
 function truncate4(val) {
@@ -7,32 +8,42 @@ function truncate4(val) {
 }
 
 exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityDate, page, pageSize }) => {
-  // Build query with filters
-  let sql = `SELECT portfolio, custodian, deal_number, face_value, value_date, maturity_date, isin, coupon_interest, clean_price, yield, counterparty, transaction_type FROM gsec WHERE 1=1`;
+  // Build query with filters - join with isin_master to get required fields for NVP calculation
+  // Also join with repo_deals to get repo collateral data
+  let sql = `SELECT g.portfolio, g.custodian, g.deal_number, g.face_value, g.value_date, g.maturity_date, g.isin, g.coupon_interest, g.clean_price, g.yield, g.counterparty, g.transaction_type, 
+             im.coupon_rate, im.issue_date, im.coupon_date_1, im.coupon_date_2,
+             COALESCE(SUM(rd.face_value), 0) as repo_collateral
+             FROM gsec g 
+             LEFT JOIN isin_master im ON g.isin = im.isin_number 
+             LEFT JOIN repo_deals rd ON g.isin COLLATE utf8mb4_unicode_ci = rd.isin_number AND rd.status IN ('Active', 'Pending')
+             WHERE 1=1`;
   const params = [];
   if (portfolio) {
-    sql += ' AND portfolio = ?';
+    sql += ' AND g.portfolio = ?';
     params.push(portfolio);
   }
   if (isin) {
-    sql += ' AND isin = ?';
+    sql += ' AND g.isin = ?';
     params.push(isin);
   }
   if (valueDate) {
-    sql += ' AND value_date = ?';
+    sql += ' AND g.value_date = ?';
     params.push(valueDate);
   }
   if (maturityDate) {
-    sql += ' AND maturity_date = ?';
+    sql += ' AND g.maturity_date = ?';
     params.push(maturityDate);
   }
 
-  sql += ' ORDER BY isin, maturity_date';
+  sql += ' GROUP BY g.portfolio, g.custodian, g.deal_number, g.face_value, g.value_date, g.maturity_date, g.isin, g.coupon_interest, g.clean_price, g.yield, g.counterparty, g.transaction_type, im.coupon_rate, im.issue_date, im.coupon_date_1, im.coupon_date_2';
+  sql += ' ORDER BY g.isin, g.maturity_date';
 
-  // Pagination
-  const offset = (page - 1) * pageSize;
-  sql += ' LIMIT ? OFFSET ?';
-  params.push(pageSize, offset);
+  // Pagination - only apply if page and pageSize are provided
+  if (page && pageSize) {
+    const offset = (page - 1) * pageSize;
+    sql += ' LIMIT ? OFFSET ?';
+    params.push(pageSize, offset);
+  }
 
   // Query DB
   const [rows] = await db.query(sql, params);
@@ -71,6 +82,9 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     return null;
   }
 
+  // Get current system date for NVP calculation
+  const systemDate = new Date().toISOString().split('T')[0];
+
   // Format results
   const data = rows.map(row => {
     const maturityDateObj = safeParseISO(row.maturity_date);
@@ -79,6 +93,19 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     if (maturityDateObj && asAtDateObj) {
       dtm = differenceInDays(maturityDateObj, asAtDateObj);
     }
+
+    // Calculate NVP using system date as value date
+    const nvpResult = calculateNVP({
+      faceValue: row.face_value,
+      couponRate: row.coupon_rate,
+      yieldRate: row.yield,
+      systemDate: systemDate,
+      maturityDate: row.maturity_date,
+      issueDate: row.issue_date,
+      couponDate1: row.coupon_date_1,
+      couponDate2: row.coupon_date_2
+    });
+
     return {
       portfolio: row.portfolio,
       custodian: row.custodian || '',
@@ -99,18 +126,25 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
         }
         return '';
       })(),
-      repo_collateral: '',
+      nvp: nvpResult.nvp || '',
+      repo_collateral: row.repo_collateral ? truncate4(row.repo_collateral).toFixed(4) : '0.0000',
       counterparty: row.counterparty
     };
   });
 
   // Get total count for pagination
-  const [[{ count }]] = await db.query(`SELECT COUNT(*) as count FROM gsec WHERE 1=1` +
-    (portfolio ? ' AND portfolio = ?' : '') +
-    (isin ? ' AND isin = ?' : '') +
-    (valueDate ? ' AND value_date = ?' : '') +
-    (maturityDate ? ' AND maturity_date = ?' : ''),
-    params.slice(0, params.length - 2)
+  let countParams = [];
+  if (portfolio) countParams.push(portfolio);
+  if (isin) countParams.push(isin);
+  if (valueDate) countParams.push(valueDate);
+  if (maturityDate) countParams.push(maturityDate);
+  
+  const [[{ count }]] = await db.query(`SELECT COUNT(DISTINCT g.portfolio, g.custodian, g.deal_number, g.face_value, g.value_date, g.maturity_date, g.isin, g.coupon_interest, g.clean_price, g.yield, g.counterparty, g.transaction_type) as count FROM gsec g LEFT JOIN isin_master im ON g.isin = im.isin_number LEFT JOIN repo_deals rd ON g.isin COLLATE utf8mb4_unicode_ci = rd.isin_number AND rd.status IN ('Active', 'Pending') WHERE 1=1` +
+    (portfolio ? ' AND g.portfolio = ?' : '') +
+    (isin ? ' AND g.isin = ?' : '') +
+    (valueDate ? ' AND g.value_date = ?' : '') +
+    (maturityDate ? ' AND g.maturity_date = ?' : ''),
+    countParams
   );
 
   return { data, total: count };
