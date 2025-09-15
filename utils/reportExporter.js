@@ -139,6 +139,7 @@ exports.export = async (format, data) => {
       { key: 'balance', label: 'Balance', width: 60, align: 'right' },
       { key: 'wap', label: 'WAP', width: 50, align: 'right' },
       { key: 'repo_collateral', label: 'Repo Collateral', width: 60, align: 'right' },
+      { key: 'sell_back', label: 'Sell Back', width: 60, align: 'right' },
       { key: 'counterparty', label: 'Counterparty', width: 50, align: 'left' }
     ];
 
