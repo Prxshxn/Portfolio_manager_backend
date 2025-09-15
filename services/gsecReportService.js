@@ -161,5 +161,34 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     countParams
   );
 
-  return { data, total: count };
+  // Calculate total portfolio balance when portfolio filter is applied
+  let totalPortfolioBalance = null;
+  if (portfolio) {
+    // Get all unique ISINs for this portfolio
+    const portfolioIsinsSql = `SELECT DISTINCT isin FROM gsec WHERE portfolio = ?`;
+    const [portfolioIsins] = await db.query(portfolioIsinsSql, [portfolio]);
+    
+    // Calculate total balance for all ISINs in this portfolio
+    let totalBalance = 0;
+    for (const isinRow of portfolioIsins) {
+      const isin = isinRow.isin;
+      const balanceSql = `SELECT face_value, transaction_type FROM gsec WHERE isin = ?`;
+      const [balanceRows] = await db.query(balanceSql, [isin]);
+      
+      let isinBalance = 0;
+      balanceRows.forEach(balanceRow => {
+        if (balanceRow.transaction_type && balanceRow.transaction_type.toLowerCase() === 'sell') {
+          isinBalance -= Number(balanceRow.face_value);
+        } else {
+          isinBalance += Number(balanceRow.face_value);
+        }
+      });
+      
+      totalBalance += isinBalance;
+    }
+    
+    totalPortfolioBalance = truncate4(totalBalance).toFixed(4);
+  }
+
+  return { data, total: count, totalPortfolioBalance };
 };
