@@ -433,7 +433,7 @@ const Gsec = {
    */
   getRecent: async () => {
     // Use a simple query first to debug the issue
-    const sql = `SELECT * FROM gsec ORDER BY id DESC LIMIT 100`;
+    const sql = `SELECT * FROM gsec ORDER BY id DESC LIMIT 150`;
     
     try {
       const [results] = await db.query(sql);
@@ -484,8 +484,8 @@ const Gsec = {
    * Filtered by ISIN and/or portfolio if provided.
    */
   getBuyDealsWithBalanceFiltered: async (isin, portfolio) => {
-    // Build SQL with optional filters
-    let sql = `SELECT * FROM gsec WHERE transaction_type = 'Buy' AND (remaining_face_value > 0 OR remaining_face_value IS NULL)`;
+    // Build SQL with optional filters - only show finally approved deals
+    let sql = `SELECT * FROM gsec WHERE transaction_type = 'Buy' AND status = 'final_approved' AND (remaining_face_value > 0 OR remaining_face_value IS NULL)`;
     const params = [];
     if (isin) {
       sql += ' AND isin = ?';
@@ -504,8 +504,8 @@ const Gsec = {
    * Only for display, does not update Buy record. Uses buy_deal_number in Sell transactions.
    */
   getBuyDealsWithBalance: async () => {
-    // Get all Buy deals
-    const buySql = `SELECT * FROM gsec WHERE transaction_type = 'Buy' ORDER BY id DESC`;
+    // Get all Buy deals - only finally approved
+    const buySql = `SELECT * FROM gsec WHERE transaction_type = 'Buy' AND status = 'final_approved' ORDER BY id DESC`;
     // Get total sold per buy_deal_number (Sell transactions reference Buy deals)
     const sellSql = `SELECT buy_deal_number, SUM(face_value) AS total_sold FROM gsec WHERE transaction_type = 'Sell' GROUP BY buy_deal_number`;
     try {
@@ -541,7 +541,7 @@ const Gsec = {
    * Get only GSec deals with transaction_type = 'Buy'
    */
   getBuyDeals: async () => {
-    const sql = `SELECT * FROM gsec WHERE transaction_type = 'Buy' ORDER BY id DESC`;
+    const sql = `SELECT * FROM gsec WHERE transaction_type = 'Buy' AND status = 'final_approved' ORDER BY id DESC`;
     try {
       const [results] = await db.query(sql);
       // Format results for frontend (truncate/format decimals as in getRecent)
@@ -786,7 +786,7 @@ Gsec.advanceApprovalLevel = async (id) => {
 };
 
 Gsec.getTransactionsByPortfolio = async (portfolioId) => {
-  const sql = "SELECT * FROM gsec WHERE portfolio = ? AND transaction_type = 'Buy'";
+  const sql = "SELECT * FROM gsec WHERE portfolio = ? AND transaction_type = 'Buy' AND status = 'final_approved'";
   const [rows] = await db.query(sql, [portfolioId]);
   return rows;
 };
