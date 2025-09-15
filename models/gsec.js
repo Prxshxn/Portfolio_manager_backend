@@ -433,7 +433,7 @@ const Gsec = {
    */
   getRecent: async () => {
     // Use a simple query first to debug the issue
-    const sql = `SELECT * FROM gsec ORDER BY id DESC LIMIT 100`;
+    const sql = `SELECT * FROM gsec ORDER BY id DESC LIMIT 150`;
     
     try {
       const [results] = await db.query(sql);
