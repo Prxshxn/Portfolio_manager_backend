@@ -29,6 +29,7 @@ const EXPORT_COLUMNS = [
   { key: 'balance', label: 'Balance' },
   { key: 'wap', label: 'WAP' },
   { key: 'repo_collateral', label: 'Repo Collateral' },
+  { key: 'sell_back', label: 'Sell Back' },
   { key: 'counterparty', label: 'Counterparty' }
 ];
 
@@ -74,7 +75,8 @@ function preprocessExportData(data) {
         'clean_price',
         'nvp',
         'wap',
-        'repo_collateral'
+        'repo_collateral',
+        'sell_back'
       ].includes(col.key)) {
         val = formatNumber2(val);
       }

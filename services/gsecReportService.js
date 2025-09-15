@@ -12,10 +12,12 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
   // Also join with repo_deals to get repo collateral data
   let sql = `SELECT g.id, g.portfolio, g.custodian, g.deal_number, g.face_value, g.value_date, g.maturity_date, g.isin, g.coupon_interest, g.clean_price, g.yield, g.counterparty, g.transaction_type, 
              im.coupon_rate, im.issue_date, im.coupon_date_1, im.coupon_date_2,
-             COALESCE(SUM(rd.face_value), 0) as repo_collateral
+             COALESCE(SUM(rd.face_value), 0) as repo_collateral,
+             COALESCE(SUM(CASE WHEN bd.leg1_transaction_type = 'Sell' AND bd.leg2_transaction_type = 'Buy' THEN bd.leg1_face_value ELSE 0 END), 0) as sell_back
              FROM gsec g 
              LEFT JOIN isin_master im ON g.isin = im.isin_number 
              LEFT JOIN repo_deals rd ON g.isin COLLATE utf8mb4_unicode_ci = rd.isin_number AND rd.status IN ('Active', 'Pending')
+             LEFT JOIN buyback_deals bd ON g.isin COLLATE utf8mb4_unicode_ci = bd.leg1_isin AND bd.deal_status IN ('Approved', 'Settled')
              WHERE 1=1`;
   const params = [];
   if (portfolio) {
@@ -130,6 +132,7 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       nvp: nvpResult.nvp || '',
       accrued_interest: nvpResult.accruedInterest || '',
       repo_collateral: row.repo_collateral ? truncate4(row.repo_collateral).toFixed(4) : '0.0000',
+      sell_back: row.sell_back ? truncate4(row.sell_back).toFixed(2) : '0.00',
       counterparty: row.counterparty || '',
       transaction_type: row.transaction_type || ''
     };
@@ -142,7 +145,7 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
   if (valueDate) countParams.push(valueDate);
   if (maturityDate) countParams.push(maturityDate);
   
-  const [[{ count }]] = await db.query(`SELECT COUNT(DISTINCT g.id) as count FROM gsec g LEFT JOIN isin_master im ON g.isin = im.isin_number LEFT JOIN repo_deals rd ON g.isin COLLATE utf8mb4_unicode_ci = rd.isin_number AND rd.status IN ('Active', 'Pending') WHERE 1=1` +
+  const [[{ count }]] = await db.query(`SELECT COUNT(DISTINCT g.id) as count FROM gsec g LEFT JOIN isin_master im ON g.isin = im.isin_number LEFT JOIN repo_deals rd ON g.isin COLLATE utf8mb4_unicode_ci = rd.isin_number AND rd.status IN ('Active', 'Pending') LEFT JOIN buyback_deals bd ON g.isin COLLATE utf8mb4_unicode_ci = bd.leg1_isin AND bd.deal_status IN ('Approved', 'Settled') WHERE 1=1` +
     (portfolio ? ' AND g.portfolio = ?' : '') +
     (isin ? ' AND g.isin = ?' : '') +
     (valueDate ? ' AND g.value_date = ?' : '') +
