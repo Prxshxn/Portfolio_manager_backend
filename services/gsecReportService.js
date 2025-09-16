@@ -116,6 +116,12 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       couponDate2: row.coupon_date_2
     });
 
+    // Calculate available balance: balance - repo_collateral - sell_back
+    const balance = Number(truncate4(isinBalances[row.isin]).toFixed(4));
+    const repoCollateral = Number(row.repo_collateral) || 0;
+    const sellBack = Number(row.sell_back) || 0;
+    const availableBalance = balance - repoCollateral - sellBack;
+
     return {
       id: row.id,
       portfolio: row.portfolio,
@@ -130,6 +136,7 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       yield: truncate4(row.yield).toFixed(4),
       dtm,
       balance: truncate4(isinBalances[row.isin]).toFixed(4),
+      available_balance: truncate4(availableBalance).toFixed(4),
       wap: (function() {
         const wapData = isinWapMap[row.isin];
         if (wapData && wapData.sumFV) {
