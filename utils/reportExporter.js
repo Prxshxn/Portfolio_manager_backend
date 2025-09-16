@@ -27,8 +27,10 @@ const EXPORT_COLUMNS = [
   { key: 'yield', label: 'Yield' },
   { key: 'dtm', label: 'DTM' },
   { key: 'balance', label: 'Balance' },
+  { key: 'available_balance', label: 'Available Balance' },
   { key: 'wap', label: 'WAP' },
   { key: 'repo_collateral', label: 'Repo Collateral' },
+  { key: 'sell_back', label: 'Sell Back' },
   { key: 'counterparty', label: 'Counterparty' }
 ];
 
@@ -71,10 +73,12 @@ function preprocessExportData(data) {
         'coupon_interest',
         'yield',
         'balance',
+        'available_balance',
         'clean_price',
         'nvp',
         'wap',
-        'repo_collateral'
+        'repo_collateral',
+        'sell_back'
       ].includes(col.key)) {
         val = formatNumber2(val);
       }
@@ -135,8 +139,10 @@ exports.export = async (format, data) => {
       { key: 'yield', label: 'Yield', width: 40, align: 'right' },
       { key: 'dtm', label: 'DTM', width: 40, align: 'center' },
       { key: 'balance', label: 'Balance', width: 60, align: 'right' },
+      { key: 'available_balance', label: 'Available Balance', width: 60, align: 'right' },
       { key: 'wap', label: 'WAP', width: 50, align: 'right' },
       { key: 'repo_collateral', label: 'Repo Collateral', width: 60, align: 'right' },
+      { key: 'sell_back', label: 'Sell Back', width: 60, align: 'right' },
       { key: 'counterparty', label: 'Counterparty', width: 50, align: 'left' }
     ];
 

@@ -35,7 +35,7 @@ exports.getGsecReport = async (req, res) => {
       reportParams.pageSize = Number(pageSize);
     }
     
-    const { data, total } = await gsecReportService.getGsecReport(reportParams);
+    const { data, total, totalPortfolioBalance } = await gsecReportService.getGsecReport(reportParams);
 
     // Handle export formats
     if (format === 'csv' || format === 'excel' || format === 'pdf') {
@@ -50,6 +50,9 @@ exports.getGsecReport = async (req, res) => {
     if (page && pageSize) {
       response.page = Number(page);
       response.pageSize = Number(pageSize);
+    }
+    if (totalPortfolioBalance !== null) {
+      response.totalPortfolioBalance = totalPortfolioBalance;
     }
     res.json(response);
   } catch (err) {

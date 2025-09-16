@@ -10,12 +10,14 @@ function truncate4(val) {
 exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityDate, page, pageSize }) => {
   // Build query with filters - join with isin_master to get required fields for NVP calculation
   // Also join with repo_deals to get repo collateral data
-  let sql = `SELECT g.portfolio, g.custodian, g.deal_number, g.face_value, g.value_date, g.maturity_date, g.isin, g.coupon_interest, g.clean_price, g.yield, g.counterparty, g.transaction_type, 
+  let sql = `SELECT g.id, g.portfolio, g.custodian, g.deal_number, g.face_value, g.value_date, g.maturity_date, g.isin, g.coupon_interest, g.clean_price, g.yield, g.counterparty, g.transaction_type, 
              im.coupon_rate, im.issue_date, im.coupon_date_1, im.coupon_date_2,
-             COALESCE(SUM(rd.face_value), 0) as repo_collateral
+             COALESCE(SUM(rd.face_value), 0) as repo_collateral,
+             COALESCE(SUM(CASE WHEN bd.leg1_transaction_type = 'Sell' AND bd.leg2_transaction_type = 'Buy' THEN bd.leg1_face_value ELSE 0 END), 0) as sell_back
              FROM gsec g 
              LEFT JOIN isin_master im ON g.isin = im.isin_number 
              LEFT JOIN repo_deals rd ON g.isin COLLATE utf8mb4_unicode_ci = rd.isin_number AND rd.status IN ('Active', 'Pending')
+             LEFT JOIN buyback_deals bd ON g.isin COLLATE utf8mb4_unicode_ci = bd.leg1_isin AND bd.deal_status IN ('Approved', 'Settled')
              WHERE 1=1`;
   const params = [];
   if (portfolio) {
@@ -35,8 +37,8 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     params.push(maturityDate);
   }
 
-  sql += ' GROUP BY g.portfolio, g.custodian, g.deal_number, g.face_value, g.value_date, g.maturity_date, g.isin, g.coupon_interest, g.clean_price, g.yield, g.counterparty, g.transaction_type, im.coupon_rate, im.issue_date, im.coupon_date_1, im.coupon_date_2';
-  sql += ' ORDER BY g.isin, g.maturity_date';
+  sql += ' GROUP BY g.id, g.portfolio, g.custodian, g.deal_number, g.face_value, g.value_date, g.maturity_date, g.isin, g.coupon_interest, g.clean_price, g.yield, g.counterparty, g.transaction_type, im.coupon_rate, im.issue_date, im.coupon_date_1, im.coupon_date_2';
+  sql += ' ORDER BY g.isin, g.maturity_date, g.id';
 
   // Pagination - only apply if page and pageSize are provided
   if (page && pageSize) {
@@ -48,31 +50,39 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
   // Query DB
   const [rows] = await db.query(sql, params);
 
-  // Aggregate balance by ISIN
-  // Calculate balance per ISIN: buys addition, sells subtraction
+  // Get all unique ISINs from the current page results
+  const uniqueIsins = [...new Set(rows.map(row => row.isin))];
+
+  // Calculate balance for each ISIN across ALL records (not just current page)
   const isinBalances = {};
   const isinWapMap = {};
-  rows.forEach(row => {
-    const isin = row.isin;
-    if (!isinBalances[isin]) isinBalances[isin] = 0;
-    if (row.transaction_type && row.transaction_type.toLowerCase() === 'sell') {
-      isinBalances[isin] -= Number(row.face_value);
-    } else {
-      // Treat as buy by default
-      isinBalances[isin] += Number(row.face_value);
-    }
-
-    // Aggregate for WAP calculation (ignore 'Sell' deals)
-    if (!row.transaction_type || row.transaction_type.toLowerCase() !== 'sell') {
-      const fv = Number(row.face_value) || 0;
-      const cp = Number(row.clean_price) || 0;
-      if (!isinWapMap[isin]) {
-        isinWapMap[isin] = { sumFV: 0, sumFVCP: 0 };
+  
+  for (const isin of uniqueIsins) {
+    // Query all records for this ISIN to calculate correct balance
+    const balanceSql = `SELECT face_value, transaction_type, clean_price FROM gsec WHERE isin = ?`;
+    const [balanceRows] = await db.query(balanceSql, [isin]);
+    
+    // Calculate balance for this ISIN
+    isinBalances[isin] = 0;
+    isinWapMap[isin] = { sumFV: 0, sumFVCP: 0 };
+    
+    balanceRows.forEach(balanceRow => {
+      if (balanceRow.transaction_type && balanceRow.transaction_type.toLowerCase() === 'sell') {
+        isinBalances[isin] -= Number(balanceRow.face_value);
+      } else {
+        // Treat as buy by default
+        isinBalances[isin] += Number(balanceRow.face_value);
       }
-      isinWapMap[isin].sumFV += fv;
-      isinWapMap[isin].sumFVCP += fv * cp;
-    }
-  });
+
+      // Aggregate for WAP calculation (ignore 'Sell' deals)
+      if (!balanceRow.transaction_type || balanceRow.transaction_type.toLowerCase() !== 'sell') {
+        const fv = Number(balanceRow.face_value) || 0;
+        const cp = Number(balanceRow.clean_price) || 0;
+        isinWapMap[isin].sumFV += fv;
+        isinWapMap[isin].sumFVCP += fv * cp;
+      }
+    });
+  }
 
   // Helper to safely parse ISO date strings
   function safeParseISO(val) {
@@ -106,7 +116,14 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       couponDate2: row.coupon_date_2
     });
 
+    // Calculate available balance: balance - repo_collateral - sell_back
+    const balance = Number(truncate4(isinBalances[row.isin]).toFixed(4));
+    const repoCollateral = Number(row.repo_collateral) || 0;
+    const sellBack = Number(row.sell_back) || 0;
+    const availableBalance = balance - repoCollateral - sellBack;
+
     return {
+      id: row.id,
       portfolio: row.portfolio,
       custodian: row.custodian || '',
       deal_number: row.deal_number || '',
@@ -119,6 +136,7 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       yield: truncate4(row.yield).toFixed(4),
       dtm,
       balance: truncate4(isinBalances[row.isin]).toFixed(4),
+      available_balance: truncate4(availableBalance).toFixed(4),
       wap: (function() {
         const wapData = isinWapMap[row.isin];
         if (wapData && wapData.sumFV) {
@@ -127,8 +145,11 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
         return '';
       })(),
       nvp: nvpResult.nvp || '',
+      accrued_interest: nvpResult.accruedInterest || '',
       repo_collateral: row.repo_collateral ? truncate4(row.repo_collateral).toFixed(4) : '0.0000',
-      counterparty: row.counterparty
+      sell_back: row.sell_back ? truncate4(row.sell_back).toFixed(2) : '0.00',
+      counterparty: row.counterparty || '',
+      transaction_type: row.transaction_type || ''
     };
   });
 
@@ -139,7 +160,7 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
   if (valueDate) countParams.push(valueDate);
   if (maturityDate) countParams.push(maturityDate);
   
-  const [[{ count }]] = await db.query(`SELECT COUNT(DISTINCT g.portfolio, g.custodian, g.deal_number, g.face_value, g.value_date, g.maturity_date, g.isin, g.coupon_interest, g.clean_price, g.yield, g.counterparty, g.transaction_type) as count FROM gsec g LEFT JOIN isin_master im ON g.isin = im.isin_number LEFT JOIN repo_deals rd ON g.isin COLLATE utf8mb4_unicode_ci = rd.isin_number AND rd.status IN ('Active', 'Pending') WHERE 1=1` +
+  const [[{ count }]] = await db.query(`SELECT COUNT(DISTINCT g.id) as count FROM gsec g LEFT JOIN isin_master im ON g.isin = im.isin_number LEFT JOIN repo_deals rd ON g.isin COLLATE utf8mb4_unicode_ci = rd.isin_number AND rd.status IN ('Active', 'Pending') LEFT JOIN buyback_deals bd ON g.isin COLLATE utf8mb4_unicode_ci = bd.leg1_isin AND bd.deal_status IN ('Approved', 'Settled') WHERE 1=1` +
     (portfolio ? ' AND g.portfolio = ?' : '') +
     (isin ? ' AND g.isin = ?' : '') +
     (valueDate ? ' AND g.value_date = ?' : '') +
@@ -147,5 +168,34 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     countParams
   );
 
-  return { data, total: count };
+  // Calculate total portfolio balance when portfolio filter is applied
+  let totalPortfolioBalance = null;
+  if (portfolio) {
+    // Get all unique ISINs for this portfolio
+    const portfolioIsinsSql = `SELECT DISTINCT isin FROM gsec WHERE portfolio = ?`;
+    const [portfolioIsins] = await db.query(portfolioIsinsSql, [portfolio]);
+    
+    // Calculate total balance for all ISINs in this portfolio
+    let totalBalance = 0;
+    for (const isinRow of portfolioIsins) {
+      const isin = isinRow.isin;
+      const balanceSql = `SELECT face_value, transaction_type FROM gsec WHERE isin = ?`;
+      const [balanceRows] = await db.query(balanceSql, [isin]);
+      
+      let isinBalance = 0;
+      balanceRows.forEach(balanceRow => {
+        if (balanceRow.transaction_type && balanceRow.transaction_type.toLowerCase() === 'sell') {
+          isinBalance -= Number(balanceRow.face_value);
+        } else {
+          isinBalance += Number(balanceRow.face_value);
+        }
+      });
+      
+      totalBalance += isinBalance;
+    }
+    
+    totalPortfolioBalance = truncate4(totalBalance).toFixed(4);
+  }
+
+  return { data, total: count, totalPortfolioBalance };
 };
