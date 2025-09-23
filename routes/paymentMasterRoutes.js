@@ -55,4 +55,7 @@ router.get('/methods', paymentMasterController.getPaymentMethods);
 // GET all payment methods from payment_master (for dropdown)
 router.get('/all-methods', paymentMasterController.getAllPaymentMethods);
 
+// GET settlement modes (payment_method + bank_payment_code)
+router.get('/modes', paymentMasterController.getPaymentModes);
+
 module.exports = router;
