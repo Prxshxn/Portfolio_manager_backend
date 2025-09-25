@@ -401,12 +401,12 @@ MaturityController.getMaturityHandling = async (req, res) => {
 
 MaturityController.processMaturities = async (req, res) => {
   try {
-    const { dealIds, processType, processDate, bankAccountId, maturityAction } = req.body || {};
+    const { dealIds, processDate, bankAccountId, maturityAction } = req.body || {};
     if (!Array.isArray(dealIds) || dealIds.length === 0) {
       return res.status(400).json({ success: false, error: 'dealIds array is required' });
     }
-    if (!processType) {
-      return res.status(400).json({ success: false, error: 'processType is required' });
+    if (!maturityAction) {
+      return res.status(400).json({ success: false, error: 'maturityAction is required' });
     }
 
     // Check authorization for maturity processing

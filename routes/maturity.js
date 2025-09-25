@@ -2,36 +2,407 @@ const express = require('express');
 const router = express.Router();
 const MaturityController = require('../controllers/maturityController');
 
-// Get money market maturities up to a specific date
-// GET /api/maturity/money-market?date=2024-01-31
+/**
+ * @swagger
+ * /api/maturity/money-market:
+ *   get:
+ *     summary: Get money market maturities
+ *     description: Retrieves money market deals maturing up to a specific date
+ *     tags: [Maturity]
+ *     parameters:
+ *       - in: query
+ *         name: date
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Maturity date (YYYY-MM-DD)
+ *     responses:
+ *       200:
+ *         description: Money market maturities retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id:
+ *                         type: integer
+ *                       deal_number:
+ *                         type: string
+ *                       principal_amount:
+ *                         type: number
+ *                       maturity_date:
+ *                         type: string
+ *                         format: date
+ *                       counterparty_name:
+ *                         type: string
+ */
 router.get('/money-market', MaturityController.getMoneyMarketMaturities);
 
-// Get fixed income GSEC maturities up to a specific date
-// GET /api/maturity/fixed-income-gsec?date=2024-01-31
+/**
+ * @swagger
+ * /api/maturity/fixed-income-gsec:
+ *   get:
+ *     summary: Get GSEC maturities
+ *     description: Retrieves GSEC deals maturing up to a specific date
+ *     tags: [Maturity]
+ *     parameters:
+ *       - in: query
+ *         name: date
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Maturity date (YYYY-MM-DD)
+ *     responses:
+ *       200:
+ *         description: GSEC maturities retrieved successfully
+ */
 router.get('/fixed-income-gsec', MaturityController.getFixedIncomeGsecMaturities);
 
-// Get maturity summary for both product types
-// GET /api/maturity/summary?date=2024-01-31
+/**
+ * @swagger
+ * /api/maturity/summary:
+ *   get:
+ *     summary: Get maturity summary
+ *     description: Retrieves summary statistics for maturity deals
+ *     tags: [Maturity]
+ *     parameters:
+ *       - in: query
+ *         name: date
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Maturity date (YYYY-MM-DD)
+ *     responses:
+ *       200:
+ *         description: Maturity summary retrieved successfully
+ */
 router.get('/summary', MaturityController.getMaturitySummary);
 
-// Combined maturities for handling view (supports optional type/status filters)
-// GET /api/maturity/handling?date=YYYY-MM-DD&type=all|gsec|money_market&status=all|pending|processed|failed
+/**
+ * @swagger
+ * /api/maturity/handling:
+ *   get:
+ *     summary: Get maturity deals for processing
+ *     description: Retrieves all deals maturing on or before the specified date for processing
+ *     tags: [Maturity]
+ *     parameters:
+ *       - in: query
+ *         name: date
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Maturity date (YYYY-MM-DD)
+ *       - in: query
+ *         name: type
+ *         required: false
+ *         schema:
+ *           type: string
+ *           enum: [all, gsec, money_market, repo, buyback]
+ *         description: Deal type filter
+ *       - in: query
+ *         name: status
+ *         required: false
+ *         schema:
+ *           type: string
+ *           enum: [all, pending, processed, failed]
+ *         description: Status filter
+ *     responses:
+ *       200:
+ *         description: Maturity deals retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id:
+ *                         type: string
+ *                       deal_number:
+ *                         type: string
+ *                       deal_type:
+ *                         type: string
+ *                         enum: [money_market, gsec, repo, buyback]
+ *                       isin:
+ *                         type: string
+ *                       counterparty:
+ *                         type: string
+ *                       face_value:
+ *                         type: number
+ *                       maturity_date:
+ *                         type: string
+ *                         format: date
+ *                       days_to_maturity:
+ *                         type: integer
+ *                       status:
+ *                         type: string
+ *                         enum: [pending, processed, failed]
+ */
 router.get('/handling', MaturityController.getMaturityHandling);
 
-// Process selected maturities (stub implementation)
-// POST /api/maturity/process { dealIds: number[], processType: string, processDate: YYYY-MM-DD }
+/**
+ * @swagger
+ * /api/maturity/process:
+ *   post:
+ *     summary: Process maturity deals
+ *     description: Processes selected maturity deals with the specified maturity action
+ *     tags: [Maturity]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - dealIds
+ *               - processDate
+ *               - maturityAction
+ *             properties:
+ *               dealIds:
+ *                 type: array
+ *                 items:
+ *                   type: integer
+ *                 description: Array of deal IDs to process
+ *               processDate:
+ *                 type: string
+ *                 format: date
+ *                 description: Processing date (YYYY-MM-DD)
+ *               bankAccountId:
+ *                 type: integer
+ *                 description: Bank account ID (required for methods 1 & 2)
+ *               maturityAction:
+ *                 type: string
+ *                 enum: [principal_interest_full_payment, principal_reinvest_interest_paid, principal_interest_reinvest, different_amount_reinvest]
+ *                 description: Maturity processing method
+ *     responses:
+ *       200:
+ *         description: Maturity deals processed successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       dealId:
+ *                         type: integer
+ *                       dealNumber:
+ *                         type: string
+ *                       principalAmount:
+ *                         type: number
+ *                       interestAmount:
+ *                         type: number
+ *                       totalAmount:
+ *                         type: number
+ *       403:
+ *         description: Authorization required
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: false
+ *                 error:
+ *                   type: string
+ *                 requiresAuthorization:
+ *                   type: boolean
+ *                   example: true
+ *                 authorizationLevel:
+ *                   type: string
+ *                   example: level2
+ */
 router.post('/process', MaturityController.processMaturities);
 
-// Export maturities (excel)
-// GET /api/maturity/export?date=YYYY-MM-DD&type=...&status=...&format=excel|csv|pdf
+/**
+ * @swagger
+ * /api/maturity/export:
+ *   get:
+ *     summary: Export maturity data
+ *     description: Exports maturity data to Excel, CSV, or PDF format
+ *     tags: [Maturity]
+ *     parameters:
+ *       - in: query
+ *         name: date
+ *         required: true
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Maturity date (YYYY-MM-DD)
+ *       - in: query
+ *         name: type
+ *         required: false
+ *         schema:
+ *           type: string
+ *           enum: [all, gsec, money_market, repo, buyback]
+ *         description: Deal type filter
+ *       - in: query
+ *         name: status
+ *         required: false
+ *         schema:
+ *           type: string
+ *           enum: [all, pending, processed, failed]
+ *         description: Status filter
+ *       - in: query
+ *         name: format
+ *         required: false
+ *         schema:
+ *           type: string
+ *           enum: [excel, csv, pdf]
+ *           default: excel
+ *         description: Export format
+ *     responses:
+ *       200:
+ *         description: File exported successfully
+ *         content:
+ *           application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+ *             schema:
+ *               type: string
+ *               format: binary
+ */
 router.get('/export', MaturityController.exportMaturities);
 
-// Get bank accounts for maturity processing
-// GET /api/maturity/bank-accounts
+/**
+ * @swagger
+ * /api/maturity/bank-accounts:
+ *   get:
+ *     summary: Get bank accounts
+ *     description: Retrieves available bank accounts for maturity processing
+ *     tags: [Maturity]
+ *     responses:
+ *       200:
+ *         description: Bank accounts retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id:
+ *                         type: integer
+ *                       account_code:
+ *                         type: string
+ *                       name:
+ *                         type: string
+ *                       account_type_id:
+ *                         type: integer
+ *                 message:
+ *                   type: string
+ */
 router.get('/bank-accounts', MaturityController.getBankAccounts);
 
-// Get maturity processing history
-// GET /api/maturity/processing-history?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD&userId=123&authorizationLevel=level2
+/**
+ * @swagger
+ * /api/maturity/processing-history:
+ *   get:
+ *     summary: Get maturity processing history
+ *     description: Retrieves maturity processing history with optional filtering
+ *     tags: [Maturity]
+ *     parameters:
+ *       - in: query
+ *         name: startDate
+ *         required: false
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Start date filter (YYYY-MM-DD)
+ *       - in: query
+ *         name: endDate
+ *         required: false
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: End date filter (YYYY-MM-DD)
+ *       - in: query
+ *         name: userId
+ *         required: false
+ *         schema:
+ *           type: integer
+ *         description: Filter by user ID
+ *       - in: query
+ *         name: authorizationLevel
+ *         required: false
+ *         schema:
+ *           type: string
+ *           enum: [level1, level2, level3]
+ *         description: Filter by authorization level
+ *     responses:
+ *       200:
+ *         description: Processing history retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id:
+ *                         type: integer
+ *                       deal_id:
+ *                         type: integer
+ *                       deal_number:
+ *                         type: string
+ *                       maturity_action:
+ *                         type: string
+ *                       principal_amount:
+ *                         type: number
+ *                       interest_amount:
+ *                         type: number
+ *                       total_amount:
+ *                         type: number
+ *                       processed_date:
+ *                         type: string
+ *                         format: date
+ *                       processed_by:
+ *                         type: integer
+ *                       authorization_level:
+ *                         type: string
+ *                         enum: [level1, level2, level3]
+ *                       bank_account_id:
+ *                         type: integer
+ *                       processed_by_name:
+ *                         type: string
+ *                       created_at:
+ *                         type: string
+ *                         format: date-time
+ *                 message:
+ *                   type: string
+ */
 router.get('/processing-history', MaturityController.getMaturityProcessingHistory);
 
 module.exports = router;

@@ -1,9 +1,13 @@
-# Repo Deals API - Swagger Documentation
+# Portfolio Management API - Swagger Documentation
 
 ## Overview
-This document provides comprehensive Swagger/OpenAPI documentation for the Repo Deals API endpoints. The API handles Repo and Reverse Repo transactions with full CRUD operations, status management, and reporting capabilities.
+This document provides comprehensive Swagger/OpenAPI documentation for the Portfolio Management API endpoints. The API handles Repo and Reverse Repo transactions with full CRUD operations, status management, reporting capabilities, and maturity processing.
 
 Additional sections include Payment Master helper endpoints used by Front Office forms (e.g., GSec) to resolve settlement modes and bank details.
+
+## Related Documentation
+- **Maturity Handling API**: [Maturity Handling Swagger Documentation](./maturity-swagger.md)
+- **Repo Deals API**: This document (below)
 
 ## Base URL
 ```
