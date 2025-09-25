@@ -401,7 +401,7 @@ MaturityController.getMaturityHandling = async (req, res) => {
 
 MaturityController.processMaturities = async (req, res) => {
   try {
-    const { dealIds, processDate, bankAccountId, maturityAction } = req.body || {};
+    const { dealIds, processDate, bankAccountId, bankPaymentCode, maturityAction } = req.body || {};
     if (!Array.isArray(dealIds) || dealIds.length === 0) {
       return res.status(400).json({ success: false, error: 'dealIds array is required' });
     }
@@ -420,13 +420,29 @@ MaturityController.processMaturities = async (req, res) => {
       });
     }
 
+    // Resolve bankPaymentCode to bankAccountId if provided (for methods requiring bank movement)
+    let resolvedBankAccountId = bankAccountId;
+    if (!resolvedBankAccountId && bankPaymentCode && (maturityAction === 'principal_interest_full_payment' || maturityAction === 'principal_reinvest_interest_paid')) {
+      try {
+        const db = require('../config/db');
+        const [rows] = await db.query(
+          `SELECT id FROM chart_of_accounts WHERE is_active = TRUE AND (name LIKE '%bank%' OR name LIKE '%cash%') AND account_code LIKE '1%' ORDER BY id LIMIT 1`
+        );
+        if (rows.length > 0) {
+          resolvedBankAccountId = rows[0].id;
+        }
+      } catch (e) {
+        console.error('Error resolving bankPaymentCode to bank account id:', e.message);
+      }
+    }
+
     // Handle different maturity actions
     switch (maturityAction) {
       case 'principal_interest_full_payment':
-        return await handlePrincipalInterestFullPayment(dealIds, processDate, bankAccountId, res);
+        return await handlePrincipalInterestFullPayment(dealIds, processDate, resolvedBankAccountId, res);
       
       case 'principal_reinvest_interest_paid':
-        return await handlePrincipalReinvestInterestPaid(dealIds, processDate, bankAccountId, res);
+        return await handlePrincipalReinvestInterestPaid(dealIds, processDate, resolvedBankAccountId, res);
       
       case 'principal_interest_reinvest':
         return await handlePrincipalInterestReinvest(dealIds, processDate, res);

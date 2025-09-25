@@ -4,7 +4,7 @@ const MaturityController = require('../controllers/maturityController');
 
 /**
  * @swagger
- * /api/maturity/money-market:
+ * /maturity/money-market:
  *   get:
  *     summary: Get money market maturities
  *     description: Retrieves money market deals maturing up to a specific date
@@ -48,7 +48,7 @@ router.get('/money-market', MaturityController.getMoneyMarketMaturities);
 
 /**
  * @swagger
- * /api/maturity/fixed-income-gsec:
+ * /maturity/fixed-income-gsec:
  *   get:
  *     summary: Get GSEC maturities
  *     description: Retrieves GSEC deals maturing up to a specific date
@@ -69,7 +69,7 @@ router.get('/fixed-income-gsec', MaturityController.getFixedIncomeGsecMaturities
 
 /**
  * @swagger
- * /api/maturity/summary:
+ * /maturity/summary:
  *   get:
  *     summary: Get maturity summary
  *     description: Retrieves summary statistics for maturity deals
@@ -90,7 +90,7 @@ router.get('/summary', MaturityController.getMaturitySummary);
 
 /**
  * @swagger
- * /api/maturity/handling:
+ * /maturity/handling:
  *   get:
  *     summary: Get maturity deals for processing
  *     description: Retrieves all deals maturing on or before the specified date for processing
@@ -158,7 +158,7 @@ router.get('/handling', MaturityController.getMaturityHandling);
 
 /**
  * @swagger
- * /api/maturity/process:
+ * /maturity/process:
  *   post:
  *     summary: Process maturity deals
  *     description: Processes selected maturity deals with the specified maturity action
@@ -240,7 +240,7 @@ router.post('/process', MaturityController.processMaturities);
 
 /**
  * @swagger
- * /api/maturity/export:
+ * /maturity/export:
  *   get:
  *     summary: Export maturity data
  *     description: Exports maturity data to Excel, CSV, or PDF format
@@ -288,7 +288,7 @@ router.get('/export', MaturityController.exportMaturities);
 
 /**
  * @swagger
- * /api/maturity/bank-accounts:
+ * /maturity/bank-accounts:
  *   get:
  *     summary: Get bank accounts
  *     description: Retrieves available bank accounts for maturity processing
@@ -323,7 +323,7 @@ router.get('/bank-accounts', MaturityController.getBankAccounts);
 
 /**
  * @swagger
- * /api/maturity/processing-history:
+ * /maturity/processing-history:
  *   get:
  *     summary: Get maturity processing history
  *     description: Retrieves maturity processing history with optional filtering

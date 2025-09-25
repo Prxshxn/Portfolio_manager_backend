@@ -2,8 +2,38 @@ const express = require('express');
 const router = express.Router();
 const db = require('../models/gsec'); // Adjust if your DB/model import is different
 
-// GET /api/gsec?approval_level=1 - fetch all GSec transactions at a given approval level
-// GET /api/gsec?approval_level=1 - fetch all GSec transactions at a given approval level
+/**
+ * @swagger
+ * /api/gsec:
+ *   get:
+ *     summary: Get GSEC transactions
+ *     description: Fetch GSEC transactions filtered by portfolio or approval level. If no filter is provided, returns all transactions.
+ *     tags: [GSEC]
+ *     parameters:
+ *       - in: query
+ *         name: portfolio
+ *         required: false
+ *         schema:
+ *           type: string
+ *         description: Portfolio code or identifier to filter transactions
+ *       - in: query
+ *         name: approval_level
+ *         required: false
+ *         schema:
+ *           type: integer
+ *         description: Approval level to filter transactions (e.g., 1, 2, 3)
+ *     responses:
+ *       200:
+ *         description: GSEC transactions fetched successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *       500:
+ *         description: Failed to fetch GSEC transactions
+ */
 router.get('/', async (req, res) => {
   const { portfolio, approval_level } = req.query;
   try {
@@ -22,7 +52,32 @@ router.get('/', async (req, res) => {
   }
 });
 
-// POST /api/gsec/:id/approve - advance approval level for a transaction
+/**
+ * @swagger
+ * /api/gsec/{id}/approve:
+ *   post:
+ *     summary: Approve a GSEC transaction
+ *     description: Advance the approval level for a given GSEC transaction.
+ *     tags: [GSEC]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: Transaction ID
+ *     responses:
+ *       200:
+ *         description: Transaction approved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *       404:
+ *         description: Transaction not found
+ *       500:
+ *         description: Failed to approve transaction
+ */
 router.post('/:id/approve', async (req, res) => {
   const { id } = req.params;
   try {
@@ -35,7 +90,30 @@ router.post('/:id/approve', async (req, res) => {
   }
 });
 
-// GET /api/gsec/buy-deals - fetch only the Buy deals
+/**
+ * @swagger
+ * /api/gsec/buy-deals:
+ *   get:
+ *     summary: Get GSEC buy deals
+ *     description: Fetch only the Buy GSEC deals.
+ *     tags: [GSEC]
+ *     responses:
+ *       200:
+ *         description: Buy GSEC deals fetched successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *       500:
+ *         description: Failed to fetch Buy GSEC deals
+ */
 router.get('/buy-deals', async (req, res) => {
   try {
     const deals = await db.getBuyDeals();
@@ -46,7 +124,30 @@ router.get('/buy-deals', async (req, res) => {
   }
 });
 
-// GET /api/gsec/buy-deals-with-balance - fetch Buy deals with remaining face value
+/**
+ * @swagger
+ * /api/gsec/buy-deals-with-balance:
+ *   get:
+ *     summary: Get GSEC buy deals with remaining balance
+ *     description: Fetch Buy GSEC deals including remaining face value (balance).
+ *     tags: [GSEC]
+ *     responses:
+ *       200:
+ *         description: Buy GSEC deals with balance fetched successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *       500:
+ *         description: Failed to fetch Buy GSEC deals with balance
+ */
 router.get('/buy-deals-with-balance', async (req, res) => {
   try {
     const deals = await db.getBuyDealsWithBalance();
