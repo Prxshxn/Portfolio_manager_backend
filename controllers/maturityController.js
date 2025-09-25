@@ -161,7 +161,182 @@ const MaturityController = {
   }
 };
 
-module.exports = MaturityController;
+// Create accounting entries for borrowing interest payment with principal reinvestment
+async function createBorrowingInterestPaymentPrincipalReinvest(connection, deal, principalAmount, interestAmount, bankAccountId, processDate) {
+  // Get account IDs
+  const [liabilityAccount] = await connection.query(`
+    SELECT id FROM chart_of_accounts 
+    WHERE account_code LIKE '2%' AND name LIKE '%liability%' 
+    LIMIT 1
+  `);
+  
+  const [interestExpenseAccount] = await connection.query(`
+    SELECT id FROM chart_of_accounts 
+    WHERE account_code LIKE '9%' AND name LIKE '%interest%expense%' 
+    LIMIT 1
+  `);
+  
+  const [interestPayableAccount] = await connection.query(`
+    SELECT id FROM chart_of_accounts 
+    WHERE account_code LIKE '2%' AND name LIKE '%interest%payable%' 
+    LIMIT 1
+  `);
+  
+  const [interestAccrualAccount] = await connection.query(`
+    SELECT id FROM chart_of_accounts 
+    WHERE account_code LIKE '8%' AND name LIKE '%interest%accrual%' 
+    LIMIT 1
+  `);
+  
+  // Interest payment entries
+  await connection.query(`
+    INSERT INTO ledger_entries (deal_number, account_id, entry_date, debit_amount, credit_amount, currency, description)
+    VALUES (?, ?, ?, ?, 0, 'LKR', ?)
+  `, [deal.deal_number, interestExpenseAccount[0].id, processDate, interestAmount, `Interest payment for deal ${deal.deal_number}`]);
+  
+  await connection.query(`
+    INSERT INTO ledger_entries (deal_number, account_id, entry_date, debit_amount, credit_amount, currency, description)
+    VALUES (?, ?, ?, 0, ?, 'LKR', ?)
+  `, [deal.deal_number, bankAccountId, processDate, interestAmount, `Interest payment from bank for deal ${deal.deal_number}`]);
+  
+  // Principal reinvestment entries (no bank movement, just internal transfer)
+  await connection.query(`
+    INSERT INTO ledger_entries (deal_number, account_id, entry_date, debit_amount, credit_amount, currency, description)
+    VALUES (?, ?, ?, ?, 0, 'LKR', ?)
+  `, [deal.deal_number, liabilityAccount[0].id, processDate, principalAmount, `Principal reinvestment for deal ${deal.deal_number}`]);
+  
+  // Reverse accumulated interest
+  if (interestPayableAccount.length > 0 && interestAccrualAccount.length > 0) {
+    await connection.query(`
+      INSERT INTO ledger_entries (deal_number, account_id, entry_date, debit_amount, credit_amount, currency, description)
+      VALUES (?, ?, ?, ?, 0, 'LKR', ?)
+    `, [deal.deal_number, interestPayableAccount[0].id, processDate, interestAmount, `Interest reversal for deal ${deal.deal_number}`]);
+    
+    await connection.query(`
+      INSERT INTO ledger_entries (deal_number, account_id, entry_date, debit_amount, credit_amount, currency, description)
+      VALUES (?, ?, ?, 0, ?, 'LKR', ?)
+    `, [deal.deal_number, interestAccrualAccount[0].id, processDate, interestAmount, `Interest accrual reversal for deal ${deal.deal_number}`]);
+  }
+}
+
+// Create accounting entries for lending interest receipt with principal reinvestment
+async function createLendingInterestReceiptPrincipalReinvest(connection, deal, principalAmount, interestAmount, bankAccountId, processDate) {
+  // Get account IDs
+  const [assetAccount] = await connection.query(`
+    SELECT id FROM chart_of_accounts 
+    WHERE account_code LIKE '1%' AND name LIKE '%asset%' 
+    LIMIT 1
+  `);
+  
+  const [interestReceivedAccount] = await connection.query(`
+    SELECT id FROM chart_of_accounts 
+    WHERE account_code LIKE '8%' AND name LIKE '%interest%received%' 
+    LIMIT 1
+  `);
+  
+  const [interestReceivableAccount] = await connection.query(`
+    SELECT id FROM chart_of_accounts 
+    WHERE account_code LIKE '1%' AND name LIKE '%interest%receivable%' 
+    LIMIT 1
+  `);
+  
+  const [interestAccrualAccount] = await connection.query(`
+    SELECT id FROM chart_of_accounts 
+    WHERE account_code LIKE '8%' AND name LIKE '%interest%accrual%' 
+    LIMIT 1
+  `);
+  
+  // Interest receipt entries
+  await connection.query(`
+    INSERT INTO ledger_entries (deal_number, account_id, entry_date, debit_amount, credit_amount, currency, description)
+    VALUES (?, ?, ?, ?, 0, 'LKR', ?)
+  `, [deal.deal_number, bankAccountId, processDate, interestAmount, `Interest receipt to bank for deal ${deal.deal_number}`]);
+  
+  await connection.query(`
+    INSERT INTO ledger_entries (deal_number, account_id, entry_date, debit_amount, credit_amount, currency, description)
+    VALUES (?, ?, ?, 0, ?, 'LKR', ?)
+  `, [deal.deal_number, interestReceivedAccount[0].id, processDate, interestAmount, `Interest received for deal ${deal.deal_number}`]);
+  
+  // Principal reinvestment entries (no bank movement, just internal transfer)
+  await connection.query(`
+    INSERT INTO ledger_entries (deal_number, account_id, entry_date, debit_amount, credit_amount, currency, description)
+    VALUES (?, ?, ?, 0, ?, 'LKR', ?)
+  `, [deal.deal_number, assetAccount[0].id, processDate, principalAmount, `Principal reinvestment for deal ${deal.deal_number}`]);
+  
+  // Reverse accumulated interest
+  if (interestReceivableAccount.length > 0 && interestAccrualAccount.length > 0) {
+    await connection.query(`
+      INSERT INTO ledger_entries (deal_number, account_id, entry_date, debit_amount, credit_amount, currency, description)
+      VALUES (?, ?, ?, 0, ?, 'LKR', ?)
+    `, [deal.deal_number, interestAccrualAccount[0].id, processDate, interestAmount, `Interest accrual reversal for deal ${deal.deal_number}`]);
+    
+    await connection.query(`
+      INSERT INTO ledger_entries (deal_number, account_id, entry_date, debit_amount, credit_amount, currency, description)
+      VALUES (?, ?, ?, ?, 0, 'LKR', ?)
+    `, [deal.deal_number, interestReceivableAccount[0].id, processDate, interestAmount, `Interest receivable reversal for deal ${deal.deal_number}`]);
+  }
+}
+
+// Create accounting entries for full reinvestment
+async function createFullReinvestmentEntries(connection, deal, principalAmount, interestAmount, processDate) {
+  // Get account IDs
+  const [liabilityAccount] = await connection.query(`
+    SELECT id FROM chart_of_accounts 
+    WHERE account_code LIKE '2%' AND name LIKE '%liability%' 
+    LIMIT 1
+  `);
+  
+  const [assetAccount] = await connection.query(`
+    SELECT id FROM chart_of_accounts 
+    WHERE account_code LIKE '1%' AND name LIKE '%asset%' 
+    LIMIT 1
+  `);
+  
+  const [interestExpenseAccount] = await connection.query(`
+    SELECT id FROM chart_of_accounts 
+    WHERE account_code LIKE '9%' AND name LIKE '%interest%expense%' 
+    LIMIT 1
+  `);
+  
+  const [interestReceivedAccount] = await connection.query(`
+    SELECT id FROM chart_of_accounts 
+    WHERE account_code LIKE '8%' AND name LIKE '%interest%received%' 
+    LIMIT 1
+  `);
+  
+  const totalAmount = principalAmount + interestAmount;
+  
+  if (deal.deal_direction === 'borrowing') {
+    // For borrowing: Close liability, recognize interest expense, prepare for reinvestment
+    await connection.query(`
+      INSERT INTO ledger_entries (deal_number, account_id, entry_date, debit_amount, credit_amount, currency, description)
+      VALUES (?, ?, ?, ?, 0, 'LKR', ?)
+    `, [deal.deal_number, liabilityAccount[0].id, processDate, principalAmount, `Principal closure for reinvestment - deal ${deal.deal_number}`]);
+    
+    await connection.query(`
+      INSERT INTO ledger_entries (deal_number, account_id, entry_date, debit_amount, credit_amount, currency, description)
+      VALUES (?, ?, ?, ?, 0, 'LKR', ?)
+    `, [deal.deal_number, interestExpenseAccount[0].id, processDate, interestAmount, `Interest expense for reinvestment - deal ${deal.deal_number}`]);
+  } else if (deal.deal_direction === 'lending') {
+    // For lending: Close asset, recognize interest income, prepare for reinvestment
+    await connection.query(`
+      INSERT INTO ledger_entries (deal_number, account_id, entry_date, debit_amount, credit_amount, currency, description)
+      VALUES (?, ?, ?, 0, ?, 'LKR', ?)
+    `, [deal.deal_number, assetAccount[0].id, processDate, principalAmount, `Asset closure for reinvestment - deal ${deal.deal_number}`]);
+    
+    await connection.query(`
+      INSERT INTO ledger_entries (deal_number, account_id, entry_date, debit_amount, credit_amount, currency, description)
+      VALUES (?, ?, ?, 0, ?, 'LKR', ?)
+    `, [deal.deal_number, interestReceivedAccount[0].id, processDate, interestAmount, `Interest received for reinvestment - deal ${deal.deal_number}`]);
+  }
+}
+
+// Create accounting entries for different amount reinvestment
+async function createDifferentAmountReinvestmentEntries(connection, deal, principalAmount, interestAmount, processDate) {
+  // This is similar to full reinvestment but would typically involve user-specified amounts
+  // For now, we'll use the same logic as full reinvestment
+  await createFullReinvestmentEntries(connection, deal, principalAmount, interestAmount, processDate);
+}
 
 // Extended handlers for maturity handling, processing, and export
 MaturityController.getMaturityHandling = async (req, res) => {
@@ -245,13 +420,24 @@ MaturityController.processMaturities = async (req, res) => {
       });
     }
 
-    // Handle the first maturity action: "Maturing principal and interest paid or received in full"
-    if (maturityAction === 'principal_interest_full_payment') {
-      return await handlePrincipalInterestFullPayment(dealIds, processDate, bankAccountId, res);
-    }
-
-    // For other process types, maintain existing behavior
+    // Handle different maturity actions
+    switch (maturityAction) {
+      case 'principal_interest_full_payment':
+        return await handlePrincipalInterestFullPayment(dealIds, processDate, bankAccountId, res);
+      
+      case 'principal_reinvest_interest_paid':
+        return await handlePrincipalReinvestInterestPaid(dealIds, processDate, bankAccountId, res);
+      
+      case 'principal_interest_reinvest':
+        return await handlePrincipalInterestReinvest(dealIds, processDate, res);
+      
+      case 'different_amount_reinvest':
+        return await handleDifferentAmountReinvest(dealIds, processDate, res);
+      
+      default:
+        // For other process types, maintain existing behavior
     return res.json({ success: true, message: `Queued ${dealIds.length} deals for ${processType} on ${processDate || ''}` });
+    }
   } catch (error) {
     console.error('Error processing maturities:', error);
     return res.status(500).json({ success: false, error: error.message });
@@ -341,6 +527,12 @@ function getRequiredAuthorizationLevel(maturityAction) {
   switch (maturityAction) {
     case 'principal_interest_full_payment':
       return 2; // Level 2 required for principal and interest full payment
+    case 'principal_reinvest_interest_paid':
+      return 2; // Level 2 required for principal reinvestment with interest payment
+    case 'principal_interest_reinvest':
+      return 3; // Level 3 required for full reinvestment with new terms
+    case 'different_amount_reinvest':
+      return 3; // Level 3 required for different amount reinvestment
     case 'partial_payment':
       return 1; // Level 1 for partial payments
     case 'rollover':
@@ -505,25 +697,25 @@ async function createBorrowingMaturityEntries(connection, deal, principalAmount,
   // Get account IDs
   const [liabilityAccount] = await connection.query(`
     SELECT id FROM chart_of_accounts 
-    WHERE account_code LIKE '2%' AND account_name LIKE '%liability%' 
+    WHERE account_code LIKE '2%' AND name LIKE '%liability%' 
     LIMIT 1
   `);
   
   const [interestExpenseAccount] = await connection.query(`
     SELECT id FROM chart_of_accounts 
-    WHERE account_code LIKE '9%' AND account_name LIKE '%interest%expense%' 
+    WHERE account_code LIKE '9%' AND name LIKE '%interest%expense%' 
     LIMIT 1
   `);
   
   const [interestPayableAccount] = await connection.query(`
     SELECT id FROM chart_of_accounts 
-    WHERE account_code LIKE '2%' AND account_name LIKE '%interest%payable%' 
+    WHERE account_code LIKE '2%' AND name LIKE '%interest%payable%' 
     LIMIT 1
   `);
   
   const [interestAccrualAccount] = await connection.query(`
     SELECT id FROM chart_of_accounts 
-    WHERE account_code LIKE '8%' AND account_name LIKE '%interest%accrual%' 
+    WHERE account_code LIKE '8%' AND name LIKE '%interest%accrual%' 
     LIMIT 1
   `);
   
@@ -562,25 +754,25 @@ async function createLendingMaturityEntries(connection, deal, principalAmount, i
   // Get account IDs
   const [assetAccount] = await connection.query(`
     SELECT id FROM chart_of_accounts 
-    WHERE account_code LIKE '1%' AND account_name LIKE '%asset%' 
+    WHERE account_code LIKE '1%' AND name LIKE '%asset%' 
     LIMIT 1
   `);
   
   const [interestReceivedAccount] = await connection.query(`
     SELECT id FROM chart_of_accounts 
-    WHERE account_code LIKE '8%' AND account_name LIKE '%interest%received%' 
+    WHERE account_code LIKE '8%' AND name LIKE '%interest%received%' 
     LIMIT 1
   `);
   
   const [interestReceivableAccount] = await connection.query(`
     SELECT id FROM chart_of_accounts 
-    WHERE account_code LIKE '1%' AND account_name LIKE '%interest%receivable%' 
+    WHERE account_code LIKE '1%' AND name LIKE '%interest%receivable%' 
     LIMIT 1
   `);
   
   const [interestAccrualAccount] = await connection.query(`
     SELECT id FROM chart_of_accounts 
-    WHERE account_code LIKE '8%' AND account_name LIKE '%interest%accrual%' 
+    WHERE account_code LIKE '8%' AND name LIKE '%interest%accrual%' 
     LIMIT 1
   `);
   
@@ -614,16 +806,325 @@ async function createLendingMaturityEntries(connection, deal, principalAmount, i
   }
 }
 
+// Handle principal reinvestment with interest payment
+async function handlePrincipalReinvestInterestPaid(dealIds, processDate, bankAccountId, res) {
+  const db = require('../config/db');
+  const connection = await db.getConnection();
+  
+  try {
+    await connection.beginTransaction();
+    
+    const processedDeals = [];
+    
+    for (const dealId of dealIds) {
+      // Get deal details
+      const [dealRows] = await connection.query(`
+        SELECT 
+          mm.id, mm.deal_number, mm.deal_type, mm.principal_amount, mm.interest_rate,
+          mm.maturity_date, mm.counterparty_id, mm.isin,
+          c.name as counterparty_name,
+          mm.deal_direction
+        FROM money_market_deals mm
+        LEFT JOIN counterparties c ON mm.counterparty_id = c.id
+        WHERE mm.id = ?
+        UNION ALL
+        SELECT 
+          g.id, g.deal_number, 'gsec' as deal_type, g.face_value as principal_amount, g.coupon_rate as interest_rate,
+          g.maturity_date, g.counterparty_id, g.isin,
+          c.name as counterparty_name,
+          g.deal_direction
+        FROM gsec_deals g
+        LEFT JOIN counterparties c ON g.counterparty_id = c.id
+        WHERE g.id = ?
+      `, [dealId, dealId]);
+      
+      if (dealRows.length === 0) {
+        throw new Error(`Deal ${dealId} not found`);
+      }
+      
+      const deal = dealRows[0];
+      const principalAmount = parseFloat(deal.principal_amount);
+      const interestRate = parseFloat(deal.interest_rate) / 100;
+      const daysToMaturity = Math.ceil((new Date(deal.maturity_date) - new Date()) / (1000 * 60 * 60 * 24));
+      const interestAmount = (principalAmount * interestRate * daysToMaturity) / 365;
+      
+      // Create accounting entries for principal reinvestment with interest payment
+      if (deal.deal_direction === 'borrowing') {
+        // For borrowing: Pay interest, reinvest principal
+        await createBorrowingInterestPaymentPrincipalReinvest(connection, deal, principalAmount, interestAmount, bankAccountId, processDate);
+      } else if (deal.deal_direction === 'lending') {
+        // For lending: Receive interest, reinvest principal
+        await createLendingInterestReceiptPrincipalReinvest(connection, deal, principalAmount, interestAmount, bankAccountId, processDate);
+      }
+      
+      // Mark deal as processed
+      await connection.query(`
+        UPDATE money_market_deals 
+        SET status = 'matured', processed_date = ?, maturity_action = 'principal_reinvest_interest_paid'
+        WHERE id = ?
+      `, [processDate, dealId]);
+      
+      // Log processing
+      const userData = req.headers['x-user-data'];
+      const user = userData ? JSON.parse(userData) : { id: null };
+      
+      await connection.query(`
+        INSERT INTO maturity_processing_log 
+        (deal_id, deal_number, maturity_action, principal_amount, interest_amount, total_amount, 
+         processed_date, processed_by, authorization_level, bank_account_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        dealId, 
+        deal.deal_number, 
+        'principal_reinvest_interest_paid',
+        principalAmount, 
+        interestAmount, 
+        interestAmount, // Only interest is paid/received
+        processDate,
+        user.id,
+        'level2',
+        bankAccountId
+      ]);
+      
+      processedDeals.push({
+        dealId,
+        dealNumber: deal.deal_number,
+        principalAmount,
+        interestAmount,
+        reinvestmentAmount: principalAmount
+      });
+    }
+    
+    await connection.commit();
+    
+    return res.json({
+      success: true,
+      message: `Successfully processed ${processedDeals.length} deals with principal reinvestment and interest payment`,
+      data: processedDeals
+    });
+    
+  } catch (error) {
+    await connection.rollback();
+    console.error('Error in principal reinvest interest paid:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  } finally {
+    connection.release();
+  }
+}
+
+// Handle full principal and interest reinvestment
+async function handlePrincipalInterestReinvest(dealIds, processDate, res) {
+  const db = require('../config/db');
+  const connection = await db.getConnection();
+  
+  try {
+    await connection.beginTransaction();
+    
+    const processedDeals = [];
+    
+    for (const dealId of dealIds) {
+      // Get deal details
+      const [dealRows] = await connection.query(`
+        SELECT 
+          mm.id, mm.deal_number, mm.deal_type, mm.principal_amount, mm.interest_rate,
+          mm.maturity_date, mm.counterparty_id, mm.isin,
+          c.name as counterparty_name,
+          mm.deal_direction
+        FROM money_market_deals mm
+        LEFT JOIN counterparties c ON mm.counterparty_id = c.id
+        WHERE mm.id = ?
+        UNION ALL
+        SELECT 
+          g.id, g.deal_number, 'gsec' as deal_type, g.face_value as principal_amount, g.coupon_rate as interest_rate,
+          g.maturity_date, g.counterparty_id, g.isin,
+          c.name as counterparty_name,
+          g.deal_direction
+        FROM gsec_deals g
+        LEFT JOIN counterparties c ON g.counterparty_id = c.id
+        WHERE g.id = ?
+      `, [dealId, dealId]);
+      
+      if (dealRows.length === 0) {
+        throw new Error(`Deal ${dealId} not found`);
+      }
+      
+      const deal = dealRows[0];
+      const principalAmount = parseFloat(deal.principal_amount);
+      const interestRate = parseFloat(deal.interest_rate) / 100;
+      const daysToMaturity = Math.ceil((new Date(deal.maturity_date) - new Date()) / (1000 * 60 * 60 * 24));
+      const interestAmount = (principalAmount * interestRate * daysToMaturity) / 365;
+      const totalReinvestmentAmount = principalAmount + interestAmount;
+      
+      // Create accounting entries for full reinvestment
+      await createFullReinvestmentEntries(connection, deal, principalAmount, interestAmount, processDate);
+      
+      // Mark deal as processed
+      await connection.query(`
+        UPDATE money_market_deals 
+        SET status = 'matured', processed_date = ?, maturity_action = 'principal_interest_reinvest'
+        WHERE id = ?
+      `, [processDate, dealId]);
+      
+      // Log processing
+      const userData = req.headers['x-user-data'];
+      const user = userData ? JSON.parse(userData) : { id: null };
+      
+      await connection.query(`
+        INSERT INTO maturity_processing_log 
+        (deal_id, deal_number, maturity_action, principal_amount, interest_amount, total_amount, 
+         processed_date, processed_by, authorization_level, bank_account_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        dealId, 
+        deal.deal_number, 
+        'principal_interest_reinvest',
+        principalAmount, 
+        interestAmount, 
+        totalReinvestmentAmount,
+        processDate,
+        user.id,
+        'level3',
+        null
+      ]);
+      
+      processedDeals.push({
+        dealId,
+        dealNumber: deal.deal_number,
+        principalAmount,
+        interestAmount,
+        totalReinvestmentAmount
+      });
+    }
+    
+    await connection.commit();
+    
+    return res.json({
+      success: true,
+      message: `Successfully processed ${processedDeals.length} deals with full principal and interest reinvestment`,
+      data: processedDeals
+    });
+    
+  } catch (error) {
+    await connection.rollback();
+    console.error('Error in principal interest reinvest:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  } finally {
+    connection.release();
+  }
+}
+
+// Handle different amount reinvestment
+async function handleDifferentAmountReinvest(dealIds, processDate, res) {
+  const db = require('../config/db');
+  const connection = await db.getConnection();
+  
+  try {
+    await connection.beginTransaction();
+    
+    const processedDeals = [];
+    
+    for (const dealId of dealIds) {
+      // Get deal details
+      const [dealRows] = await connection.query(`
+        SELECT 
+          mm.id, mm.deal_number, mm.deal_type, mm.principal_amount, mm.interest_rate,
+          mm.maturity_date, mm.counterparty_id, mm.isin,
+          c.name as counterparty_name,
+          mm.deal_direction
+        FROM money_market_deals mm
+        LEFT JOIN counterparties c ON mm.counterparty_id = c.id
+        WHERE mm.id = ?
+        UNION ALL
+        SELECT 
+          g.id, g.deal_number, 'gsec' as deal_type, g.face_value as principal_amount, g.coupon_rate as interest_rate,
+          g.maturity_date, g.counterparty_id, g.isin,
+          c.name as counterparty_name,
+          g.deal_direction
+        FROM gsec_deals g
+        LEFT JOIN counterparties c ON g.counterparty_id = c.id
+        WHERE g.id = ?
+      `, [dealId, dealId]);
+      
+      if (dealRows.length === 0) {
+        throw new Error(`Deal ${dealId} not found`);
+      }
+      
+      const deal = dealRows[0];
+      const principalAmount = parseFloat(deal.principal_amount);
+      const interestRate = parseFloat(deal.interest_rate) / 100;
+      const daysToMaturity = Math.ceil((new Date(deal.maturity_date) - new Date()) / (1000 * 60 * 60 * 24));
+      const interestAmount = (principalAmount * interestRate * daysToMaturity) / 365;
+      
+      // For different amount reinvestment, we need additional parameters
+      // This would typically require user input for the new amount
+      // For now, we'll process as a standard reinvestment
+      await createDifferentAmountReinvestmentEntries(connection, deal, principalAmount, interestAmount, processDate);
+      
+      // Mark deal as processed
+      await connection.query(`
+        UPDATE money_market_deals 
+        SET status = 'matured', processed_date = ?, maturity_action = 'different_amount_reinvest'
+        WHERE id = ?
+      `, [processDate, dealId]);
+      
+      // Log processing
+      const userData = req.headers['x-user-data'];
+      const user = userData ? JSON.parse(userData) : { id: null };
+      
+      await connection.query(`
+        INSERT INTO maturity_processing_log 
+        (deal_id, deal_number, maturity_action, principal_amount, interest_amount, total_amount, 
+         processed_date, processed_by, authorization_level, bank_account_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        dealId, 
+        deal.deal_number, 
+        'different_amount_reinvest',
+        principalAmount, 
+        interestAmount, 
+        principalAmount + interestAmount, // This would be the new amount
+        processDate,
+        user.id,
+        'level3',
+        null
+      ]);
+      
+      processedDeals.push({
+        dealId,
+        dealNumber: deal.deal_number,
+        originalAmount: principalAmount + interestAmount,
+        reinvestmentAmount: principalAmount + interestAmount, // This would be user-specified
+        note: 'Different amount reinvestment - requires manual deal creation'
+      });
+    }
+    
+    await connection.commit();
+    
+    return res.json({
+      success: true,
+      message: `Successfully processed ${processedDeals.length} deals for different amount reinvestment`,
+      data: processedDeals
+    });
+    
+  } catch (error) {
+    await connection.rollback();
+    console.error('Error in different amount reinvest:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  } finally {
+    connection.release();
+  }
+}
+
 MaturityController.getBankAccounts = async (req, res) => {
   try {
     const db = require('../config/db');
     
     // Get bank accounts from chart of accounts
     const [bankAccounts] = await db.query(`
-      SELECT id, account_code, account_name, account_type_id
+      SELECT id, account_code, name, account_type_id
       FROM chart_of_accounts 
       WHERE account_code LIKE '1%' 
-        AND (account_name LIKE '%bank%' OR account_name LIKE '%cash%')
+        AND (name LIKE '%bank%' OR name LIKE '%cash%')
         AND is_active = TRUE
       ORDER BY account_code
     `);
@@ -766,3 +1267,5 @@ MaturityController.exportMaturities = async (req, res) => {
     return res.status(500).json({ success: false, error: error.message });
   }
 };
+
+module.exports = MaturityController;
