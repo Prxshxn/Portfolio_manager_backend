@@ -226,17 +226,464 @@ MaturityController.getMaturityHandling = async (req, res) => {
 
 MaturityController.processMaturities = async (req, res) => {
   try {
-    const { dealIds, processType, processDate } = req.body || {};
+    const { dealIds, processType, processDate, bankAccountId, maturityAction } = req.body || {};
     if (!Array.isArray(dealIds) || dealIds.length === 0) {
       return res.status(400).json({ success: false, error: 'dealIds array is required' });
     }
     if (!processType) {
       return res.status(400).json({ success: false, error: 'processType is required' });
     }
-    // Stub: mark processed in-memory response. TODO: implement real processing logic per type.
+
+    // Check authorization for maturity processing
+    const authResult = await checkMaturityAuthorization(req, dealIds, maturityAction);
+    if (!authResult.authorized) {
+      return res.status(403).json({ 
+        success: false, 
+        error: authResult.message,
+        requiresAuthorization: true,
+        authorizationLevel: authResult.requiredLevel
+      });
+    }
+
+    // Handle the first maturity action: "Maturing principal and interest paid or received in full"
+    if (maturityAction === 'principal_interest_full_payment') {
+      return await handlePrincipalInterestFullPayment(dealIds, processDate, bankAccountId, res);
+    }
+
+    // For other process types, maintain existing behavior
     return res.json({ success: true, message: `Queued ${dealIds.length} deals for ${processType} on ${processDate || ''}` });
   } catch (error) {
     console.error('Error processing maturities:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// Check maturity authorization with three-tier system
+async function checkMaturityAuthorization(req, dealIds, maturityAction) {
+  try {
+    const db = require('../config/db');
+    
+    // Get user from request headers
+    const userData = req.headers['x-user-data'];
+    if (!userData) {
+      return { authorized: false, message: 'User data not found', requiredLevel: 'level1' };
+    }
+    
+    const user = JSON.parse(userData);
+    const userId = user.id;
+    
+    // Get user's authorization assignments
+    const [assignments] = await db.query(`
+      SELECT role, per_deal_limit, per_day_limit, allowed_pages
+      FROM authorizer_assignments 
+      WHERE user_id = ? AND role IN ('level1', 'level2', 'level3')
+      ORDER BY 
+        CASE role 
+          WHEN 'level1' THEN 1 
+          WHEN 'level2' THEN 2 
+          WHEN 'level3' THEN 3 
+        END
+    `, [userId]);
+    
+    if (assignments.length === 0) {
+      return { authorized: false, message: 'No authorization level assigned', requiredLevel: 'level1' };
+    }
+    
+    // Check if user has the required authorization level for maturity processing
+    const requiredLevel = getRequiredAuthorizationLevel(maturityAction);
+    const userLevel = getAuthorizationLevel(assignments[0].role);
+    
+    if (userLevel < requiredLevel) {
+      return { 
+        authorized: false, 
+        message: `Requires authorization level ${requiredLevel} for this maturity action`,
+        requiredLevel: `level${requiredLevel}`
+      };
+    }
+    
+    // Check deal limits
+    const totalAmount = await calculateTotalMaturityAmount(dealIds);
+    if (assignments[0].per_deal_limit && totalAmount > assignments[0].per_deal_limit) {
+      return { 
+        authorized: false, 
+        message: `Deal amount exceeds authorization limit of ${assignments[0].per_deal_limit}`,
+        requiredLevel: 'level3'
+      };
+    }
+    
+    // Check daily limits
+    const today = new Date().toISOString().split('T')[0];
+    const [dailyUsage] = await db.query(`
+      SELECT COALESCE(SUM(principal_amount + interest_amount), 0) as daily_total
+      FROM maturity_processing_log 
+      WHERE processed_by = ? AND DATE(processed_date) = ?
+    `, [userId, today]);
+    
+    if (assignments[0].per_day_limit && 
+        (dailyUsage[0].daily_total + totalAmount) > assignments[0].per_day_limit) {
+      return { 
+        authorized: false, 
+        message: `Daily limit exceeded. Current usage: ${dailyUsage[0].daily_total}, Limit: ${assignments[0].per_day_limit}`,
+        requiredLevel: 'level3'
+      };
+    }
+    
+    return { authorized: true };
+    
+  } catch (error) {
+    console.error('Error checking maturity authorization:', error);
+    return { authorized: false, message: 'Authorization check failed', requiredLevel: 'level1' };
+  }
+}
+
+// Get required authorization level for maturity action
+function getRequiredAuthorizationLevel(maturityAction) {
+  switch (maturityAction) {
+    case 'principal_interest_full_payment':
+      return 2; // Level 2 required for principal and interest full payment
+    case 'partial_payment':
+      return 1; // Level 1 for partial payments
+    case 'rollover':
+      return 2; // Level 2 for rollovers
+    case 'extend':
+      return 3; // Level 3 for extensions
+    default:
+      return 1; // Default to level 1
+  }
+}
+
+// Get authorization level number
+function getAuthorizationLevel(role) {
+  switch (role) {
+    case 'level1': return 1;
+    case 'level2': return 2;
+    case 'level3': return 3;
+    default: return 0;
+  }
+}
+
+// Calculate total maturity amount for authorization checks
+async function calculateTotalMaturityAmount(dealIds) {
+  const db = require('../config/db');
+  let totalAmount = 0;
+  
+  for (const dealId of dealIds) {
+    const [dealRows] = await db.query(`
+      SELECT principal_amount, interest_rate, maturity_date
+      FROM money_market_deals 
+      WHERE id = ?
+      UNION ALL
+      SELECT face_value as principal_amount, coupon_rate as interest_rate, maturity_date
+      FROM gsec_deals 
+      WHERE id = ?
+    `, [dealId, dealId]);
+    
+    if (dealRows.length > 0) {
+      const deal = dealRows[0];
+      const principalAmount = parseFloat(deal.principal_amount);
+      const interestRate = parseFloat(deal.interest_rate) / 100;
+      const daysToMaturity = Math.ceil((new Date(deal.maturity_date) - new Date()) / (1000 * 60 * 60 * 24));
+      const interestAmount = (principalAmount * interestRate * daysToMaturity) / 365;
+      totalAmount += principalAmount + interestAmount;
+    }
+  }
+  
+  return totalAmount;
+}
+
+// Handle principal and interest full payment maturity action
+async function handlePrincipalInterestFullPayment(dealIds, processDate, bankAccountId, res) {
+  const db = require('../config/db');
+  const connection = await db.getConnection();
+  
+  try {
+    await connection.beginTransaction();
+    
+    const processedDeals = [];
+    
+    for (const dealId of dealIds) {
+      // Get deal details
+      const [dealRows] = await connection.query(`
+        SELECT 
+          mm.id, mm.deal_number, mm.deal_type, mm.principal_amount, mm.interest_rate,
+          mm.maturity_date, mm.counterparty_id, mm.isin,
+          c.name as counterparty_name,
+          mm.deal_direction
+        FROM money_market_deals mm
+        LEFT JOIN counterparties c ON mm.counterparty_id = c.id
+        WHERE mm.id = ?
+        UNION ALL
+        SELECT 
+          g.id, g.deal_number, 'gsec' as deal_type, g.face_value as principal_amount, g.coupon_rate as interest_rate,
+          g.maturity_date, g.counterparty_id, g.isin,
+          c.name as counterparty_name,
+          g.deal_direction
+        FROM gsec_deals g
+        LEFT JOIN counterparties c ON g.counterparty_id = c.id
+        WHERE g.id = ?
+      `, [dealId, dealId]);
+      
+      if (dealRows.length === 0) {
+        throw new Error(`Deal ${dealId} not found`);
+      }
+      
+      const deal = dealRows[0];
+      const principalAmount = parseFloat(deal.principal_amount);
+      const interestRate = parseFloat(deal.interest_rate) / 100;
+      const daysToMaturity = Math.ceil((new Date(deal.maturity_date) - new Date()) / (1000 * 60 * 60 * 24));
+      const interestAmount = (principalAmount * interestRate * daysToMaturity) / 365;
+      const totalAmount = principalAmount + interestAmount;
+      
+      // Create accounting entries based on deal direction
+      if (deal.deal_direction === 'borrowing') {
+        // For borrowing: DR Liability Account, DR Interest Expenses, CR Bank Account
+        await createBorrowingMaturityEntries(connection, deal, principalAmount, interestAmount, bankAccountId, processDate);
+      } else if (deal.deal_direction === 'lending') {
+        // For lending: DR Bank Account, CR Asset Account, CR Interest Received
+        await createLendingMaturityEntries(connection, deal, principalAmount, interestAmount, bankAccountId, processDate);
+      }
+      
+      // Mark deal as processed
+      await connection.query(`
+        UPDATE money_market_deals 
+        SET status = 'matured', processed_date = ?, maturity_action = 'principal_interest_full_payment'
+        WHERE id = ?
+      `, [processDate, dealId]);
+      
+      // Log maturity processing for authorization tracking
+      const userData = req.headers['x-user-data'];
+      const user = userData ? JSON.parse(userData) : { id: null };
+      
+      await connection.query(`
+        INSERT INTO maturity_processing_log 
+        (deal_id, deal_number, maturity_action, principal_amount, interest_amount, total_amount, 
+         processed_date, processed_by, authorization_level, bank_account_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        dealId, 
+        deal.deal_number, 
+        'principal_interest_full_payment',
+        principalAmount, 
+        interestAmount, 
+        totalAmount,
+        processDate,
+        user.id,
+        'level2',
+        bankAccountId
+      ]);
+      
+      processedDeals.push({
+        dealId,
+        dealNumber: deal.deal_number,
+        principalAmount,
+        interestAmount,
+        totalAmount
+      });
+    }
+    
+    await connection.commit();
+    
+    return res.json({
+      success: true,
+      message: `Successfully processed ${processedDeals.length} deals with principal and interest full payment`,
+      data: processedDeals
+    });
+    
+  } catch (error) {
+    await connection.rollback();
+    console.error('Error in principal interest full payment:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  } finally {
+    connection.release();
+  }
+}
+
+// Create accounting entries for borrowing maturity
+async function createBorrowingMaturityEntries(connection, deal, principalAmount, interestAmount, bankAccountId, processDate) {
+  const Accounting = require('../models/accountingModel');
+  
+  // Get account IDs
+  const [liabilityAccount] = await connection.query(`
+    SELECT id FROM chart_of_accounts 
+    WHERE account_code LIKE '2%' AND account_name LIKE '%liability%' 
+    LIMIT 1
+  `);
+  
+  const [interestExpenseAccount] = await connection.query(`
+    SELECT id FROM chart_of_accounts 
+    WHERE account_code LIKE '9%' AND account_name LIKE '%interest%expense%' 
+    LIMIT 1
+  `);
+  
+  const [interestPayableAccount] = await connection.query(`
+    SELECT id FROM chart_of_accounts 
+    WHERE account_code LIKE '2%' AND account_name LIKE '%interest%payable%' 
+    LIMIT 1
+  `);
+  
+  const [interestAccrualAccount] = await connection.query(`
+    SELECT id FROM chart_of_accounts 
+    WHERE account_code LIKE '8%' AND account_name LIKE '%interest%accrual%' 
+    LIMIT 1
+  `);
+  
+  // Main maturity entries
+  await connection.query(`
+    INSERT INTO ledger_entries (deal_number, account_id, entry_date, debit_amount, credit_amount, currency, description)
+    VALUES (?, ?, ?, ?, 0, 'LKR', ?)
+  `, [deal.deal_number, liabilityAccount[0].id, processDate, principalAmount, `Maturity - Principal payment for deal ${deal.deal_number}`]);
+  
+  await connection.query(`
+    INSERT INTO ledger_entries (deal_number, account_id, entry_date, debit_amount, credit_amount, currency, description)
+    VALUES (?, ?, ?, ?, 0, 'LKR', ?)
+  `, [deal.deal_number, interestExpenseAccount[0].id, processDate, interestAmount, `Maturity - Interest expense for deal ${deal.deal_number}`]);
+  
+  await connection.query(`
+    INSERT INTO ledger_entries (deal_number, account_id, entry_date, debit_amount, credit_amount, currency, description)
+    VALUES (?, ?, ?, 0, ?, 'LKR', ?)
+  `, [deal.deal_number, bankAccountId, processDate, principalAmount + interestAmount, `Maturity - Bank payment for deal ${deal.deal_number}`]);
+  
+  // Reverse accumulated interest
+  if (interestPayableAccount.length > 0 && interestAccrualAccount.length > 0) {
+    await connection.query(`
+      INSERT INTO ledger_entries (deal_number, account_id, entry_date, debit_amount, credit_amount, currency, description)
+      VALUES (?, ?, ?, ?, 0, 'LKR', ?)
+    `, [deal.deal_number, interestPayableAccount[0].id, processDate, interestAmount, `Interest reversal for deal ${deal.deal_number}`]);
+    
+    await connection.query(`
+      INSERT INTO ledger_entries (deal_number, account_id, entry_date, debit_amount, credit_amount, currency, description)
+      VALUES (?, ?, ?, 0, ?, 'LKR', ?)
+    `, [deal.deal_number, interestAccrualAccount[0].id, processDate, interestAmount, `Interest accrual reversal for deal ${deal.deal_number}`]);
+  }
+}
+
+// Create accounting entries for lending maturity
+async function createLendingMaturityEntries(connection, deal, principalAmount, interestAmount, bankAccountId, processDate) {
+  // Get account IDs
+  const [assetAccount] = await connection.query(`
+    SELECT id FROM chart_of_accounts 
+    WHERE account_code LIKE '1%' AND account_name LIKE '%asset%' 
+    LIMIT 1
+  `);
+  
+  const [interestReceivedAccount] = await connection.query(`
+    SELECT id FROM chart_of_accounts 
+    WHERE account_code LIKE '8%' AND account_name LIKE '%interest%received%' 
+    LIMIT 1
+  `);
+  
+  const [interestReceivableAccount] = await connection.query(`
+    SELECT id FROM chart_of_accounts 
+    WHERE account_code LIKE '1%' AND account_name LIKE '%interest%receivable%' 
+    LIMIT 1
+  `);
+  
+  const [interestAccrualAccount] = await connection.query(`
+    SELECT id FROM chart_of_accounts 
+    WHERE account_code LIKE '8%' AND account_name LIKE '%interest%accrual%' 
+    LIMIT 1
+  `);
+  
+  // Main maturity entries
+  await connection.query(`
+    INSERT INTO ledger_entries (deal_number, account_id, entry_date, debit_amount, credit_amount, currency, description)
+    VALUES (?, ?, ?, ?, 0, 'LKR', ?)
+  `, [deal.deal_number, bankAccountId, processDate, principalAmount + interestAmount, `Maturity - Bank receipt for deal ${deal.deal_number}`]);
+  
+  await connection.query(`
+    INSERT INTO ledger_entries (deal_number, account_id, entry_date, debit_amount, credit_amount, currency, description)
+    VALUES (?, ?, ?, 0, ?, 'LKR', ?)
+  `, [deal.deal_number, assetAccount[0].id, processDate, principalAmount, `Maturity - Asset reduction for deal ${deal.deal_number}`]);
+  
+  await connection.query(`
+    INSERT INTO ledger_entries (deal_number, account_id, entry_date, debit_amount, credit_amount, currency, description)
+    VALUES (?, ?, ?, 0, ?, 'LKR', ?)
+  `, [deal.deal_number, interestReceivedAccount[0].id, processDate, interestAmount, `Maturity - Interest received for deal ${deal.deal_number}`]);
+  
+  // Reverse accumulated interest
+  if (interestReceivableAccount.length > 0 && interestAccrualAccount.length > 0) {
+    await connection.query(`
+      INSERT INTO ledger_entries (deal_number, account_id, entry_date, debit_amount, credit_amount, currency, description)
+      VALUES (?, ?, ?, 0, ?, 'LKR', ?)
+    `, [deal.deal_number, interestAccrualAccount[0].id, processDate, interestAmount, `Interest accrual reversal for deal ${deal.deal_number}`]);
+    
+    await connection.query(`
+      INSERT INTO ledger_entries (deal_number, account_id, entry_date, debit_amount, credit_amount, currency, description)
+      VALUES (?, ?, ?, ?, 0, 'LKR', ?)
+    `, [deal.deal_number, interestReceivableAccount[0].id, processDate, interestAmount, `Interest receivable reversal for deal ${deal.deal_number}`]);
+  }
+}
+
+MaturityController.getBankAccounts = async (req, res) => {
+  try {
+    const db = require('../config/db');
+    
+    // Get bank accounts from chart of accounts
+    const [bankAccounts] = await db.query(`
+      SELECT id, account_code, account_name, account_type_id
+      FROM chart_of_accounts 
+      WHERE account_code LIKE '1%' 
+        AND (account_name LIKE '%bank%' OR account_name LIKE '%cash%')
+        AND is_active = TRUE
+      ORDER BY account_code
+    `);
+    
+    return res.json({
+      success: true,
+      data: bankAccounts,
+      message: `Found ${bankAccounts.length} bank accounts`
+    });
+  } catch (error) {
+    console.error('Error fetching bank accounts:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+MaturityController.getMaturityProcessingHistory = async (req, res) => {
+  try {
+    const db = require('../config/db');
+    const { startDate, endDate, userId, authorizationLevel } = req.query;
+    
+    let query = `
+      SELECT mpl.*, u.username as processed_by_name
+      FROM maturity_processing_log mpl
+      LEFT JOIN users u ON mpl.processed_by = u.id
+      WHERE 1=1
+    `;
+    
+    const params = [];
+    
+    if (startDate) {
+      query += ` AND mpl.processed_date >= ?`;
+      params.push(startDate);
+    }
+    
+    if (endDate) {
+      query += ` AND mpl.processed_date <= ?`;
+      params.push(endDate);
+    }
+    
+    if (userId) {
+      query += ` AND mpl.processed_by = ?`;
+      params.push(userId);
+    }
+    
+    if (authorizationLevel) {
+      query += ` AND mpl.authorization_level = ?`;
+      params.push(authorizationLevel);
+    }
+    
+    query += ` ORDER BY mpl.processed_date DESC, mpl.created_at DESC`;
+    
+    const [history] = await db.query(query, params);
+    
+    return res.json({
+      success: true,
+      data: history,
+      message: `Found ${history.length} maturity processing records`
+    });
+  } catch (error) {
+    console.error('Error fetching maturity processing history:', error);
     return res.status(500).json({ success: false, error: error.message });
   }
 };

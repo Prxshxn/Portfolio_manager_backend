@@ -26,4 +26,12 @@ router.post('/process', MaturityController.processMaturities);
 // GET /api/maturity/export?date=YYYY-MM-DD&type=...&status=...&format=excel|csv|pdf
 router.get('/export', MaturityController.exportMaturities);
 
+// Get bank accounts for maturity processing
+// GET /api/maturity/bank-accounts
+router.get('/bank-accounts', MaturityController.getBankAccounts);
+
+// Get maturity processing history
+// GET /api/maturity/processing-history?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD&userId=123&authorizationLevel=level2
+router.get('/processing-history', MaturityController.getMaturityProcessingHistory);
+
 module.exports = router;
