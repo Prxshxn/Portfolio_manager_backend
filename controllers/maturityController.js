@@ -542,7 +542,7 @@ async function checkMaturityAuthorization(req, dealIds, maturityAction) {
 function getRequiredAuthorizationLevel(maturityAction) {
   switch (maturityAction) {
     case 'principal_interest_full_payment':
-      return 2; // Level 2 required for principal and interest full payment
+      return 3; // Level 3 required; post entries only after final approval
     case 'principal_reinvest_interest_paid':
       return 2; // Level 2 required for principal reinvestment with interest payment
     case 'principal_interest_reinvest':
@@ -651,12 +651,20 @@ async function handlePrincipalInterestFullPayment(dealIds, processDate, bankAcco
         await createLendingMaturityEntries(connection, deal, principalAmount, interestAmount, bankAccountId, processDate);
       }
       
-      // Mark deal as processed
-      await connection.query(`
-        UPDATE money_market_deals 
-        SET status = 'matured', processed_date = ?, maturity_action = 'principal_interest_full_payment'
-        WHERE id = ?
-      `, [processDate, dealId]);
+      // Mark deal as processed and matured on the correct table
+      if (deal.deal_type === 'gsec') {
+        await connection.query(`
+          UPDATE gsec_deals 
+          SET status = 'matured', matured = 1, processed_date = ?, maturity_action = 'principal_interest_full_payment'
+          WHERE id = ?
+        `, [processDate, dealId]);
+      } else {
+        await connection.query(`
+          UPDATE money_market_deals 
+          SET status = 'matured', matured = 1, processed_date = ?, maturity_action = 'principal_interest_full_payment'
+          WHERE id = ?
+        `, [processDate, dealId]);
+      }
       
       // Log maturity processing for authorization tracking
       const userData = req.headers['x-user-data'];
@@ -873,12 +881,20 @@ async function handlePrincipalReinvestInterestPaid(dealIds, processDate, bankAcc
         await createLendingInterestReceiptPrincipalReinvest(connection, deal, principalAmount, interestAmount, bankAccountId, processDate);
       }
       
-      // Mark deal as processed
-      await connection.query(`
-        UPDATE money_market_deals 
-        SET status = 'matured', processed_date = ?, maturity_action = 'principal_reinvest_interest_paid'
-        WHERE id = ?
-      `, [processDate, dealId]);
+      // Mark deal as processed and matured on the correct table
+      if (deal.deal_type === 'gsec') {
+        await connection.query(`
+          UPDATE gsec_deals 
+          SET status = 'matured', matured = 1, processed_date = ?, maturity_action = 'principal_reinvest_interest_paid'
+          WHERE id = ?
+        `, [processDate, dealId]);
+      } else {
+        await connection.query(`
+          UPDATE money_market_deals 
+          SET status = 'matured', matured = 1, processed_date = ?, maturity_action = 'principal_reinvest_interest_paid'
+          WHERE id = ?
+        `, [processDate, dealId]);
+      }
       
       // Log processing
       const userData = req.headers['x-user-data'];
@@ -974,12 +990,20 @@ async function handlePrincipalInterestReinvest(dealIds, processDate, res) {
       // Create accounting entries for full reinvestment
       await createFullReinvestmentEntries(connection, deal, principalAmount, interestAmount, processDate);
       
-      // Mark deal as processed
-      await connection.query(`
-        UPDATE money_market_deals 
-        SET status = 'matured', processed_date = ?, maturity_action = 'principal_interest_reinvest'
-        WHERE id = ?
-      `, [processDate, dealId]);
+      // Mark deal as processed and matured on the correct table
+      if (deal.deal_type === 'gsec') {
+        await connection.query(`
+          UPDATE gsec_deals 
+          SET status = 'matured', matured = 1, processed_date = ?, maturity_action = 'principal_interest_reinvest'
+          WHERE id = ?
+        `, [processDate, dealId]);
+      } else {
+        await connection.query(`
+          UPDATE money_market_deals 
+          SET status = 'matured', matured = 1, processed_date = ?, maturity_action = 'principal_interest_reinvest'
+          WHERE id = ?
+        `, [processDate, dealId]);
+      }
       
       // Log processing
       const userData = req.headers['x-user-data'];
@@ -1076,12 +1100,20 @@ async function handleDifferentAmountReinvest(dealIds, processDate, res) {
       // For now, we'll process as a standard reinvestment
       await createDifferentAmountReinvestmentEntries(connection, deal, principalAmount, interestAmount, processDate);
       
-      // Mark deal as processed
-      await connection.query(`
-        UPDATE money_market_deals 
-        SET status = 'matured', processed_date = ?, maturity_action = 'different_amount_reinvest'
-        WHERE id = ?
-      `, [processDate, dealId]);
+      // Mark deal as processed and matured on the correct table
+      if (deal.deal_type === 'gsec') {
+        await connection.query(`
+          UPDATE gsec_deals 
+          SET status = 'matured', matured = 1, processed_date = ?, maturity_action = 'different_amount_reinvest'
+          WHERE id = ?
+        `, [processDate, dealId]);
+      } else {
+        await connection.query(`
+          UPDATE money_market_deals 
+          SET status = 'matured', matured = 1, processed_date = ?, maturity_action = 'different_amount_reinvest'
+          WHERE id = ?
+        `, [processDate, dealId]);
+      }
       
       // Log processing
       const userData = req.headers['x-user-data'];
