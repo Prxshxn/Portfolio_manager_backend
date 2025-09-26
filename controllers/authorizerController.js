@@ -20,10 +20,7 @@ exports.createAssignment = async (req, res) => {
       role, 
       per_deal_limit, 
       per_day_limit, 
-      allowed_pages,
-      maturity_auth_level,
-      maturity_per_deal_limit,
-      maturity_per_day_limit
+      allowed_pages
     } = req.body;
     
     const assignment = await AuthorizerAssignment.createOrUpdate({ 
@@ -31,10 +28,7 @@ exports.createAssignment = async (req, res) => {
       role, 
       per_deal_limit, 
       per_day_limit, 
-      allowed_pages,
-      maturity_auth_level,
-      maturity_per_deal_limit,
-      maturity_per_day_limit
+      allowed_pages
     });
     res.json({ assignment });
   } catch (err) {

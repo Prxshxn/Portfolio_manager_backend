@@ -404,5 +404,8 @@ router.get('/bank-accounts', MaturityController.getBankAccounts);
  *                   type: string
  */
 router.get('/processing-history', MaturityController.getMaturityProcessingHistory);
+// 3-tier blotter endpoints
+router.get('/blotter', MaturityController.getMaturityBlotter);
+router.post('/approve', MaturityController.approveMaturities);
 
 module.exports = router;

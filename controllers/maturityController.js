@@ -1276,3 +1276,138 @@ MaturityController.exportMaturities = async (req, res) => {
 };
 
 module.exports = MaturityController;
+ 
+// --- Maturity Blotter helpers (3-tier flow like GSEC) ---
+// List pending maturities for blotters by role
+MaturityController.getMaturityBlotter = async (req, res) => {
+  try {
+    const db = require('../config/db');
+    const { date } = req.query;
+    const targetDate = date || new Date().toISOString().slice(0, 10);
+
+    // Determine requester role from header
+    const userData = req.headers['x-user-data'];
+    const user = userData ? JSON.parse(userData) : {};
+    const role = user.role;
+
+    // Base: pull distinct (deal_id, maturity_action) from log up to date
+    // Build role-specific filters
+    let filterSql = '';
+    if (role === 'front_office') {
+      // Items approved by FO and not yet seen by verifier/final
+      filterSql = `
+        mpl.authorization_level = 'front_office'
+        AND NOT EXISTS (
+          SELECT 1 FROM maturity_processing_log v
+          WHERE v.deal_id = mpl.deal_id AND v.maturity_action = mpl.maturity_action
+            AND v.authorization_level IN ('back_office_verifier','back_office_final')
+        )
+      `;
+    } else if (role === 'back_office_verifier') {
+      // Items with FO present, no final, and not yet verified
+      filterSql = `
+        EXISTS (
+          SELECT 1 FROM maturity_processing_log fo
+          WHERE fo.deal_id = mpl.deal_id AND fo.maturity_action = mpl.maturity_action
+            AND fo.authorization_level = 'front_office'
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM maturity_processing_log fin
+          WHERE fin.deal_id = mpl.deal_id AND fin.maturity_action = mpl.maturity_action
+            AND fin.authorization_level = 'back_office_final'
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM maturity_processing_log ver
+          WHERE ver.deal_id = mpl.deal_id AND ver.maturity_action = mpl.maturity_action
+            AND ver.authorization_level = 'back_office_verifier'
+        )
+      `;
+    } else {
+      // back_office_final or admin: items ready for final (FO exists, optional verifier), not matured yet
+      filterSql = `
+        EXISTS (
+          SELECT 1 FROM maturity_processing_log fo
+          WHERE fo.deal_id = mpl.deal_id AND fo.maturity_action = mpl.maturity_action
+            AND fo.authorization_level = 'front_office'
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM maturity_processing_log fin
+          WHERE fin.deal_id = mpl.deal_id AND fin.maturity_action = mpl.maturity_action
+            AND fin.authorization_level = 'back_office_final'
+        )
+      `;
+    }
+
+    const [rows] = await db.query(`
+      SELECT 
+        mpl.deal_id,
+        MIN(mpl.deal_number) AS deal_number,
+        MIN(mpl.maturity_action) AS maturity_action,
+        MIN(mpl.processed_date) AS first_logged_date,
+        -- Pull latest stage recorded
+        MAX(CASE mpl.authorization_level 
+              WHEN 'front_office' THEN 1 
+              WHEN 'back_office_verifier' THEN 2 
+              WHEN 'back_office_final' THEN 3 
+              ELSE 0 END) AS current_stage
+      FROM maturity_processing_log mpl
+      WHERE mpl.processed_date <= ?
+        AND ${filterSql}
+      GROUP BY mpl.deal_id, mpl.maturity_action
+      ORDER BY first_logged_date DESC, deal_id DESC
+    `, [targetDate]);
+
+    return res.json({ success: true, data: rows });
+  } catch (error) {
+    console.error('Error fetching maturity blotter:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// Approve maturities per role; only final posts entries
+MaturityController.approveMaturities = async (req, res) => {
+  try {
+    const { dealIds, processDate, maturityAction, bankPaymentCode, bankAccountId } = req.body || {};
+    if (!Array.isArray(dealIds) || dealIds.length === 0) {
+      return res.status(400).json({ success: false, error: 'dealIds array is required' });
+    }
+    if (!maturityAction) {
+      return res.status(400).json({ success: false, error: 'maturityAction is required' });
+    }
+
+    // Role from user header
+    const userData = req.headers['x-user-data'];
+    const user = userData ? JSON.parse(userData) : null;
+    const role = user?.role;
+    if (!role) {
+      return res.status(401).json({ success: false, error: 'Unauthorized' });
+    }
+
+    // Non-final roles just record approval in log and exit
+    if (role === 'front_office' || role === 'back_office_verifier') {
+      const db = require('../config/db');
+      const today = processDate || new Date().toISOString().slice(0, 10);
+      for (const id of dealIds) {
+        await db.query(`
+          INSERT INTO maturity_processing_log
+          (deal_id, deal_number, maturity_action, principal_amount, interest_amount, total_amount,
+           processed_date, processed_by, authorization_level, bank_account_id)
+          VALUES (?, ?, ?, 0, 0, 0, ?, ?, ?, NULL)
+        `, [id, String(id), maturityAction, today, user.id, role]);
+      }
+      return res.json({ success: true, message: `Recorded ${role} approval for ${dealIds.length} deals` });
+    }
+
+    // Final role triggers posting using existing handler
+    if (role === 'back_office_final' || role === 'admin') {
+      // Reuse processMaturities flow to post entries; fabricate req/res minimal
+      req.body = { dealIds, processDate, maturityAction, bankPaymentCode, bankAccountId };
+      return await MaturityController.processMaturities(req, res);
+    }
+
+    return res.status(403).json({ success: false, error: 'Role not allowed' });
+  } catch (error) {
+    console.error('Error approving maturities:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
