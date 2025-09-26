@@ -15,8 +15,27 @@ exports.getAllAssignments = async (req, res) => {
 // Create or update an authorizer assignment
 exports.createAssignment = async (req, res) => {
   try {
-    const { user_id, role, per_deal_limit, per_day_limit, allowed_pages } = req.body;
-    const assignment = await AuthorizerAssignment.createOrUpdate({ user_id, role, per_deal_limit, per_day_limit, allowed_pages });
+    const { 
+      user_id, 
+      role, 
+      per_deal_limit, 
+      per_day_limit, 
+      allowed_pages,
+      maturity_auth_level,
+      maturity_per_deal_limit,
+      maturity_per_day_limit
+    } = req.body;
+    
+    const assignment = await AuthorizerAssignment.createOrUpdate({ 
+      user_id, 
+      role, 
+      per_deal_limit, 
+      per_day_limit, 
+      allowed_pages,
+      maturity_auth_level,
+      maturity_per_deal_limit,
+      maturity_per_day_limit
+    });
     res.json({ assignment });
   } catch (err) {
     res.status(500).json({ error: err.message });

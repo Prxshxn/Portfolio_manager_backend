@@ -463,78 +463,37 @@ MaturityController.processMaturities = async (req, res) => {
 // Check maturity authorization with three-tier system
 async function checkMaturityAuthorization(req, dealIds, maturityAction) {
   try {
-    const db = require('../config/db');
-    
     // Get user from request headers
     const userData = req.headers['x-user-data'];
     if (!userData) {
-      return { authorized: false, message: 'User data not found', requiredLevel: 'level1' };
+      return { authorized: false, message: 'User data not found', requiredLevel: 'back_office_final' };
     }
-    
+
     const user = JSON.parse(userData);
-    const userId = user.id;
-    
-    // Get user's authorization assignments
-    const [assignments] = await db.query(`
-      SELECT role, per_deal_limit, per_day_limit, allowed_pages
-      FROM authorizer_assignments 
-      WHERE user_id = ? AND role IN ('level1', 'level2', 'level3')
-      ORDER BY 
-        CASE role 
-          WHEN 'level1' THEN 1 
-          WHEN 'level2' THEN 2 
-          WHEN 'level3' THEN 3 
-        END
-    `, [userId]);
-    
-    if (assignments.length === 0) {
-      return { authorized: false, message: 'No authorization level assigned', requiredLevel: 'level1' };
-    }
-    
-    // Check if user has the required authorization level for maturity processing
-    const requiredLevel = getRequiredAuthorizationLevel(maturityAction);
-    const userLevel = getAuthorizationLevel(assignments[0].role);
-    
-    if (userLevel < requiredLevel) {
-      return { 
-        authorized: false, 
-        message: `Requires authorization level ${requiredLevel} for this maturity action`,
-        requiredLevel: `level${requiredLevel}`
+
+    // Only final back office (or admin) can post maturity entries
+    const isFinal = user?.role === 'back_office_final' || user?.role === 'admin';
+    if (!isFinal) {
+      return {
+        authorized: false,
+        message: 'Only Back Office Final (or Admin) can post maturity entries',
+        requiredLevel: 'back_office_final'
       };
     }
-    
-    // Check deal limits
-    const totalAmount = await calculateTotalMaturityAmount(dealIds);
-    if (assignments[0].per_deal_limit && totalAmount > assignments[0].per_deal_limit) {
-      return { 
-        authorized: false, 
-        message: `Deal amount exceeds authorization limit of ${assignments[0].per_deal_limit}`,
-        requiredLevel: 'level3'
+
+    // Optionally ensure the user has access to the maturity page if provided
+    if (Array.isArray(user.allowed_tabs) && !user.allowed_tabs.includes('maturity')) {
+      return {
+        authorized: false,
+        message: 'User is not allowed to access maturity handling',
+        requiredLevel: 'back_office_final'
       };
     }
-    
-    // Check daily limits
-    const today = new Date().toISOString().split('T')[0];
-    const [dailyUsage] = await db.query(`
-      SELECT COALESCE(SUM(principal_amount + interest_amount), 0) as daily_total
-      FROM maturity_processing_log 
-      WHERE processed_by = ? AND DATE(processed_date) = ?
-    `, [userId, today]);
-    
-    if (assignments[0].per_day_limit && 
-        (dailyUsage[0].daily_total + totalAmount) > assignments[0].per_day_limit) {
-      return { 
-        authorized: false, 
-        message: `Daily limit exceeded. Current usage: ${dailyUsage[0].daily_total}, Limit: ${assignments[0].per_day_limit}`,
-        requiredLevel: 'level3'
-      };
-    }
-    
+
     return { authorized: true };
-    
   } catch (error) {
     console.error('Error checking maturity authorization:', error);
-    return { authorized: false, message: 'Authorization check failed', requiredLevel: 'level1' };
+    return { authorized: false, message: 'Authorization check failed', requiredLevel: 'back_office_final' };
   }
 }
 
