@@ -1,3 +1,5 @@
+const MaturityAmountService = require('../services/maturityAmountService');
+
 const MaturityController = {
   // Get money market maturities up to a specific date
   getMoneyMarketMaturities: async (req, res) => {
@@ -156,6 +158,37 @@ const MaturityController = {
       res.status(500).json({
         success: false,
         error: 'Failed to fetch maturity summary: ' + error.message
+      });
+    }
+  },
+
+  // Get maturity amounts for deals
+  getMaturityAmounts: async (req, res) => {
+    try {
+      const { dealIds, processDate } = req.query;
+      
+      if (!dealIds) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'dealIds parameter is required' 
+        });
+      }
+      
+      const dealIdArray = Array.isArray(dealIds) ? dealIds : dealIds.split(',');
+      const targetDate = processDate || new Date().toISOString().slice(0, 10);
+      
+      const maturityAmounts = await MaturityAmountService.getMaturityAmounts(dealIdArray, targetDate);
+      
+      return res.json({
+        success: true,
+        data: maturityAmounts,
+        message: `Retrieved maturity amounts for ${maturityAmounts.length} deals`
+      });
+    } catch (error) {
+      console.error('Error fetching maturity amounts:', error);
+      return res.status(500).json({ 
+        success: false, 
+        error: 'Failed to fetch maturity amounts: ' + error.message 
       });
     }
   }
@@ -352,40 +385,79 @@ MaturityController.getMaturityHandling = async (req, res) => {
 
     const MoneyMarketDeal = require('../models/moneyMarketDealModel');
     const GsecDeal = require('../models/gsec');
+    const RepoDeal = require('../models/repoDealModel');
 
     const wantMM = !type || type === 'all' || type === 'money_market';
     const wantGsec = !type || type === 'all' || type === 'gsec';
+    const wantRepo = !type || type === 'all' || type === 'repo';
 
-    const [mmRows, gsecRows] = await Promise.all([
+    const [mmRows, gsecRows, repoRows] = await Promise.all([
       wantMM ? MoneyMarketDeal.getMaturitiesByDate(date) : Promise.resolve([]),
-      wantGsec ? GsecDeal.getMaturitiesByDate(date) : Promise.resolve([])
+      wantGsec ? GsecDeal.getMaturitiesByDate(date) : Promise.resolve([]),
+      wantRepo ? RepoDeal.getMaturitiesByDate(date) : Promise.resolve([])
     ]);
 
-    // Map to common UI shape
-    const mmMapped = (mmRows || []).map((row, idx) => ({
+    // Map to common UI shape using database maturity_value
+    const mmMapped = (mmRows || []).map((row, idx) => {
+      const principalAmount = parseFloat(row.principal_amount || 0);
+      const interestAmount = parseFloat(row.interest_amount || 0);
+      const maturityValue = parseFloat(row.maturity_value || 0);
+      
+      return {
       id: row.id || row.deal_number || `mm-${idx}`,
       deal_number: row.deal_number,
       deal_type: 'money_market',
       isin: row.isin || '',
       counterparty: row.counterparty_name || row.counterparty_id,
-      face_value: row.principal_amount,
+        face_value: principalAmount,
+        interest_amount: interestAmount,
+        maturity_amount: maturityValue, // Use database maturity_value
       maturity_date: row.maturity_date,
       days_to_maturity: row.days_to_maturity,
       status: row.deal_status || 'pending'
-    }));
-    const gsecMapped = (gsecRows || []).map((row, idx) => ({
-      id: row.id || row.deal_number || `gsec-${idx}`,
-      deal_number: row.deal_number || row.isin || `GSEC-${idx}`,
-      deal_type: 'gsec',
-      isin: row.isin,
-      counterparty: row.counterparty_name || row.counterparty,
-      face_value: row.face_value,
-      maturity_date: row.maturity_date,
-      days_to_maturity: row.days_to_maturity,
-      status: row.deal_status || 'pending'
-    }));
+      };
+    });
+    const gsecMapped = (gsecRows || []).map((row, idx) => {
+      const faceValue = parseFloat(row.face_value || 0);
+      const settlementAmount = parseFloat(row.settlement_amount || 0);
+      const accruedInterest = parseFloat(row.accrued_interest || 0);
+      
+      return {
+        id: row.id || row.deal_number || `gsec-${idx}`,
+        deal_number: row.deal_number || row.isin || `GSEC-${idx}`,
+        deal_type: 'gsec',
+        isin: row.isin,
+        counterparty: row.counterparty_name || row.counterparty,
+        face_value: faceValue,
+        interest_amount: accruedInterest,
+        maturity_amount: settlementAmount, // Use settlement_amount for GSEC
+        maturity_date: row.maturity_date,
+        days_to_maturity: row.days_to_maturity,
+        status: row.deal_status || 'pending'
+      };
+    });
 
-    let combined = [...mmMapped, ...gsecMapped];
+    const repoMapped = (repoRows || []).map((row, idx) => {
+      const principalAmount = parseFloat(row.principal_amount || 0);
+      const interestAmount = parseFloat(row.interest_amount || 0);
+      const maturityAmount = parseFloat(row.maturity_amount || 0);
+      
+      return {
+        id: row.id || row.deal_number || `repo-${idx}`,
+        deal_number: row.deal_number,
+        deal_type: 'repo',
+        isin: row.isin || '',
+        counterparty: row.counterparty_name || row.counterparty_id,
+        face_value: principalAmount,
+        interest_amount: interestAmount,
+        maturity_amount: maturityAmount, // Use maturity_amount for Repo
+        maturity_date: row.maturity_date,
+        days_to_maturity: row.days_to_maturity,
+        status: row.deal_status || 'pending'
+      };
+    });
+
+    let combined = [...mmMapped, ...gsecMapped, ...repoMapped];
 
     // Optional status filter
     if (status && status !== 'all') {
@@ -1336,16 +1408,60 @@ MaturityController.getMaturityBlotter = async (req, res) => {
           WHEN 'front_office' THEN 1 
           WHEN 'back_office_verifier' THEN 2 
           WHEN 'back_office_final' THEN 3 
-          ELSE 0 END AS current_stage
+          ELSE 0 END AS current_stage,
+        -- Get product type and maturity amount
+        CASE 
+          WHEN mm.id IS NOT NULL THEN 'money_market'
+          WHEN g.id IS NOT NULL THEN 'gsec'
+          WHEN rd.id IS NOT NULL THEN 'repo'
+          ELSE 'unknown'
+        END AS product_type,
+        -- Maturity amounts based on product type
+        CASE 
+          WHEN mm.id IS NOT NULL THEN 
+            mm.principal_amount + (mm.principal_amount * mm.interest_rate * DATEDIFF(mm.maturity_date, ?) / 36500)
+          WHEN g.id IS NOT NULL THEN g.settlement_amount
+          WHEN rd.id IS NOT NULL THEN rd.maturity_amount
+          ELSE 0
+        END AS maturity_amount,
+        -- Additional product-specific fields
+        CASE 
+          WHEN mm.id IS NOT NULL THEN mm.principal_amount
+          WHEN g.id IS NOT NULL THEN g.face_value
+          WHEN rd.id IS NOT NULL THEN rd.principal_amount
+          ELSE 0
+        END AS principal_amount,
+        CASE 
+          WHEN mm.id IS NOT NULL THEN (mm.principal_amount * mm.interest_rate * DATEDIFF(mm.maturity_date, ?) / 36500)
+          WHEN g.id IS NOT NULL THEN g.accrued_interest
+          WHEN rd.id IS NOT NULL THEN rd.interest_amount
+          ELSE 0
+        END AS interest_amount,
+        -- Counterparty names
+        CASE 
+          WHEN mm.id IS NOT NULL THEN COALESCE(corp_mm.short_name, ind_mm.short_name, joint_mm.short_name, mm.counterparty_id)
+          WHEN g.id IS NOT NULL THEN g.counterparty
+          WHEN rd.id IS NOT NULL THEN COALESCE(corp_rd.short_name, ind_rd.short_name, joint_rd.short_name, rd.counterparty_id)
+          ELSE 'Unknown'
+        END AS counterparty_name
       FROM maturity_processing_log mpl
       LEFT JOIN money_market_deals mm ON mpl.deal_id = mm.id
       LEFT JOIN gsec g ON mpl.deal_id = g.id
+      LEFT JOIN repo_deals rd ON mpl.deal_id = rd.id
+      -- Counterparty joins for money market
+      LEFT JOIN counterparty_master_corporate corp_mm ON mm.counterparty_id = corp_mm.id
+      LEFT JOIN counterparty_master_individual ind_mm ON mm.counterparty_id = ind_mm.id
+      LEFT JOIN counterparty_master_joint joint_mm ON mm.counterparty_id = joint_mm.id
+      -- Counterparty joins for repo
+      LEFT JOIN counterparty_master_corporate corp_rd ON rd.counterparty_id = corp_rd.id
+      LEFT JOIN counterparty_master_individual ind_rd ON rd.counterparty_id = ind_rd.id
+      LEFT JOIN counterparty_master_joint joint_rd ON rd.counterparty_id = joint_rd.id
       WHERE mpl.processed_date <= ?
         AND ${filterSql}
         -- Exclude deals that are already matured
-        AND COALESCE(mm.matured, g.matured, 0) = 0
+        AND COALESCE(mm.matured, g.matured, rd.matured, 0) = 0
       ORDER BY mpl.processed_date DESC, mpl.deal_id DESC
-    `, [targetDate]);
+    `, [targetDate, targetDate, targetDate]);
 
     return res.json({ success: true, data: rows });
   } catch (error) {

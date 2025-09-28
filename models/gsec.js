@@ -806,6 +806,8 @@ Gsec.getMaturitiesByDate = async (date) => {
         g.counterparty
       ) as counterparty_name,
       g.face_value,
+      g.settlement_amount,
+      g.accrued_interest,
       g.maturity_date,
       g.status as deal_status,
       DATEDIFF(g.maturity_date, CURDATE()) as days_to_maturity
