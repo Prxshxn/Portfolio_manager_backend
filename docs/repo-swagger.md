@@ -1,7 +1,13 @@
-# Repo Deals API - Swagger Documentation
+# Portfolio Management API - Swagger Documentation
 
 ## Overview
-This document provides comprehensive Swagger/OpenAPI documentation for the Repo Deals API endpoints. The API handles Repo and Reverse Repo transactions with full CRUD operations, status management, and reporting capabilities.
+This document provides comprehensive Swagger/OpenAPI documentation for the Portfolio Management API endpoints. The API handles Repo and Reverse Repo transactions with full CRUD operations, status management, reporting capabilities, and maturity processing.
+
+Additional sections include Payment Master helper endpoints used by Front Office forms (e.g., GSec) to resolve settlement modes and bank details.
+
+## Related Documentation
+- **Maturity Handling API**: [Maturity Handling Swagger Documentation](./maturity-swagger.md)
+- **Repo Deals API**: This document (below)
 
 ## Base URL
 ```
@@ -15,6 +21,56 @@ Authorization: Bearer <your-jwt-token>
 ```
 
 ## API Endpoints
+### Payment Master - Settlement Modes
+
+#### Get Settlement Modes
+**GET** `/api/payment-master/modes`
+
+Returns a distinct list of settlement modes sourced from Payment Master, combining `payment_method` and `bank_payment_code`. Used to populate Settlement Mode dropdowns.
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "data": [
+    { "payment_method": "RTGS", "bank_payment_code": "RTGS-SAMPATH-001" },
+    { "payment_method": "CEFT", "bank_payment_code": "CEFT-COMM-002" }
+  ]
+}
+```
+
+**Notes:**
+- Results are ordered by `payment_method`, then `bank_payment_code`.
+- Records with NULL/empty `bank_payment_code` are filtered out.
+
+#### Get Bank Details by Bank Payment Code
+**GET** `/api/payment-master/bank-details/{code}`
+
+Looks up settlement bank details for the selected bank payment code.
+
+**Path Parameters:**
+- `code` (string): The `bank_payment_code` value.
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "data": {
+    "bank_name": "Sampath Bank",
+    "bank_branch": "Hq Branch",
+    "bank_account_number": "1234567890"
+  }
+}
+```
+
+**Response (404):**
+```json
+{ "success": false, "error": "No bank details found for this code" }
+```
+
+**Security:**
+- Same authentication requirements as other API endpoints (JWT Bearer).
+
 
 ### 1. Create Repo Deal
 **POST** `/api/repo-deals`

@@ -247,6 +247,23 @@ exports.getPaymentMethods = async (req, res) => {
   }
 };
 
+// Get settlement modes from payment_masters: payment_method + bank_payment_code
+exports.getPaymentModes = async (req, res) => {
+  try {
+    console.log('Fetching payment modes from payment_masters');
+    const [rows] = await db.query(
+      `SELECT DISTINCT payment_method, bank_payment_code
+       FROM payment_masters
+       WHERE bank_payment_code IS NOT NULL AND bank_payment_code != ''
+       ORDER BY payment_method, bank_payment_code`
+    );
+    res.json({ success: true, data: rows });
+  } catch (err) {
+    console.error('Error fetching payment modes:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
 // Delete Payment Master record by ID (optional - if you need delete functionality)
 exports.deletePaymentMaster = async (req, res) => {
   try {
