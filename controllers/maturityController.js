@@ -401,7 +401,14 @@ MaturityController.getMaturityHandling = async (req, res) => {
 
 MaturityController.processMaturities = async (req, res) => {
   try {
-    const { dealIds, processDate, bankAccountId, bankPaymentCode, maturityAction } = req.body || {};
+    const { dealIds, processDate, maturityAction, bankPaymentCode } = req.body || {};
+    const userData = req.headers['x-user-data'];
+    if (!userData) {
+      return res.status(401).json({ success: false, error: 'User data not found' });
+    }
+    const user = JSON.parse(userData);
+    const userId = user.id;
+
     if (!Array.isArray(dealIds) || dealIds.length === 0) {
       return res.status(400).json({ success: false, error: 'dealIds array is required' });
     }
@@ -409,53 +416,67 @@ MaturityController.processMaturities = async (req, res) => {
       return res.status(400).json({ success: false, error: 'maturityAction is required' });
     }
 
-    // Check authorization for maturity processing
-    const authResult = await checkMaturityAuthorization(req, dealIds, maturityAction);
-    if (!authResult.authorized) {
-      return res.status(403).json({ 
-        success: false, 
-        error: authResult.message,
-        requiresAuthorization: true,
-        authorizationLevel: authResult.requiredLevel
-      });
-    }
+    const db = require('../config/database');
+    const connection = await db.pool.getConnection();
+    await connection.beginTransaction();
 
-    // Resolve bankPaymentCode to bankAccountId if provided (for methods requiring bank movement)
-    let resolvedBankAccountId = bankAccountId;
-    if (!resolvedBankAccountId && bankPaymentCode && (maturityAction === 'principal_interest_full_payment' || maturityAction === 'principal_reinvest_interest_paid')) {
-      try {
-        const db = require('../config/db');
-        const [rows] = await db.query(
-          `SELECT id FROM chart_of_accounts WHERE is_active = TRUE AND (name LIKE '%bank%' OR name LIKE '%cash%') AND account_code LIKE '1%' ORDER BY id LIMIT 1`
-        );
-        if (rows.length > 0) {
-          resolvedBankAccountId = rows[0].id;
+    try {
+      const processedDeals = [];
+      for (const dealId of dealIds) {
+        // Get deal details
+        const [dealRows] = await connection.query(`
+          SELECT mm.id, mm.deal_number, mm.principal_amount, mm.interest_rate, mm.maturity_date, mm.deal_type
+          FROM money_market_deals mm WHERE mm.id = ?
+          UNION ALL
+          SELECT g.id, g.deal_number, g.face_value as principal_amount, g.yield as interest_rate, g.maturity_date, 'gsec' as deal_type
+          FROM gsec g WHERE g.id = ?
+        `, [dealId, dealId]);
+
+        if (dealRows.length === 0) {
+          throw new Error(`Deal ${dealId} not found`);
         }
-      } catch (e) {
-        console.error('Error resolving bankPaymentCode to bank account id:', e.message);
-      }
-    }
+        const deal = dealRows[0];
+        const principalAmount = parseFloat(deal.principal_amount);
+        const interestRate = parseFloat(deal.interest_rate) / 100;
+        const daysToMaturity = Math.ceil((new Date(deal.maturity_date) - new Date()) / (1000 * 60 * 60 * 24));
+        const interestAmount = (principalAmount * interestRate * daysToMaturity) / 365;
+        const totalAmount = principalAmount + interestAmount;
 
-    // Handle different maturity actions
-    switch (maturityAction) {
-      case 'principal_interest_full_payment':
-        return await handlePrincipalInterestFullPayment(dealIds, processDate, resolvedBankAccountId, res);
-      
-      case 'principal_reinvest_interest_paid':
-        return await handlePrincipalReinvestInterestPaid(dealIds, processDate, resolvedBankAccountId, res);
-      
-      case 'principal_interest_reinvest':
-        return await handlePrincipalInterestReinvest(dealIds, processDate, res);
-      
-      case 'different_amount_reinvest':
-        return await handleDifferentAmountReinvest(dealIds, processDate, res);
-      
-      default:
-        // For other process types, maintain existing behavior
-    return res.json({ success: true, message: `Queued ${dealIds.length} deals for ${processType} on ${processDate || ''}` });
+        // Create initial maturity processing log entry (front_office level)
+        await connection.query(`
+          INSERT INTO maturity_processing_log
+          (deal_id, deal_number, maturity_action, principal_amount, interest_amount, total_amount,
+           processed_date, processed_by, authorization_level, bank_account_id)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'front_office', ?)
+        `, [
+          dealId,
+          deal.deal_number,
+          maturityAction,
+          principalAmount,
+          interestAmount,
+          totalAmount,
+          processDate,
+          userId,
+          null // bank_account_id will be set during approval
+        ]);
+
+        processedDeals.push({ dealId, dealNumber: deal.deal_number, maturityAction });
+      }
+
+      await connection.commit();
+      return res.json({
+        success: true,
+        message: `Maturity processing initiated for ${processedDeals.length} deals. Awaiting Front Office Verifier approval.`,
+        data: processedDeals
+      });
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
     }
   } catch (error) {
-    console.error('Error processing maturities:', error);
+    console.error('Error initiating maturity processing:', error);
     return res.status(500).json({ success: false, error: error.message });
   }
 };
@@ -540,8 +561,8 @@ async function calculateTotalMaturityAmount(dealIds) {
       FROM money_market_deals 
       WHERE id = ?
       UNION ALL
-      SELECT face_value as principal_amount, coupon_rate as interest_rate, maturity_date
-      FROM gsec_deals 
+      SELECT face_value as principal_amount, yield as interest_rate, maturity_date
+      FROM gsec 
       WHERE id = ?
     `, [dealId, dealId]);
     
@@ -581,11 +602,11 @@ async function handlePrincipalInterestFullPayment(dealIds, processDate, bankAcco
         WHERE mm.id = ?
         UNION ALL
         SELECT 
-          g.id, g.deal_number, 'gsec' as deal_type, g.face_value as principal_amount, g.coupon_rate as interest_rate,
+          g.id, g.deal_number, 'gsec' as deal_type, g.face_value as principal_amount, g.yield as interest_rate,
           g.maturity_date, g.counterparty_id, g.isin,
           c.name as counterparty_name,
           g.deal_direction
-        FROM gsec_deals g
+        FROM gsec g
         LEFT JOIN counterparties c ON g.counterparty_id = c.id
         WHERE g.id = ?
       `, [dealId, dealId]);
@@ -613,16 +634,16 @@ async function handlePrincipalInterestFullPayment(dealIds, processDate, bankAcco
       // Mark deal as processed and matured on the correct table
       if (deal.deal_type === 'gsec') {
         await connection.query(`
-          UPDATE gsec_deals 
-          SET status = 'matured', matured = 1, processed_date = ?, maturity_action = 'principal_interest_full_payment'
+          UPDATE gsec 
+          SET matured = 1, maturity_action = 'principal_interest_full_payment'
           WHERE id = ?
-        `, [processDate, dealId]);
+        `, [dealId]);
       } else {
         await connection.query(`
           UPDATE money_market_deals 
-          SET status = 'matured', matured = 1, processed_date = ?, maturity_action = 'principal_interest_full_payment'
+          SET matured = 1, maturity_action = 'principal_interest_full_payment'
           WHERE id = ?
-        `, [processDate, dealId]);
+        `, [dealId]);
       }
       
       // Log maturity processing for authorization tracking
@@ -812,11 +833,11 @@ async function handlePrincipalReinvestInterestPaid(dealIds, processDate, bankAcc
         WHERE mm.id = ?
         UNION ALL
         SELECT 
-          g.id, g.deal_number, 'gsec' as deal_type, g.face_value as principal_amount, g.coupon_rate as interest_rate,
+          g.id, g.deal_number, 'gsec' as deal_type, g.face_value as principal_amount, g.yield as interest_rate,
           g.maturity_date, g.counterparty_id, g.isin,
           c.name as counterparty_name,
           g.deal_direction
-        FROM gsec_deals g
+        FROM gsec g
         LEFT JOIN counterparties c ON g.counterparty_id = c.id
         WHERE g.id = ?
       `, [dealId, dealId]);
@@ -843,16 +864,16 @@ async function handlePrincipalReinvestInterestPaid(dealIds, processDate, bankAcc
       // Mark deal as processed and matured on the correct table
       if (deal.deal_type === 'gsec') {
         await connection.query(`
-          UPDATE gsec_deals 
-          SET status = 'matured', matured = 1, processed_date = ?, maturity_action = 'principal_reinvest_interest_paid'
+          UPDATE gsec 
+          SET matured = 1, maturity_action = 'principal_reinvest_interest_paid'
           WHERE id = ?
-        `, [processDate, dealId]);
+        `, [dealId]);
       } else {
         await connection.query(`
           UPDATE money_market_deals 
-          SET status = 'matured', matured = 1, processed_date = ?, maturity_action = 'principal_reinvest_interest_paid'
+          SET matured = 1, maturity_action = 'principal_reinvest_interest_paid'
           WHERE id = ?
-        `, [processDate, dealId]);
+        `, [dealId]);
       }
       
       // Log processing
@@ -926,11 +947,11 @@ async function handlePrincipalInterestReinvest(dealIds, processDate, res) {
         WHERE mm.id = ?
         UNION ALL
         SELECT 
-          g.id, g.deal_number, 'gsec' as deal_type, g.face_value as principal_amount, g.coupon_rate as interest_rate,
+          g.id, g.deal_number, 'gsec' as deal_type, g.face_value as principal_amount, g.yield as interest_rate,
           g.maturity_date, g.counterparty_id, g.isin,
           c.name as counterparty_name,
           g.deal_direction
-        FROM gsec_deals g
+        FROM gsec g
         LEFT JOIN counterparties c ON g.counterparty_id = c.id
         WHERE g.id = ?
       `, [dealId, dealId]);
@@ -952,16 +973,16 @@ async function handlePrincipalInterestReinvest(dealIds, processDate, res) {
       // Mark deal as processed and matured on the correct table
       if (deal.deal_type === 'gsec') {
         await connection.query(`
-          UPDATE gsec_deals 
-          SET status = 'matured', matured = 1, processed_date = ?, maturity_action = 'principal_interest_reinvest'
+          UPDATE gsec 
+          SET matured = 1, maturity_action = 'principal_interest_reinvest'
           WHERE id = ?
-        `, [processDate, dealId]);
+        `, [dealId]);
       } else {
         await connection.query(`
           UPDATE money_market_deals 
-          SET status = 'matured', matured = 1, processed_date = ?, maturity_action = 'principal_interest_reinvest'
+          SET matured = 1, maturity_action = 'principal_interest_reinvest'
           WHERE id = ?
-        `, [processDate, dealId]);
+        `, [dealId]);
       }
       
       // Log processing
@@ -1035,11 +1056,11 @@ async function handleDifferentAmountReinvest(dealIds, processDate, res) {
         WHERE mm.id = ?
         UNION ALL
         SELECT 
-          g.id, g.deal_number, 'gsec' as deal_type, g.face_value as principal_amount, g.coupon_rate as interest_rate,
+          g.id, g.deal_number, 'gsec' as deal_type, g.face_value as principal_amount, g.yield as interest_rate,
           g.maturity_date, g.counterparty_id, g.isin,
           c.name as counterparty_name,
           g.deal_direction
-        FROM gsec_deals g
+        FROM gsec g
         LEFT JOIN counterparties c ON g.counterparty_id = c.id
         WHERE g.id = ?
       `, [dealId, dealId]);
@@ -1062,16 +1083,16 @@ async function handleDifferentAmountReinvest(dealIds, processDate, res) {
       // Mark deal as processed and matured on the correct table
       if (deal.deal_type === 'gsec') {
         await connection.query(`
-          UPDATE gsec_deals 
-          SET status = 'matured', matured = 1, processed_date = ?, maturity_action = 'different_amount_reinvest'
+          UPDATE gsec 
+          SET matured = 1, maturity_action = 'different_amount_reinvest'
           WHERE id = ?
-        `, [processDate, dealId]);
+        `, [dealId]);
       } else {
         await connection.query(`
           UPDATE money_market_deals 
-          SET status = 'matured', matured = 1, processed_date = ?, maturity_action = 'different_amount_reinvest'
+          SET matured = 1, maturity_action = 'different_amount_reinvest'
           WHERE id = ?
-        `, [processDate, dealId]);
+        `, [dealId]);
       }
       
       // Log processing
@@ -1124,7 +1145,7 @@ async function handleDifferentAmountReinvest(dealIds, processDate, res) {
 
 MaturityController.getBankAccounts = async (req, res) => {
   try {
-    const db = require('../config/db');
+    const db = require('../config/database');
     
     // Get bank accounts from chart of accounts
     const [bankAccounts] = await db.query(`
@@ -1149,7 +1170,7 @@ MaturityController.getBankAccounts = async (req, res) => {
 
 MaturityController.getMaturityProcessingHistory = async (req, res) => {
   try {
-    const db = require('../config/db');
+    const db = require('../config/database');
     const { startDate, endDate, userId, authorizationLevel } = req.query;
     
     let query = `
@@ -1281,7 +1302,7 @@ module.exports = MaturityController;
 // List pending maturities for blotters by role
 MaturityController.getMaturityBlotter = async (req, res) => {
   try {
-    const db = require('../config/db');
+    const db = require('../config/database');
     const { date } = req.query;
     const targetDate = date || new Date().toISOString().slice(0, 10);
 
@@ -1351,8 +1372,12 @@ MaturityController.getMaturityBlotter = async (req, res) => {
               WHEN 'back_office_final' THEN 3 
               ELSE 0 END) AS current_stage
       FROM maturity_processing_log mpl
+      LEFT JOIN money_market_deals mm ON mpl.deal_id = mm.id
+      LEFT JOIN gsec g ON mpl.deal_id = g.id
       WHERE mpl.processed_date <= ?
         AND ${filterSql}
+        -- Exclude deals that are already matured
+        AND COALESCE(mm.matured, g.matured, 0) = 0
       GROUP BY mpl.deal_id, mpl.maturity_action
       ORDER BY first_logged_date DESC, deal_id DESC
     `, [targetDate]);
@@ -1385,7 +1410,7 @@ MaturityController.approveMaturities = async (req, res) => {
 
     // Non-final roles just record approval in log and exit
     if (role === 'front_office' || role === 'back_office_verifier') {
-      const db = require('../config/db');
+      const db = require('../config/database');
       const today = processDate || new Date().toISOString().slice(0, 10);
       for (const id of dealIds) {
         await db.query(`

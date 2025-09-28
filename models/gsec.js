@@ -795,6 +795,8 @@ Gsec.getTransactionsByPortfolio = async (portfolioId) => {
 Gsec.getMaturitiesByDate = async (date) => {
   const query = `
     SELECT 
+      g.id,
+      g.deal_number,
       g.isin,
       g.counterparty,
       COALESCE(

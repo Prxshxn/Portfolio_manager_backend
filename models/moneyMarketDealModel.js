@@ -10,6 +10,7 @@ async function getAllDeals() {
 async function getMaturitiesByDate(date) {
   const query = `
     SELECT 
+      mmd.id,
       mmd.deal_number,
       mmd.counterparty_id,
       COALESCE(
