@@ -469,7 +469,7 @@ MaturityController.processMaturities = async (req, res) => {
         message: `Maturity processing initiated for ${processedDeals.length} deals. Awaiting Front Office Verifier approval.`,
         data: processedDeals
       });
-    } catch (error) {
+  } catch (error) {
       await connection.rollback();
       throw error;
     } finally {
@@ -1311,66 +1311,32 @@ MaturityController.getMaturityBlotter = async (req, res) => {
     const user = userData ? JSON.parse(userData) : {};
     const role = user.role;
 
-    // Base: pull distinct (deal_id, maturity_action) from log up to date
-    // Build role-specific filters
+    // Role-based filtering for the 3-tier approval flow
     let filterSql = '';
     if (role === 'front_office') {
-      // Items approved by FO and not yet seen by verifier/final
-      filterSql = `
-        mpl.authorization_level = 'front_office'
-        AND NOT EXISTS (
-          SELECT 1 FROM maturity_processing_log v
-          WHERE v.deal_id = mpl.deal_id AND v.maturity_action = mpl.maturity_action
-            AND v.authorization_level IN ('back_office_verifier','back_office_final')
-        )
-      `;
+      // Front office sees deals they initiated (authorization_level = 'front_office')
+      filterSql = `mpl.authorization_level = 'front_office'`;
     } else if (role === 'back_office_verifier') {
-      // Items with FO present, no final, and not yet verified
-      filterSql = `
-        EXISTS (
-          SELECT 1 FROM maturity_processing_log fo
-          WHERE fo.deal_id = mpl.deal_id AND fo.maturity_action = mpl.maturity_action
-            AND fo.authorization_level = 'front_office'
-        )
-        AND NOT EXISTS (
-          SELECT 1 FROM maturity_processing_log fin
-          WHERE fin.deal_id = mpl.deal_id AND fin.maturity_action = mpl.maturity_action
-            AND fin.authorization_level = 'back_office_final'
-        )
-        AND NOT EXISTS (
-          SELECT 1 FROM maturity_processing_log ver
-          WHERE ver.deal_id = mpl.deal_id AND ver.maturity_action = mpl.maturity_action
-            AND ver.authorization_level = 'back_office_verifier'
-        )
-      `;
+      // Verifier sees deals that Front Office has approved (authorization_level = 'back_office_verifier')
+      // These are ready for verifier approval
+      filterSql = `mpl.authorization_level = 'back_office_verifier'`;
     } else {
-      // back_office_final or admin: items ready for final (FO exists, optional verifier), not matured yet
-      filterSql = `
-        EXISTS (
-          SELECT 1 FROM maturity_processing_log fo
-          WHERE fo.deal_id = mpl.deal_id AND fo.maturity_action = mpl.maturity_action
-            AND fo.authorization_level = 'front_office'
-        )
-        AND NOT EXISTS (
-          SELECT 1 FROM maturity_processing_log fin
-          WHERE fin.deal_id = mpl.deal_id AND fin.maturity_action = mpl.maturity_action
-            AND fin.authorization_level = 'back_office_final'
-        )
-      `;
+      // back_office_final or admin: sees deals that Verifier has approved (authorization_level = 'back_office_final')
+      // These are ready for final approval
+      filterSql = `mpl.authorization_level = 'back_office_final'`;
     }
 
     const [rows] = await db.query(`
-      SELECT 
+      SELECT DISTINCT
         mpl.deal_id,
-        MIN(mpl.deal_number) AS deal_number,
-        MIN(mpl.maturity_action) AS maturity_action,
-        MIN(mpl.processed_date) AS first_logged_date,
-        -- Pull latest stage recorded
-        MAX(CASE mpl.authorization_level 
-              WHEN 'front_office' THEN 1 
-              WHEN 'back_office_verifier' THEN 2 
-              WHEN 'back_office_final' THEN 3 
-              ELSE 0 END) AS current_stage
+        mpl.deal_number,
+        mpl.maturity_action,
+        mpl.processed_date AS first_logged_date,
+        CASE mpl.authorization_level 
+          WHEN 'front_office' THEN 1 
+          WHEN 'back_office_verifier' THEN 2 
+          WHEN 'back_office_final' THEN 3 
+          ELSE 0 END AS current_stage
       FROM maturity_processing_log mpl
       LEFT JOIN money_market_deals mm ON mpl.deal_id = mm.id
       LEFT JOIN gsec g ON mpl.deal_id = g.id
@@ -1378,8 +1344,7 @@ MaturityController.getMaturityBlotter = async (req, res) => {
         AND ${filterSql}
         -- Exclude deals that are already matured
         AND COALESCE(mm.matured, g.matured, 0) = 0
-      GROUP BY mpl.deal_id, mpl.maturity_action
-      ORDER BY first_logged_date DESC, deal_id DESC
+      ORDER BY mpl.processed_date DESC, mpl.deal_id DESC
     `, [targetDate]);
 
     return res.json({ success: true, data: rows });
@@ -1408,19 +1373,44 @@ MaturityController.approveMaturities = async (req, res) => {
       return res.status(401).json({ success: false, error: 'Unauthorized' });
     }
 
-    // Non-final roles just record approval in log and exit
+    // Non-final roles update the existing log record with new authorization level
     if (role === 'front_office' || role === 'back_office_verifier') {
       const db = require('../config/database');
       const today = processDate || new Date().toISOString().slice(0, 10);
+      
       for (const id of dealIds) {
-        await db.query(`
-          INSERT INTO maturity_processing_log
-          (deal_id, deal_number, maturity_action, principal_amount, interest_amount, total_amount,
-           processed_date, processed_by, authorization_level, bank_account_id)
-          VALUES (?, ?, ?, 0, 0, 0, ?, ?, ?, NULL)
-        `, [id, String(id), maturityAction, today, user.id, role]);
+        // Check if record exists for this deal and maturity action
+        const [existing] = await db.query(`
+          SELECT id FROM maturity_processing_log 
+          WHERE deal_id = ? AND maturity_action = ?
+          ORDER BY created_at DESC LIMIT 1
+        `, [id, maturityAction]);
+        
+        if (existing.length > 0) {
+          // Update existing record with next authorization level
+          let nextLevel = '';
+          if (role === 'front_office') {
+            nextLevel = 'back_office_verifier'; // Front Office approval moves to Verifier
+          } else if (role === 'back_office_verifier') {
+            nextLevel = 'back_office_final'; // Verifier approval moves to Final
+          }
+          
+          await db.query(`
+            UPDATE maturity_processing_log 
+            SET authorization_level = ?, processed_by = ?, processed_date = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+          `, [nextLevel, user.id, today, existing[0].id]);
+        } else {
+          // Create new record if none exists (shouldn't happen in normal flow)
+          await db.query(`
+            INSERT INTO maturity_processing_log
+            (deal_id, deal_number, maturity_action, principal_amount, interest_amount, total_amount,
+             processed_date, processed_by, authorization_level, bank_account_id)
+            VALUES (?, ?, ?, 0, 0, 0, ?, ?, ?, NULL)
+          `, [id, String(id), maturityAction, today, user.id, role]);
+        }
       }
-      return res.json({ success: true, message: `Recorded ${role} approval for ${dealIds.length} deals` });
+      return res.json({ success: true, message: `Updated ${role} authorization for ${dealIds.length} deals` });
     }
 
     // Final role triggers posting using existing handler
