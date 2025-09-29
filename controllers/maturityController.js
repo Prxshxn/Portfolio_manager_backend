@@ -191,6 +191,170 @@ const MaturityController = {
         error: 'Failed to fetch maturity amounts: ' + error.message 
       });
     }
+  },
+
+  // Get deal details for maturity method 2 (principal reinvestment)
+  getDealDetailsForReinvestment: async (req, res) => {
+    try {
+      const { dealId, productType } = req.query;
+      
+      if (!dealId || !productType) {
+        return res.status(400).json({ 
+          success: false, 
+          error: 'dealId and productType parameters are required' 
+        });
+      }
+
+      let dealDetails = null;
+      let interestAmount = 0;
+
+      // Fetch deal details based on product type
+      if (productType === 'money_market') {
+        const MoneyMarketDeal = require('../models/moneyMarketDealModel');
+        const [rows] = await db.query(`
+          SELECT 
+            mmd.id,
+            mmd.deal_number,
+            mmd.principal_amount,
+            mmd.interest_rate,
+            mmd.maturity_date,
+            mmd.counterparty_id,
+            mmd.currency,
+            mmd.product_type,
+            COALESCE(
+              corp.short_name,
+              ind.short_name,
+              joint.short_name,
+              mmd.counterparty_id
+            ) as counterparty_name
+          FROM money_market_deals mmd
+          LEFT JOIN counterparty_master_corporate corp ON mmd.counterparty_id = corp.id
+          LEFT JOIN counterparty_master_individual ind ON mmd.counterparty_id = ind.id
+          LEFT JOIN counterparty_master_joint joint ON mmd.counterparty_id = joint.id
+          WHERE mmd.id = ?
+        `, [dealId]);
+
+        if (rows.length > 0) {
+          const deal = rows[0];
+          const principalAmount = parseFloat(deal.principal_amount);
+          const interestRate = parseFloat(deal.interest_rate) / 100;
+          const daysToMaturity = Math.ceil((new Date(deal.maturity_date) - new Date()) / (1000 * 60 * 60 * 24));
+          interestAmount = (principalAmount * interestRate * daysToMaturity) / 365;
+
+          dealDetails = {
+            product_type: 'money_market',
+            original_deal_id: deal.id,
+            original_deal_number: deal.deal_number,
+            principal_amount: principalAmount,
+            interest_amount: interestAmount,
+            interest_rate: deal.interest_rate,
+            maturity_date: deal.maturity_date,
+            counterparty_id: deal.counterparty_id,
+            counterparty_name: deal.counterparty_name,
+            currency: deal.currency,
+            product_type_name: deal.product_type
+          };
+        }
+      } else if (productType === 'gsec') {
+        const [rows] = await db.query(`
+          SELECT 
+            g.id,
+            g.deal_number,
+            g.face_value,
+            g.settlement_amount,
+            g.accrued_interest,
+            g.maturity_date,
+            g.counterparty,
+            g.currency,
+            g.isin
+          FROM gsec g
+          WHERE g.id = ?
+        `, [dealId]);
+
+        if (rows.length > 0) {
+          const deal = rows[0];
+          const faceValue = parseFloat(deal.face_value);
+          const accruedInterest = parseFloat(deal.accrued_interest || 0);
+          const settlementAmount = parseFloat(deal.settlement_amount || 0);
+          interestAmount = accruedInterest;
+
+          dealDetails = {
+            product_type: 'gsec',
+            original_deal_id: deal.id,
+            original_deal_number: deal.deal_number,
+            principal_amount: faceValue,
+            interest_amount: interestAmount,
+            settlement_amount: settlementAmount,
+            maturity_date: deal.maturity_date,
+            counterparty: deal.counterparty,
+            currency: deal.currency,
+            isin: deal.isin
+          };
+        }
+      } else if (productType === 'repo') {
+        const [rows] = await db.query(`
+          SELECT 
+            rd.id,
+            rd.principal_amount,
+            rd.interest_amount,
+            rd.maturity_amount,
+            rd.rate,
+            rd.maturity_date,
+            rd.counterparty_id,
+            rd.isin_number,
+            COALESCE(
+              corp.short_name,
+              ind.short_name,
+              joint.short_name,
+              rd.counterparty_id
+            ) as counterparty_name
+          FROM repo_deals rd
+          LEFT JOIN counterparty_master_corporate corp ON rd.counterparty_id = corp.id
+          LEFT JOIN counterparty_master_individual ind ON rd.counterparty_id = ind.id
+          LEFT JOIN counterparty_master_joint joint ON rd.counterparty_id = joint.id
+          WHERE rd.id = ?
+        `, [dealId]);
+
+        if (rows.length > 0) {
+          const deal = rows[0];
+          const principalAmount = parseFloat(deal.principal_amount);
+          const interestAmount = parseFloat(deal.interest_amount);
+
+          dealDetails = {
+            product_type: 'repo',
+            original_deal_id: deal.id,
+            original_deal_number: deal.id, // repo uses id as deal number
+            principal_amount: principalAmount,
+            interest_amount: interestAmount,
+            maturity_amount: parseFloat(deal.maturity_amount),
+            rate: deal.rate,
+            maturity_date: deal.maturity_date,
+            counterparty_id: deal.counterparty_id,
+            counterparty_name: deal.counterparty_name,
+            isin_number: deal.isin_number
+          };
+        }
+      }
+
+      if (!dealDetails) {
+        return res.status(404).json({
+          success: false,
+          error: 'Deal not found'
+        });
+      }
+
+      return res.json({
+        success: true,
+        data: dealDetails,
+        message: 'Deal details retrieved for reinvestment'
+      });
+    } catch (error) {
+      console.error('Error fetching deal details for reinvestment:', error);
+      return res.status(500).json({ 
+        success: false, 
+        error: 'Failed to fetch deal details: ' + error.message 
+      });
+    }
   }
 };
 
@@ -423,17 +587,17 @@ MaturityController.getMaturityHandling = async (req, res) => {
       const accruedInterest = parseFloat(row.accrued_interest || 0);
       
       return {
-        id: row.id || row.deal_number || `gsec-${idx}`,
-        deal_number: row.deal_number || row.isin || `GSEC-${idx}`,
-        deal_type: 'gsec',
-        isin: row.isin,
-        counterparty: row.counterparty_name || row.counterparty,
+      id: row.id || row.deal_number || `gsec-${idx}`,
+      deal_number: row.deal_number || row.isin || `GSEC-${idx}`,
+      deal_type: 'gsec',
+      isin: row.isin,
+      counterparty: row.counterparty_name || row.counterparty,
         face_value: faceValue,
         interest_amount: accruedInterest,
         maturity_amount: settlementAmount, // Use settlement_amount for GSEC
-        maturity_date: row.maturity_date,
-        days_to_maturity: row.days_to_maturity,
-        status: row.deal_status || 'pending'
+      maturity_date: row.maturity_date,
+      days_to_maturity: row.days_to_maturity,
+      status: row.deal_status || 'pending'
       };
     });
 

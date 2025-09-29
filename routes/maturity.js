@@ -409,6 +409,61 @@ router.get('/blotter', MaturityController.getMaturityBlotter);
 
 /**
  * @swagger
+ * /api/maturity/reinvestment-details:
+ *   get:
+ *     summary: Get deal details for maturity method 2 (principal reinvestment)
+ *     tags: [Maturity]
+ *     parameters:
+ *       - in: query
+ *         name: dealId
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: ID of the deal to reinvest
+ *       - in: query
+ *         name: productType
+ *         required: true
+ *         schema:
+ *           type: string
+ *           enum: [money_market, gsec, repo]
+ *         description: Type of product (money_market, gsec, or repo)
+ *     responses:
+ *       200:
+ *         description: Deal details retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     product_type:
+ *                       type: string
+ *                     original_deal_id:
+ *                       type: integer
+ *                     original_deal_number:
+ *                       type: string
+ *                     principal_amount:
+ *                       type: number
+ *                     interest_amount:
+ *                       type: number
+ *                     maturity_date:
+ *                       type: string
+ *                       format: date
+ *                     counterparty_name:
+ *                       type: string
+ *                     currency:
+ *                       type: string
+ *                 message:
+ *                   type: string
+ */
+router.get('/reinvestment-details', MaturityController.getDealDetailsForReinvestment);
+
+/**
+ * @swagger
  * /api/maturity/amounts:
  *   get:
  *     summary: Get maturity amounts for specific deals
