@@ -205,6 +205,7 @@ const MaturityController = {
         });
       }
 
+      const db = require('../config/database');
       let dealDetails = null;
       let interestAmount = 0;
 
