@@ -1,4 +1,5 @@
 const db = require('../config/db');
+const CashflowCaptureService = require('../services/cashflowCaptureService');
 
 const RepoDeal = {
   // Create a new repo deal
@@ -37,6 +38,21 @@ const RepoDeal = {
       ];
 
       const [result] = await db.query(sql, values);
+      
+      // Capture cashflow for the new repo deal
+      try {
+        await CashflowCaptureService.captureRepoCashflow(
+          result.insertId,
+          dealData.dealType,
+          dealData.principalAmount,
+          dealData.tradeDate,
+          dealData.counterparty
+        );
+      } catch (cashflowError) {
+        console.error('Error capturing cashflow for repo deal:', cashflowError);
+        // Don't fail the main process if cashflow capture fails
+      }
+      
       return { id: result.insertId, ...dealData };
     } catch (error) {
       console.error('Error creating repo deal:', error);

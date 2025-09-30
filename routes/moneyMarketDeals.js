@@ -3,6 +3,7 @@ const router = express.Router();
 
 // Import your DB connection (adjust path as needed)
 const pool = require('../db');
+const CashflowCaptureService = require('../services/cashflowCaptureService');
 
 /**
  * @swagger
@@ -131,6 +132,20 @@ router.post('/', async (req, res) => {
         deal.settlementMode, deal.remarks, deal.dealType || null
       ]
     );
+
+    // Capture cashflow for the new deal
+    try {
+      await CashflowCaptureService.captureMoneyMarketCashflow(
+        result.insertId,
+        deal.dealType || 'lending',
+        deal.principalAmount,
+        deal.tradeDate,
+        deal.counterpartyId
+      );
+    } catch (cashflowError) {
+      console.error('Error capturing cashflow for money market deal:', cashflowError);
+      // Don't fail the main process if cashflow capture fails
+    }
 
     // Ledger entries are now only posted after final approval, not here.
     res.status(201).json({ success: true, message: 'Deal saved', id: result.insertId, dealNumber });

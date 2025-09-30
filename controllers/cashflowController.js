@@ -1,4 +1,5 @@
 const CashflowModel = require('../models/cashflowModel');
+const CashflowCaptureService = require('../services/cashflowCaptureService');
 
 class CashflowController {
   // Get cashflow statement
@@ -162,11 +163,12 @@ class CashflowController {
   // Auto-categorize transactions
   static async autoCategorizeTransactions(req, res) {
     try {
-      const result = await CashflowModel.autoCategorizeTransactions();
+      // Use the new comprehensive capture service
+      const result = await CashflowCaptureService.autoCaptureExistingTransactions();
       
       res.json({
         success: true,
-        message: `Auto-categorization completed. ${result.categorizedCount} transactions categorized.`,
+        message: `Auto-categorization completed. ${result.totalCaptured} cashflow entries captured from existing transactions.`,
         data: result
       });
     } catch (error) {

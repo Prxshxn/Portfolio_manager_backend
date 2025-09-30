@@ -1,5 +1,6 @@
 const db = require('../config/database');
 const LimitSetup = require('./limitSetupModel');
+const CashflowCaptureService = require('../services/cashflowCaptureService');
 
 const Gsec = {
   create: async (data) => {
@@ -140,6 +141,21 @@ const Gsec = {
           return result;
         } else {
           const [result] = await db.query(sql, values);
+          
+          // Capture cashflow for the new GSEC transaction
+          try {
+            await CashflowCaptureService.captureGsecCashflow(
+              result.insertId,
+              data.transactionType,
+              data.settlementAmount,
+              data.valueDate,
+              data.counterparty
+            );
+          } catch (cashflowError) {
+            console.error('Error capturing cashflow for GSEC transaction:', cashflowError);
+            // Don't fail the main process if cashflow capture fails
+          }
+          
           return result;
         }
       } catch (error) {

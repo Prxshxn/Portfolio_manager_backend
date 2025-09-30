@@ -1,4 +1,5 @@
 const MaturityAmountService = require('../services/maturityAmountService');
+const CashflowCaptureService = require('../services/cashflowCaptureService');
 
 const MaturityController = {
   // Get money market maturities up to a specific date
@@ -1698,6 +1699,35 @@ MaturityController.approveMaturities = async (req, res) => {
     if (role === 'back_office_final' || role === 'admin') {
       // Reuse processMaturities flow to post entries; fabricate req/res minimal
       req.body = { dealIds, processDate, maturityAction, bankPaymentCode, bankAccountId };
+      
+      // Capture cashflow for each deal after final approval
+      try {
+        const db = require('../config/database');
+        for (const dealId of dealIds) {
+          // Get maturity details for cashflow capture
+          const [maturityRows] = await db.query(`
+            SELECT mpl.deal_id, mpl.product_type, mpl.maturity_action, mpl.total_amount, mpl.maturity_date
+            FROM maturity_processing_log mpl
+            WHERE mpl.deal_id = ? AND mpl.maturity_action = ?
+            ORDER BY mpl.created_at DESC LIMIT 1
+          `, [dealId, maturityAction]);
+          
+          if (maturityRows.length > 0) {
+            const maturity = maturityRows[0];
+            await CashflowCaptureService.captureMaturityCashflow(
+              maturity.deal_id,
+              maturity.product_type || 'money_market',
+              maturity.maturity_action,
+              maturity.total_amount,
+              maturity.maturity_date
+            );
+          }
+        }
+      } catch (cashflowError) {
+        console.error('Error capturing cashflow for maturity:', cashflowError);
+        // Don't fail the main process if cashflow capture fails
+      }
+      
       return await MaturityController.processMaturities(req, res);
     }
 
