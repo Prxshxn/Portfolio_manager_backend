@@ -402,9 +402,9 @@ class CashflowCaptureService {
       
       // Capture from GSEC transactions
       const [gsecRows] = await db.query(`
-        SELECT g.id, g.deal_number, g.settlement_amount, g.deal_date, g.counterparty
+        SELECT g.id, g.deal_number, g.settlement_amount, g.value_date, g.counterparty
         FROM gsec g
-        WHERE g.deal_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+        WHERE g.value_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
         AND g.settlement_amount > 0
       `);
       
@@ -413,7 +413,7 @@ class CashflowCaptureService {
           row.id,
           'buy', // Assuming all GSEC entries are purchases
           row.settlement_amount,
-          row.deal_date,
+          row.value_date,
           row.counterparty
         );
         totalCaptured += captured;
@@ -421,9 +421,9 @@ class CashflowCaptureService {
       
       // Capture from Repo transactions
       const [repoRows] = await db.query(`
-        SELECT rd.id, rd.principal_amount, rd.deal_date, rd.counterparty_id
+        SELECT rd.id, rd.principal_amount, rd.trade_date, rd.counterparty_id
         FROM repo_deals rd
-        WHERE rd.deal_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+        WHERE rd.trade_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
         AND rd.principal_amount > 0
       `);
       
@@ -432,7 +432,7 @@ class CashflowCaptureService {
           row.id,
           'repo_in', // Assuming repo deals are lending
           row.principal_amount,
-          row.deal_date,
+          row.trade_date,
           row.counterparty_id
         );
         totalCaptured += captured;
@@ -440,9 +440,9 @@ class CashflowCaptureService {
       
       // Capture from Money Market transactions
       const [mmRows] = await db.query(`
-        SELECT mmd.id, mmd.principal_amount, mmd.deal_date, mmd.counterparty_id
+        SELECT mmd.id, mmd.principal_amount, mmd.trade_date, mmd.counterparty_id
         FROM money_market_deals mmd
-        WHERE mmd.deal_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+        WHERE mmd.trade_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
         AND mmd.principal_amount > 0
       `);
       
@@ -451,7 +451,7 @@ class CashflowCaptureService {
           row.id,
           'lending', // Assuming money market deals are lending
           row.principal_amount,
-          row.deal_date,
+          row.trade_date,
           row.counterparty_id
         );
         totalCaptured += captured;
