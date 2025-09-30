@@ -363,19 +363,39 @@ class CashflowCaptureService {
       
       // Capture from maturity processing log (final approvals)
       const [maturityRows] = await db.query(`
-        SELECT mpl.deal_id, mpl.product_type, mpl.maturity_action, mpl.maturity_amount, mpl.maturity_date
+        SELECT mpl.deal_id, mpl.maturity_action, mpl.total_amount, mpl.processed_date
         FROM maturity_processing_log mpl
         WHERE mpl.authorization_level = 'back_office_final'
-        AND mpl.maturity_date <= CURDATE()
+        AND mpl.processed_date <= CURDATE()
       `);
       
       for (const row of maturityRows) {
+        // Infer product type by probing deal tables
+        let productType = 'money_market';
+        let found = false;
+        try {
+          const [mm] = await db.query('SELECT id FROM money_market_deals WHERE id = ? LIMIT 1', [row.deal_id]);
+          if (mm.length) { productType = 'money_market'; found = true; }
+        } catch (_) {}
+        if (!found) {
+          try {
+            const [g] = await db.query('SELECT id FROM gsec WHERE id = ? LIMIT 1', [row.deal_id]);
+            if (g.length) { productType = 'gsec'; found = true; }
+          } catch (_) {}
+        }
+        if (!found) {
+          try {
+            const [r] = await db.query('SELECT id FROM repo_deals WHERE id = ? LIMIT 1', [row.deal_id]);
+            if (r.length) { productType = 'repo'; found = true; }
+          } catch (_) {}
+        }
+
         const captured = await this.captureMaturityCashflow(
           row.deal_id,
-          row.product_type,
+          productType,
           row.maturity_action,
-          row.maturity_amount,
-          row.maturity_date
+          row.total_amount,
+          row.processed_date
         );
         totalCaptured += captured;
       }

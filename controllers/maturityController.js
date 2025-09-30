@@ -1706,7 +1706,7 @@ MaturityController.approveMaturities = async (req, res) => {
         for (const dealId of dealIds) {
           // Get maturity details for cashflow capture
           const [maturityRows] = await db.query(`
-            SELECT mpl.deal_id, mpl.product_type, mpl.maturity_action, mpl.total_amount, mpl.maturity_date
+            SELECT mpl.deal_id, mpl.maturity_action, mpl.total_amount, mpl.processed_date
             FROM maturity_processing_log mpl
             WHERE mpl.deal_id = ? AND mpl.maturity_action = ?
             ORDER BY mpl.created_at DESC LIMIT 1
@@ -1714,12 +1714,33 @@ MaturityController.approveMaturities = async (req, res) => {
           
           if (maturityRows.length > 0) {
             const maturity = maturityRows[0];
+
+            // Infer product type
+            let productType = 'money_market';
+            let found = false;
+            try {
+              const [mm] = await db.query('SELECT id FROM money_market_deals WHERE id = ? LIMIT 1', [dealId]);
+              if (mm.length) { productType = 'money_market'; found = true; }
+            } catch (_) {}
+            if (!found) {
+              try {
+                const [g] = await db.query('SELECT id FROM gsec WHERE id = ? LIMIT 1', [dealId]);
+                if (g.length) { productType = 'gsec'; found = true; }
+              } catch (_) {}
+            }
+            if (!found) {
+              try {
+                const [r] = await db.query('SELECT id FROM repo_deals WHERE id = ? LIMIT 1', [dealId]);
+                if (r.length) { productType = 'repo'; found = true; }
+              } catch (_) {}
+            }
+
             await CashflowCaptureService.captureMaturityCashflow(
               maturity.deal_id,
-              maturity.product_type || 'money_market',
+              productType,
               maturity.maturity_action,
               maturity.total_amount,
-              maturity.maturity_date
+              maturity.processed_date
             );
           }
         }
