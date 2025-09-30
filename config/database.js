@@ -13,7 +13,8 @@ const pool = mysql.createPool({
   queueLimit: 0,
   acquireTimeout: 30000, // 30 seconds
   timeout: 30000, // 30 seconds
-  idleTimeout: 300000 // 5 minutes
+  idleTimeout: 300000, // 5 minutes
+  reconnect: true
 });
 
 // Test the connection and create database/tables if needed

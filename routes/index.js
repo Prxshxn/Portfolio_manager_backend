@@ -12,6 +12,7 @@ const strategyMasterRoutes = require('./strategyMasterRoutes');
 const reportMoneyMarketRoutes = require('./reportMoneyMarket');
 const reportMarkToMarketRoutes = require('./reportMarkToMarket');
 const markToMarketRoutes = require('./markToMarketRoutes');
+const cashflowRoutes = require('./cashflowRoutes');
 
 // Portfolio Master API
 router.use('/portfolio-master', portfolioMasterRoutes);
@@ -41,6 +42,7 @@ router.use('/money-market-deals', require('./moneyMarketDeals'));
 router.use('/repo-deals', require('./repoRoutes'));
 router.use('/securities', require('./securities'));
 router.use('/user', require('./userRoutes'));
+router.use('/cashflow', cashflowRoutes);
 // Mount voucher router under /money-market for correct nested voucher download route
 router.use('/money-market', require('./voucher'));
 router.use('/transaction-types', require('./transactionTypes'));
