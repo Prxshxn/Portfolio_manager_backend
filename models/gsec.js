@@ -919,7 +919,7 @@ Gsec.captureCouponCashflow = async (dealId, isin, faceValue, maturityDate, count
           coupon.coupon_date,
           couponAmount,
           `GSEC Coupon Payment - ISIN ${isin}`,
-          `GSEC-${dealId}-COUPON`,
+          `GSEC-${dealId}-COUPON-${coupon.coupon_date}`,
           counterparty
         ]);
         
