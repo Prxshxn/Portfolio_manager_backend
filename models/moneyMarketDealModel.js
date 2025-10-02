@@ -10,6 +10,7 @@ async function getAllDeals() {
 async function getMaturitiesByDate(date) {
   const query = `
     SELECT 
+      mmd.id,
       mmd.deal_number,
       mmd.counterparty_id,
       COALESCE(
@@ -19,6 +20,9 @@ async function getMaturitiesByDate(date) {
         mmd.counterparty_id
       ) as counterparty_name,
       mmd.principal_amount,
+      mmd.interest_rate,
+      mmd.interest_amount,
+      mmd.maturity_value,
       mmd.maturity_date,
       mmd.status as deal_status,
       DATEDIFF(mmd.maturity_date, CURDATE()) as days_to_maturity

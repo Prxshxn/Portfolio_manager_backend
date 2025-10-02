@@ -1,4 +1,5 @@
 const db = require('../config/db');
+const CashflowCaptureService = require('../services/cashflowCaptureService');
 
 const RepoDeal = {
   // Create a new repo deal
@@ -37,6 +38,21 @@ const RepoDeal = {
       ];
 
       const [result] = await db.query(sql, values);
+      
+      // Capture cashflow for the new repo deal
+      try {
+        await CashflowCaptureService.captureRepoCashflow(
+          result.insertId,
+          dealData.dealType,
+          dealData.principalAmount,
+          dealData.tradeDate,
+          dealData.counterparty
+        );
+      } catch (cashflowError) {
+        console.error('Error capturing cashflow for repo deal:', cashflowError);
+        // Don't fail the main process if cashflow capture fails
+      }
+      
       return { id: result.insertId, ...dealData };
     } catch (error) {
       console.error('Error creating repo deal:', error);
@@ -302,6 +318,43 @@ const RepoDeal = {
       return results[0];
     } catch (error) {
       console.error('Error fetching repo deals summary:', error);
+      throw error;
+    }
+  },
+
+  // Get repo deals maturing by date
+  getMaturitiesByDate: async (date) => {
+    try {
+      const query = `
+        SELECT 
+          rd.id,
+          rd.id as deal_number,
+          rd.counterparty_id,
+          COALESCE(
+            corp.short_name,
+            ind.short_name,
+            joint.short_name,
+            rd.counterparty_id
+          ) as counterparty_name,
+          rd.principal_amount,
+          rd.interest_amount,
+          rd.maturity_amount,
+          rd.rate,
+          rd.maturity_date,
+          rd.status as deal_status,
+          DATEDIFF(rd.maturity_date, CURDATE()) as days_to_maturity
+        FROM repo_deals rd
+        LEFT JOIN counterparty_master_corporate corp ON rd.counterparty_id = corp.id
+        LEFT JOIN counterparty_master_individual ind ON rd.counterparty_id = ind.id
+        LEFT JOIN counterparty_master_joint joint ON rd.counterparty_id = joint.id
+        WHERE rd.maturity_date <= ?
+        ORDER BY rd.maturity_date ASC
+      `;
+      
+      const [rows] = await db.query(query, [date]);
+      return rows;
+    } catch (error) {
+      console.error('Error fetching repo maturities by date:', error);
       throw error;
     }
   }

@@ -1,5 +1,6 @@
 const db = require('../config/database');
 const LimitSetup = require('./limitSetupModel');
+const CashflowCaptureService = require('../services/cashflowCaptureService');
 
 const Gsec = {
   create: async (data) => {
@@ -137,9 +138,52 @@ const Gsec = {
         // If limit check passes or no counterparty, proceed with the insert
         if (connection) {
           const [result] = await connection.query(sql, values);
+          
+          // Capture coupon cashflow for Buy transactions
+          if (data.transactionType === 'Buy') {
+            try {
+              await Gsec.captureCouponCashflow(
+                result.insertId,
+                data.isin,
+                data.faceValue,
+                data.maturityDate,
+                data.counterparty
+              );
+            } catch (couponError) {
+              console.error('Error capturing coupon cashflow:', couponError);
+              // Don't fail the main process if coupon capture fails
+            }
+          }
+          
           return result;
         } else {
           const [result] = await db.query(sql, values);
+          
+          // Capture cashflow for the new GSEC transaction
+          try {
+            await CashflowCaptureService.captureGsecCashflow(
+              result.insertId,
+              data.transactionType,
+              data.settlementAmount,
+              data.valueDate,
+              data.counterparty
+            );
+            
+            // Capture coupon cashflow for Buy transactions
+            if (data.transactionType === 'Buy') {
+              await Gsec.captureCouponCashflow(
+                result.insertId,
+                data.isin,
+                data.faceValue,
+                data.maturityDate,
+                data.counterparty
+              );
+            }
+          } catch (cashflowError) {
+            console.error('Error capturing cashflow for GSEC transaction:', cashflowError);
+            // Don't fail the main process if cashflow capture fails
+          }
+          
           return result;
         }
       } catch (error) {
@@ -795,6 +839,8 @@ Gsec.getTransactionsByPortfolio = async (portfolioId) => {
 Gsec.getMaturitiesByDate = async (date) => {
   const query = `
     SELECT 
+      g.id,
+      g.deal_number,
       g.isin,
       g.counterparty,
       COALESCE(
@@ -804,6 +850,8 @@ Gsec.getMaturitiesByDate = async (date) => {
         g.counterparty
       ) as counterparty_name,
       g.face_value,
+      g.settlement_amount,
+      g.accrued_interest,
       g.maturity_date,
       g.status as deal_status,
       DATEDIFF(g.maturity_date, CURDATE()) as days_to_maturity
@@ -817,6 +865,76 @@ Gsec.getMaturitiesByDate = async (date) => {
   
   const [rows] = await db.query(query, [date]);
   return rows;
+};
+
+// Capture coupon cashflow for GSEC Buy transactions
+Gsec.captureCouponCashflow = async (dealId, isin, faceValue, maturityDate, counterparty) => {
+  try {
+    console.log(`Capturing coupon cashflow for GSEC deal ${dealId}, ISIN: ${isin}`);
+    
+    // Get coupon schedule for this ISIN
+    const [couponRows] = await db.query(`
+      SELECT coupon_date, coupon_amount, principal
+      FROM isin_coupon_schedule 
+      WHERE isin = ? AND coupon_date > CURDATE() AND coupon_date <= ?
+      ORDER BY coupon_date
+    `, [isin, maturityDate]);
+    
+    if (couponRows.length === 0) {
+      console.log(`No coupon schedule found for ISIN ${isin}`);
+      return 0;
+    }
+    
+    // Get cashflow categories
+    const [categories] = await db.query(`
+      SELECT id, name, type FROM cashflow_categories WHERE is_active = TRUE
+    `);
+    
+    const categoryMap = {};
+    categories.forEach(cat => {
+      categoryMap[cat.name.toLowerCase()] = cat;
+    });
+    
+    const interestCategory = categoryMap['interest income'];
+    if (!interestCategory) {
+      console.log('Interest Income category not found');
+      return 0;
+    }
+    
+    let capturedCount = 0;
+    
+    // Create cashflow entries for each coupon payment
+    for (const coupon of couponRows) {
+      // Calculate coupon amount for this face value
+      // coupon_amount is per 100 face value, so scale it
+      const couponAmount = (parseFloat(coupon.coupon_amount) * parseFloat(faceValue)) / 100;
+      
+      if (couponAmount > 0) {
+        await db.query(`
+          INSERT INTO cashflow_transactions 
+          (category_id, transaction_date, amount, flow_type, currency, description, reference_number, counterparty, status)
+          VALUES (?, ?, ?, 'inflow', 'LKR', ?, ?, ?, 'confirmed')
+        `, [
+          interestCategory.id,
+          coupon.coupon_date,
+          couponAmount,
+          `GSEC Coupon Payment - ISIN ${isin}`,
+          `GSEC-${dealId}-COUPON`,
+          counterparty
+        ]);
+        
+        capturedCount++;
+        console.log(`Captured coupon cashflow: ${couponAmount} on ${coupon.coupon_date}`);
+      }
+    }
+    
+    console.log(`Captured ${capturedCount} coupon cashflow entries for GSEC deal ${dealId}`);
+    return capturedCount;
+    
+  } catch (error) {
+    console.error('Error capturing coupon cashflow:', error);
+    throw error;
+  }
 };
 
 module.exports = Gsec;
