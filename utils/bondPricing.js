@@ -55,7 +55,7 @@ function parseCouponDate(couponDateStr, year) {
  * @returns {Object} Pricing results
  */
 function pricePer100FromYield({ couponRate, yieldRate, valueDate, issueDate, maturityDate, couponDate1, couponDate2 }) {
-  if (!couponRate || !yieldRate || !valueDate || !maturityDate || !issueDate || !couponDate1 || !couponDate2) {
+  if (!couponRate || !yieldRate || !valueDate || !maturityDate || !issueDate) {
     return { dirtyPrice: '', cleanPrice: '', accruedInterestPer100: '' };
   }
 
@@ -99,7 +99,8 @@ function pricePer100FromYield({ couponRate, yieldRate, valueDate, issueDate, mat
     let periodCount = 0;
 
     while (cfDate <= maturity) {
-      const isFinal = cfDate.getTime() === maturity.getTime();
+      // Check if this is the final payment (maturity date or very close to it)
+      const isFinal = Math.abs(cfDate.getTime() - maturity.getTime()) < 24 * 60 * 60 * 1000; // Within 1 day
       const amount = isFinal ? coupon + fv : coupon;
       cashFlows.push({
         date: new Date(cfDate),
@@ -108,6 +109,38 @@ function pricePer100FromYield({ couponRate, yieldRate, valueDate, issueDate, mat
       });
       cfDate.setMonth(cfDate.getMonth() + monthsPerPeriod);
       periodCount++;
+    }
+    
+    // Special case: If maturity date is between coupon dates, add it as a separate cash flow
+    if (cashFlows.length > 0) {
+      const lastCashFlow = cashFlows[cashFlows.length - 1];
+      const lastCashFlowDate = new Date(lastCashFlow.date);
+      
+      // If the last cash flow date is after maturity, we need to add the maturity payment
+      if (lastCashFlowDate > maturity) {
+        // Remove the last cash flow (it's after maturity)
+        cashFlows.pop();
+        
+        // Add the maturity payment
+        cashFlows.push({
+          date: new Date(maturity),
+          amount: coupon + fv, // Final payment includes principal
+          periodCount: periodCount - 1
+        });
+      } else if (lastCashFlowDate < maturity) {
+        // Check if maturity date is between the last coupon and the next coupon
+        const nextCouponAfterMaturity = new Date(lastCashFlowDate);
+        nextCouponAfterMaturity.setMonth(nextCouponAfterMaturity.getMonth() + monthsPerPeriod);
+        
+        if (lastCashFlowDate < maturity && maturity < nextCouponAfterMaturity) {
+          // Add the maturity payment
+          cashFlows.push({
+            date: new Date(maturity),
+            amount: coupon + fv, // Final payment includes principal
+            periodCount: periodCount
+          });
+        }
+      }
     }
 
     // Step 3: Calculate PV of each cash flow using Actual/Actual day count basis and precise t values

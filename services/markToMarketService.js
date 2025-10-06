@@ -154,8 +154,8 @@ class MarkToMarketService {
         valueDate: valueDate,
         maturityDate: this.formatDate(maturityDate),
         issueDate: this.formatDate(issueDate),
-        couponDate1: this.formatCouponDate(couponDate1),
-        couponDate2: this.formatCouponDate(couponDate2)
+        couponDate1: '', // Not used in calculation
+        couponDate2: ''  // Not used in calculation
       });
 
       const dirtyPrice = parseFloat(pricingResult.dirtyPrice) || null;
@@ -234,34 +234,73 @@ class MarkToMarketService {
 
   /**
    * Get all mark-to-market data
-   * @returns {Array} Array of mark-to-market records
+   * @returns {Array} Array of mark-to-market records with recalculated dirty prices
    */
   async getAllMarkToMarketData() {
     const sql = `
       SELECT 
-        series,
-        isin_number,
-        isin_issuer,
-        maturity_date,
-        buying_price,
-        selling_price,
-        average_price,
-        buying_yield,
-        selling_yield,
-        average_yield,
-        dirty_price,
-        last_updated,
-        excel_source
-      FROM mark_to_market
-      ORDER BY series, last_updated DESC
+        mtm.series,
+        mtm.isin_number,
+        mtm.isin_issuer,
+        mtm.maturity_date,
+        mtm.buying_price,
+        mtm.selling_price,
+        mtm.average_price,
+        mtm.buying_yield,
+        mtm.selling_yield,
+        mtm.average_yield,
+        mtm.dirty_price,
+        mtm.last_updated,
+        mtm.excel_source,
+        im.issue_date,
+        im.coupon_rate,
+        im.coupon_date_1,
+        im.coupon_date_2
+      FROM mark_to_market mtm
+      LEFT JOIN isin_master im ON mtm.isin_number COLLATE utf8mb4_unicode_ci = im.isin_number COLLATE utf8mb4_unicode_ci
+      ORDER BY mtm.series, mtm.last_updated DESC
     `;
 
     try {
+      console.log('🔍 Executing SQL query:', sql);
       const [rows] = await db.query(sql);
       console.log(`📊 Retrieved ${rows.length} mark-to-market records`);
-      return rows;
+      
+      // Recalculate dirty price for each record using current average yield
+      const updatedRows = await Promise.all(rows.map(async (record) => {
+        try {
+          // Recalculate dirty price using current average yield
+          const recalculatedDirtyPrice = await this.calculateDirtyPrice({
+            isinNumber: record.isin_number,
+            averageYield: record.average_yield,
+            maturityDate: record.maturity_date,
+            issueDate: record.issue_date,
+            couponRate: record.coupon_rate,
+            couponDate1: record.coupon_date_1,
+            couponDate2: record.coupon_date_2
+          });
+
+          // Update the dirty price with the recalculated value
+          return {
+            ...record,
+            dirty_price: recalculatedDirtyPrice || record.dirty_price // Fallback to stored value if calculation fails
+          };
+        } catch (error) {
+          console.error(`❌ Error recalculating dirty price for ${record.series}:`, error);
+          return record; // Return original record if calculation fails
+        }
+      }));
+
+      console.log(`✅ Recalculated dirty prices for ${updatedRows.length} records`);
+      return updatedRows;
     } catch (error) {
       console.error('❌ Error getting mark-to-market data:', error);
+      console.error('❌ Error details:', {
+        message: error.message,
+        code: error.code,
+        sqlState: error.sqlState,
+        sqlMessage: error.sqlMessage
+      });
       throw error;
     }
   }
@@ -273,15 +312,48 @@ class MarkToMarketService {
    */
   async getMarkToMarketBySeries(series) {
     const sql = `
-      SELECT * FROM mark_to_market 
-      WHERE series = ? 
-      ORDER BY last_updated DESC 
+      SELECT 
+        mtm.*,
+        im.issue_date,
+        im.coupon_rate,
+        im.coupon_date_1,
+        im.coupon_date_2
+      FROM mark_to_market mtm
+      LEFT JOIN isin_master im ON mtm.isin_number COLLATE utf8mb4_unicode_ci = im.isin_number COLLATE utf8mb4_unicode_ci
+      WHERE mtm.series = ? 
+      ORDER BY mtm.last_updated DESC 
       LIMIT 1
     `;
 
     try {
       const [rows] = await db.query(sql, [series]);
-      return rows.length > 0 ? rows[0] : null;
+      if (rows.length === 0) {
+        return null;
+      }
+
+      const record = rows[0];
+      
+      // Recalculate dirty price using current average yield
+      try {
+        const recalculatedDirtyPrice = await this.calculateDirtyPrice({
+          isinNumber: record.isin_number,
+          averageYield: record.average_yield,
+          maturityDate: record.maturity_date,
+          issueDate: record.issue_date,
+          couponRate: record.coupon_rate,
+          couponDate1: record.coupon_date_1,
+          couponDate2: record.coupon_date_2
+        });
+
+        // Update the dirty price with the recalculated value
+        return {
+          ...record,
+          dirty_price: recalculatedDirtyPrice || record.dirty_price // Fallback to stored value if calculation fails
+        };
+      } catch (error) {
+        console.error(`❌ Error recalculating dirty price for series ${series}:`, error);
+        return record; // Return original record if calculation fails
+      }
     } catch (error) {
       console.error('❌ Error getting mark-to-market by series:', error);
       throw error;
