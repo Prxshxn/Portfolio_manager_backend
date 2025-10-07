@@ -171,28 +171,29 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
   // Calculate total portfolio balance when portfolio filter is applied
   let totalPortfolioBalance = null;
   if (portfolio) {
-    // Get all unique ISINs for this portfolio
-    const portfolioIsinsSql = `SELECT DISTINCT isin FROM gsec WHERE portfolio = ?`;
-    const [portfolioIsins] = await db.query(portfolioIsinsSql, [portfolio]);
+    // Calculate total balance only for the filtered results (respecting all filters)
+    const balanceSql = `SELECT face_value, transaction_type FROM gsec g WHERE 1=1` +
+      (portfolio ? ' AND g.portfolio = ?' : '') +
+      (isin ? ' AND g.isin = ?' : '') +
+      (valueDate ? ' AND g.value_date = ?' : '') +
+      (maturityDate ? ' AND g.maturity_date = ?' : '');
     
-    // Calculate total balance for all ISINs in this portfolio
+    const balanceParams = [];
+    if (portfolio) balanceParams.push(portfolio);
+    if (isin) balanceParams.push(isin);
+    if (valueDate) balanceParams.push(valueDate);
+    if (maturityDate) balanceParams.push(maturityDate);
+    
+    const [balanceRows] = await db.query(balanceSql, balanceParams);
+    
     let totalBalance = 0;
-    for (const isinRow of portfolioIsins) {
-      const isin = isinRow.isin;
-      const balanceSql = `SELECT face_value, transaction_type FROM gsec WHERE isin = ?`;
-      const [balanceRows] = await db.query(balanceSql, [isin]);
-      
-      let isinBalance = 0;
-      balanceRows.forEach(balanceRow => {
-        if (balanceRow.transaction_type && balanceRow.transaction_type.toLowerCase() === 'sell') {
-          isinBalance -= Number(balanceRow.face_value);
-        } else {
-          isinBalance += Number(balanceRow.face_value);
-        }
-      });
-      
-      totalBalance += isinBalance;
-    }
+    balanceRows.forEach(balanceRow => {
+      if (balanceRow.transaction_type && balanceRow.transaction_type.toLowerCase() === 'sell') {
+        totalBalance -= Number(balanceRow.face_value);
+      } else {
+        totalBalance += Number(balanceRow.face_value);
+      }
+    });
     
     totalPortfolioBalance = truncate4(totalBalance).toFixed(4);
   }
