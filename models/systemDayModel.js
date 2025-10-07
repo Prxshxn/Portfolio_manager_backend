@@ -1,4 +1,4 @@
-const pool = require('../db');
+const pool = require('../config/database');
 
 // Get latest system day
 async function getSystemDay() {
