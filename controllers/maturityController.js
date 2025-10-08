@@ -121,11 +121,11 @@ const MaturityController = {
           totalDeals: moneyMarketMaturities.length,
           totalPrincipal: moneyMarketMaturities.reduce((sum, deal) => sum + (parseFloat(deal.principal_amount) || 0), 0),
           deals7Days: moneyMarketMaturities.filter(deal => {
-            const daysToMaturity = Math.ceil((new Date(deal.maturity_date) - new Date()) / (1000 * 60 * 60 * 24));
+            const daysToMaturity = Math.floor((new Date(deal.maturity_date) - new Date()) / (1000 * 60 * 60 * 24));
             return daysToMaturity <= 7;
           }).length,
           deals30Days: moneyMarketMaturities.filter(deal => {
-            const daysToMaturity = Math.ceil((new Date(deal.maturity_date) - new Date()) / (1000 * 60 * 60 * 24));
+            const daysToMaturity = Math.floor((new Date(deal.maturity_date) - new Date()) / (1000 * 60 * 60 * 24));
             return daysToMaturity <= 30;
           }).length
         },
@@ -133,11 +133,11 @@ const MaturityController = {
           totalDeals: gsecMaturities.length,
           totalFaceValue: gsecMaturities.reduce((sum, deal) => sum + (parseFloat(deal.face_value) || 0), 0),
           deals7Days: gsecMaturities.filter(deal => {
-            const daysToMaturity = Math.ceil((new Date(deal.maturity_date) - new Date()) / (1000 * 60 * 60 * 24));
+            const daysToMaturity = Math.floor((new Date(deal.maturity_date) - new Date()) / (1000 * 60 * 60 * 24));
             return daysToMaturity <= 7;
           }).length,
           deals30Days: gsecMaturities.filter(deal => {
-            const daysToMaturity = Math.ceil((new Date(deal.maturity_date) - new Date()) / (1000 * 60 * 60 * 24));
+            const daysToMaturity = Math.floor((new Date(deal.maturity_date) - new Date()) / (1000 * 60 * 60 * 24));
             return daysToMaturity <= 30;
           }).length
         },
@@ -240,7 +240,7 @@ const MaturityController = {
           const deal = rows[0];
           const principalAmount = parseFloat(deal.principal_amount);
           const interestRate = parseFloat(deal.interest_rate) / 100;
-          const daysToMaturity = Math.ceil((new Date(deal.maturity_date) - new Date()) / (1000 * 60 * 60 * 24));
+          const daysToMaturity = Math.floor((new Date(deal.maturity_date) - new Date()) / (1000 * 60 * 60 * 24));
           interestAmount = (principalAmount * interestRate * daysToMaturity) / 365;
 
           dealDetails = {
@@ -537,6 +537,85 @@ async function createDifferentAmountReinvestmentEntries(connection, deal, princi
   await createFullReinvestmentEntries(connection, deal, principalAmount, interestAmount, processDate);
 }
 
+// Helper function to get maturities with approval level information
+async function getMaturitiesWithApprovalLevel(db, productType, date) {
+  let tableName, dealIdField, dealNumberField, principalField, interestField, maturityField, counterpartyField;
+  
+  switch (productType) {
+    case 'money_market':
+      tableName = 'money_market_deals';
+      dealIdField = 'mmd.id';
+      dealNumberField = 'mmd.deal_number';
+      principalField = 'mmd.principal_amount';
+      interestField = 'mmd.interest_amount';
+      maturityField = 'mmd.maturity_value';
+      counterpartyField = 'COALESCE(corp.short_name, ind.short_name, joint.short_name, mmd.counterparty_id)';
+      break;
+    case 'gsec':
+      tableName = 'gsec';
+      dealIdField = 'g.id';
+      dealNumberField = 'g.deal_number';
+      principalField = 'g.face_value';
+      interestField = 'g.accrued_interest';
+      maturityField = 'g.settlement_amount';
+      counterpartyField = 'g.counterparty';
+      break;
+    case 'repo':
+      tableName = 'repo_deals';
+      dealIdField = 'rd.id';
+      dealNumberField = 'rd.id';
+      principalField = 'rd.principal_amount';
+      interestField = 'rd.interest_amount';
+      maturityField = 'rd.maturity_amount';
+      counterpartyField = 'COALESCE(corp.short_name, ind.short_name, joint.short_name, rd.counterparty_id)';
+      break;
+    default:
+      return [];
+  }
+
+  const sql = `
+    SELECT 
+      ${dealIdField} as id,
+      ${dealNumberField} as deal_number,
+      ${principalField} as principal_amount,
+      ${interestField} as interest_amount,
+      ${maturityField} as maturity_value,
+      ${counterpartyField} as counterparty_name,
+      ${tableName === 'gsec' ? 'g.isin' : 'NULL'} as isin,
+      ${productType === 'money_market' ? 'mmd.maturity_date' : productType === 'gsec' ? 'g.maturity_date' : 'rd.maturity_date'},
+      DATEDIFF(${productType === 'money_market' ? 'mmd.maturity_date' : productType === 'gsec' ? 'g.maturity_date' : 'rd.maturity_date'}, CURDATE()) as days_to_maturity,
+      ${productType === 'money_market' ? 'mmd.status' : productType === 'gsec' ? 'g.status' : 'rd.status'} as deal_status,
+      COALESCE(mpl.authorization_level, 'not_initiated') as approval_level,
+      CASE 
+        WHEN mpl.authorization_level = 'front_office' THEN 'Front Office'
+        WHEN mpl.authorization_level = 'back_office_verifier' THEN 'Back Office Verifier'
+        WHEN mpl.authorization_level = 'back_office_final' THEN 'Back Office Final'
+        ELSE 'Not Initiated'
+      END as approval_level_display,
+      CASE 
+        WHEN mpl.authorization_level = 'back_office_final' THEN 1
+        ELSE 0
+      END as is_selectable
+    FROM ${tableName} ${productType === 'money_market' ? 'mmd' : productType === 'gsec' ? 'g' : 'rd'}
+    ${productType === 'money_market' ? `
+      LEFT JOIN counterparty_master_corporate corp ON mmd.counterparty_id = corp.id
+      LEFT JOIN counterparty_master_individual ind ON mmd.counterparty_id = ind.id
+      LEFT JOIN counterparty_master_joint joint ON mmd.counterparty_id = joint.id
+    ` : ''}
+    ${productType === 'repo' ? `
+      LEFT JOIN counterparty_master_corporate corp ON rd.counterparty_id = corp.id
+      LEFT JOIN counterparty_master_individual ind ON rd.counterparty_id = ind.id
+      LEFT JOIN counterparty_master_joint joint ON rd.counterparty_id = joint.id
+    ` : ''}
+    LEFT JOIN maturity_processing_log mpl ON ${dealIdField} = mpl.deal_id
+    WHERE ${productType === 'money_market' ? 'mmd.maturity_date' : productType === 'gsec' ? 'g.maturity_date' : 'rd.maturity_date'} <= ?
+    ORDER BY ${productType === 'money_market' ? 'mmd.maturity_date' : productType === 'gsec' ? 'g.maturity_date' : 'rd.maturity_date'} ASC
+  `;
+
+  const [rows] = await db.query(sql, [date]);
+  return rows;
+}
+
 // Extended handlers for maturity handling, processing, and export
 MaturityController.getMaturityHandling = async (req, res) => {
   try {
@@ -549,6 +628,7 @@ MaturityController.getMaturityHandling = async (req, res) => {
       return res.status(400).json({ success: false, error: 'Invalid date format. Use YYYY-MM-DD' });
     }
 
+    const db = require('../config/database');
     const MoneyMarketDeal = require('../models/moneyMarketDealModel');
     const GsecDeal = require('../models/gsec');
     const RepoDeal = require('../models/repoDealModel');
@@ -557,56 +637,64 @@ MaturityController.getMaturityHandling = async (req, res) => {
     const wantGsec = !type || type === 'all' || type === 'gsec';
     const wantRepo = !type || type === 'all' || type === 'repo';
 
+    // Get deals with approval level information from maturity processing log
     const [mmRows, gsecRows, repoRows] = await Promise.all([
-      wantMM ? MoneyMarketDeal.getMaturitiesByDate(date) : Promise.resolve([]),
-      wantGsec ? GsecDeal.getMaturitiesByDate(date) : Promise.resolve([]),
-      wantRepo ? RepoDeal.getMaturitiesByDate(date) : Promise.resolve([])
+      wantMM ? getMaturitiesWithApprovalLevel(db, 'money_market', date) : Promise.resolve([]),
+      wantGsec ? getMaturitiesWithApprovalLevel(db, 'gsec', date) : Promise.resolve([]),
+      wantRepo ? getMaturitiesWithApprovalLevel(db, 'repo', date) : Promise.resolve([])
     ]);
 
-    // Map to common UI shape using database maturity_value
+    // Map to common UI shape with approval level information
     const mmMapped = (mmRows || []).map((row, idx) => {
       const principalAmount = parseFloat(row.principal_amount || 0);
       const interestAmount = parseFloat(row.interest_amount || 0);
       const maturityValue = parseFloat(row.maturity_value || 0);
       
       return {
-      id: row.id || row.deal_number || `mm-${idx}`,
-      deal_number: row.deal_number,
-      deal_type: 'money_market',
-      isin: row.isin || '',
-      counterparty: row.counterparty_name || row.counterparty_id,
+        id: row.id || row.deal_number || `mm-${idx}`,
+        deal_number: row.deal_number,
+        deal_type: 'money_market',
+        isin: row.isin || '',
+        counterparty: row.counterparty_name || row.counterparty_id,
         face_value: principalAmount,
         interest_amount: interestAmount,
-        maturity_amount: maturityValue, // Use database maturity_value
-      maturity_date: row.maturity_date,
-      days_to_maturity: row.days_to_maturity,
-      status: row.deal_status || 'pending'
+        maturity_amount: maturityValue,
+        maturity_date: row.maturity_date,
+        days_to_maturity: row.days_to_maturity,
+        status: row.deal_status || 'pending',
+        approval_level: row.approval_level,
+        approval_level_display: row.approval_level_display,
+        is_selectable: row.is_selectable === 1
       };
     });
+    
     const gsecMapped = (gsecRows || []).map((row, idx) => {
-      const faceValue = parseFloat(row.face_value || 0);
-      const settlementAmount = parseFloat(row.settlement_amount || 0);
-      const accruedInterest = parseFloat(row.accrued_interest || 0);
+      const faceValue = parseFloat(row.principal_amount || 0); // principal_amount contains face_value for GSEC
+      const settlementAmount = parseFloat(row.maturity_value || 0); // maturity_value contains settlement_amount for GSEC
+      const accruedInterest = parseFloat(row.interest_amount || 0); // interest_amount contains accrued_interest for GSEC
       
       return {
-      id: row.id || row.deal_number || `gsec-${idx}`,
-      deal_number: row.deal_number || row.isin || `GSEC-${idx}`,
-      deal_type: 'gsec',
-      isin: row.isin,
-      counterparty: row.counterparty_name || row.counterparty,
+        id: row.id || row.deal_number || `gsec-${idx}`,
+        deal_number: row.deal_number || row.isin || `GSEC-${idx}`,
+        deal_type: 'gsec',
+        isin: row.isin,
+        counterparty: row.counterparty_name || row.counterparty,
         face_value: faceValue,
         interest_amount: accruedInterest,
-        maturity_amount: settlementAmount, // Use settlement_amount for GSEC
-      maturity_date: row.maturity_date,
-      days_to_maturity: row.days_to_maturity,
-      status: row.deal_status || 'pending'
+        maturity_amount: settlementAmount,
+        maturity_date: row.maturity_date,
+        days_to_maturity: row.days_to_maturity,
+        status: row.deal_status || 'pending',
+        approval_level: row.approval_level,
+        approval_level_display: row.approval_level_display,
+        is_selectable: row.is_selectable === 1
       };
     });
 
     const repoMapped = (repoRows || []).map((row, idx) => {
       const principalAmount = parseFloat(row.principal_amount || 0);
       const interestAmount = parseFloat(row.interest_amount || 0);
-      const maturityAmount = parseFloat(row.maturity_amount || 0);
+      const maturityAmount = parseFloat(row.maturity_value || 0);
       
       return {
         id: row.id || row.deal_number || `repo-${idx}`,
@@ -616,10 +704,13 @@ MaturityController.getMaturityHandling = async (req, res) => {
         counterparty: row.counterparty_name || row.counterparty_id,
         face_value: principalAmount,
         interest_amount: interestAmount,
-        maturity_amount: maturityAmount, // Use maturity_amount for Repo
+        maturity_amount: maturityAmount,
         maturity_date: row.maturity_date,
         days_to_maturity: row.days_to_maturity,
-        status: row.deal_status || 'pending'
+        status: row.deal_status || 'pending',
+        approval_level: row.approval_level,
+        approval_level_display: row.approval_level_display,
+        is_selectable: row.is_selectable === 1
       };
     });
 
@@ -676,7 +767,7 @@ MaturityController.processMaturities = async (req, res) => {
         const deal = dealRows[0];
         const principalAmount = parseFloat(deal.principal_amount);
         const interestRate = parseFloat(deal.interest_rate) / 100;
-        const daysToMaturity = Math.ceil((new Date(deal.maturity_date) - new Date()) / (1000 * 60 * 60 * 24));
+        const daysToMaturity = Math.floor((new Date(deal.maturity_date) - new Date()) / (1000 * 60 * 60 * 24));
         const interestAmount = (principalAmount * interestRate * daysToMaturity) / 365;
         const totalAmount = principalAmount + interestAmount;
 

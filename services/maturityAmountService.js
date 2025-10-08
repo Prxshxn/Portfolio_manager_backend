@@ -38,7 +38,7 @@ class MaturityAmountService {
       // Calculate days from process date to maturity date
       const processDateObj = new Date(processDate);
       const maturityDateObj = new Date(deal.maturity_date);
-      const daysToMaturity = Math.ceil((maturityDateObj - processDateObj) / (1000 * 60 * 60 * 24));
+      const daysToMaturity = Math.floor((maturityDateObj - processDateObj) / (1000 * 60 * 60 * 24));
       
       // Calculate interest amount
       const interestAmount = (principalAmount * interestRate * daysToMaturity) / 365;
