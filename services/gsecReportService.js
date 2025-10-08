@@ -70,6 +70,10 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     sql += ' AND g.maturity_date = ?';
     params.push(maturityDate);
   }
+  if (asAtDate) {
+    sql += ' AND g.value_date <= ?';
+    params.push(asAtDate);
+  }
 
   sql += ' GROUP BY g.id, g.portfolio, g.custodian, g.deal_number, g.face_value, g.value_date, g.maturity_date, g.isin, g.coupon_interest, g.clean_price, g.yield, g.counterparty, g.transaction_type, im.coupon_rate, im.issue_date, im.coupon_date_1, im.coupon_date_2';
   sql += ' ORDER BY g.isin, g.maturity_date, g.id';
@@ -109,6 +113,10 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     if (maturityDate) {
       balanceSql += ' AND maturity_date = ?';
       balanceParams.push(maturityDate);
+    }
+    if (asAtDate) {
+      balanceSql += ' AND value_date <= ?';
+      balanceParams.push(asAtDate);
     }
     
     const [balanceRows] = await db.query(balanceSql, balanceParams);
@@ -211,12 +219,14 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
   if (isin) countParams.push(isin);
   if (valueDate) countParams.push(valueDate);
   if (maturityDate) countParams.push(maturityDate);
+  if (asAtDate) countParams.push(asAtDate);
   
   const [[{ count }]] = await db.query(`SELECT COUNT(DISTINCT g.id) as count FROM gsec g LEFT JOIN isin_master im ON g.isin = im.isin_number LEFT JOIN repo_deals rd ON g.isin COLLATE utf8mb4_unicode_ci = rd.isin_number AND rd.status IN ('Active', 'Pending') LEFT JOIN buyback_deals bd ON g.isin COLLATE utf8mb4_unicode_ci = bd.leg1_isin AND bd.deal_status IN ('Approved', 'Settled') WHERE 1=1` +
     (portfolio ? ' AND g.portfolio = ?' : '') +
     (isin ? ' AND g.isin = ?' : '') +
     (valueDate ? ' AND g.value_date = ?' : '') +
-    (maturityDate ? ' AND g.maturity_date = ?' : ''),
+    (maturityDate ? ' AND g.maturity_date = ?' : '') +
+    (asAtDate ? ' AND g.value_date <= ?' : ''),
     countParams
   );
 
@@ -228,13 +238,15 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       (portfolio ? ' AND g.portfolio = ?' : '') +
       (isin ? ' AND g.isin = ?' : '') +
       (valueDate ? ' AND g.value_date = ?' : '') +
-      (maturityDate ? ' AND g.maturity_date = ?' : '');
+      (maturityDate ? ' AND g.maturity_date = ?' : '') +
+      (asAtDate ? ' AND g.value_date <= ?' : '');
     
     const balanceParams = [];
     if (portfolio) balanceParams.push(portfolio);
     if (isin) balanceParams.push(isin);
     if (valueDate) balanceParams.push(valueDate);
     if (maturityDate) balanceParams.push(maturityDate);
+    if (asAtDate) balanceParams.push(asAtDate);
     
     const [balanceRows] = await db.query(balanceSql, balanceParams);
     
