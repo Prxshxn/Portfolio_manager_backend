@@ -860,6 +860,7 @@ Gsec.getMaturitiesByDate = async (date) => {
     LEFT JOIN counterparty_master_individual ind ON g.counterparty = ind.id
     LEFT JOIN counterparty_master_joint joint ON g.counterparty = joint.id
     WHERE g.maturity_date <= ?
+      AND COALESCE(g.matured, 0) = 0
     ORDER BY g.maturity_date ASC
   `;
   

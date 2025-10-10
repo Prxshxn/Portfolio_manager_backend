@@ -31,6 +31,7 @@ async function getMaturitiesByDate(date) {
     LEFT JOIN counterparty_master_individual ind ON mmd.counterparty_id = ind.id
     LEFT JOIN counterparty_master_joint joint ON mmd.counterparty_id = joint.id
     WHERE mmd.maturity_date <= ?
+      AND COALESCE(mmd.matured, 0) = 0
     ORDER BY mmd.maturity_date ASC
   `;
   
