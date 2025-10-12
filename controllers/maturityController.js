@@ -609,6 +609,7 @@ async function getMaturitiesWithApprovalLevel(db, productType, date) {
     ` : ''}
     LEFT JOIN maturity_processing_log mpl ON ${dealIdField} = mpl.deal_id
     WHERE ${productType === 'money_market' ? 'mmd.maturity_date' : productType === 'gsec' ? 'g.maturity_date' : 'rd.maturity_date'} <= ?
+      AND COALESCE(${productType === 'money_market' ? 'mmd.matured' : productType === 'gsec' ? 'g.matured' : 'rd.matured'}, 0) = 0
     ORDER BY ${productType === 'money_market' ? 'mmd.maturity_date' : productType === 'gsec' ? 'g.maturity_date' : 'rd.maturity_date'} ASC
   `;
 
@@ -938,7 +939,16 @@ async function handlePrincipalInterestFullPayment(dealIds, processDate, bankAcco
         FROM gsec g
         LEFT JOIN counterparties c ON g.counterparty_id = c.id
         WHERE g.id = ?
-      `, [dealId, dealId]);
+        UNION ALL
+        SELECT 
+          rd.id, rd.id as deal_number, 'repo' as deal_type, rd.principal_amount, rd.rate as interest_rate,
+          rd.maturity_date, rd.counterparty_id, rd.isin_number as isin,
+          c.name as counterparty_name,
+          'lending' as deal_direction
+        FROM repo_deals rd
+        LEFT JOIN counterparties c ON rd.counterparty_id = c.id
+        WHERE rd.id = ?
+      `, [dealId, dealId, dealId]);
       
       if (dealRows.length === 0) {
         throw new Error(`Deal ${dealId} not found`);
@@ -967,10 +977,16 @@ async function handlePrincipalInterestFullPayment(dealIds, processDate, bankAcco
           SET matured = 1, maturity_action = 'principal_interest_full_payment'
           WHERE id = ?
         `, [dealId]);
+      } else if (deal.deal_type === 'repo') {
+        await connection.query(`
+          UPDATE repo_deals 
+          SET matured = 1, maturity_action = 'principal_interest_full_payment'
+          WHERE id = ?
+        `, [dealId]);
       } else {
         await connection.query(`
           UPDATE money_market_deals 
-          SET matured = 1, maturity_action = 'principal_interest_full_payment'
+          SET matured = 1
           WHERE id = ?
         `, [dealId]);
       }
@@ -1169,7 +1185,16 @@ async function handlePrincipalReinvestInterestPaid(dealIds, processDate, bankAcc
         FROM gsec g
         LEFT JOIN counterparties c ON g.counterparty_id = c.id
         WHERE g.id = ?
-      `, [dealId, dealId]);
+        UNION ALL
+        SELECT 
+          rd.id, rd.id as deal_number, 'repo' as deal_type, rd.principal_amount, rd.rate as interest_rate,
+          rd.maturity_date, rd.counterparty_id, rd.isin_number as isin,
+          c.name as counterparty_name,
+          'lending' as deal_direction
+        FROM repo_deals rd
+        LEFT JOIN counterparties c ON rd.counterparty_id = c.id
+        WHERE rd.id = ?
+      `, [dealId, dealId, dealId]);
       
       if (dealRows.length === 0) {
         throw new Error(`Deal ${dealId} not found`);
@@ -1197,10 +1222,16 @@ async function handlePrincipalReinvestInterestPaid(dealIds, processDate, bankAcc
           SET matured = 1, maturity_action = 'principal_reinvest_interest_paid'
           WHERE id = ?
         `, [dealId]);
+      } else if (deal.deal_type === 'repo') {
+        await connection.query(`
+          UPDATE repo_deals 
+          SET matured = 1, maturity_action = 'principal_reinvest_interest_paid'
+          WHERE id = ?
+        `, [dealId]);
       } else {
         await connection.query(`
           UPDATE money_market_deals 
-          SET matured = 1, maturity_action = 'principal_reinvest_interest_paid'
+          SET matured = 1
           WHERE id = ?
         `, [dealId]);
       }
@@ -1283,7 +1314,16 @@ async function handlePrincipalInterestReinvest(dealIds, processDate, res) {
         FROM gsec g
         LEFT JOIN counterparties c ON g.counterparty_id = c.id
         WHERE g.id = ?
-      `, [dealId, dealId]);
+        UNION ALL
+        SELECT 
+          rd.id, rd.id as deal_number, 'repo' as deal_type, rd.principal_amount, rd.rate as interest_rate,
+          rd.maturity_date, rd.counterparty_id, rd.isin_number as isin,
+          c.name as counterparty_name,
+          'lending' as deal_direction
+        FROM repo_deals rd
+        LEFT JOIN counterparties c ON rd.counterparty_id = c.id
+        WHERE rd.id = ?
+      `, [dealId, dealId, dealId]);
       
       if (dealRows.length === 0) {
         throw new Error(`Deal ${dealId} not found`);
@@ -1306,10 +1346,16 @@ async function handlePrincipalInterestReinvest(dealIds, processDate, res) {
           SET matured = 1, maturity_action = 'principal_interest_reinvest'
           WHERE id = ?
         `, [dealId]);
+      } else if (deal.deal_type === 'repo') {
+        await connection.query(`
+          UPDATE repo_deals 
+          SET matured = 1, maturity_action = 'principal_interest_reinvest'
+          WHERE id = ?
+        `, [dealId]);
       } else {
         await connection.query(`
           UPDATE money_market_deals 
-          SET matured = 1, maturity_action = 'principal_interest_reinvest'
+          SET matured = 1
           WHERE id = ?
         `, [dealId]);
       }
@@ -1392,7 +1438,16 @@ async function handleDifferentAmountReinvest(dealIds, processDate, res) {
         FROM gsec g
         LEFT JOIN counterparties c ON g.counterparty_id = c.id
         WHERE g.id = ?
-      `, [dealId, dealId]);
+        UNION ALL
+        SELECT 
+          rd.id, rd.id as deal_number, 'repo' as deal_type, rd.principal_amount, rd.rate as interest_rate,
+          rd.maturity_date, rd.counterparty_id, rd.isin_number as isin,
+          c.name as counterparty_name,
+          'lending' as deal_direction
+        FROM repo_deals rd
+        LEFT JOIN counterparties c ON rd.counterparty_id = c.id
+        WHERE rd.id = ?
+      `, [dealId, dealId, dealId]);
       
       if (dealRows.length === 0) {
         throw new Error(`Deal ${dealId} not found`);
@@ -1416,10 +1471,16 @@ async function handleDifferentAmountReinvest(dealIds, processDate, res) {
           SET matured = 1, maturity_action = 'different_amount_reinvest'
           WHERE id = ?
         `, [dealId]);
+      } else if (deal.deal_type === 'repo') {
+        await connection.query(`
+          UPDATE repo_deals 
+          SET matured = 1, maturity_action = 'different_amount_reinvest'
+          WHERE id = ?
+        `, [dealId]);
       } else {
         await connection.query(`
           UPDATE money_market_deals 
-          SET matured = 1, maturity_action = 'different_amount_reinvest'
+          SET matured = 1
           WHERE id = ?
         `, [dealId]);
       }

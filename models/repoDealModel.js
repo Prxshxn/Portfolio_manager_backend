@@ -348,6 +348,7 @@ const RepoDeal = {
         LEFT JOIN counterparty_master_individual ind ON rd.counterparty_id = ind.id
         LEFT JOIN counterparty_master_joint joint ON rd.counterparty_id = joint.id
         WHERE rd.maturity_date <= ?
+          AND COALESCE(rd.matured, 0) = 0
         ORDER BY rd.maturity_date ASC
       `;
       
