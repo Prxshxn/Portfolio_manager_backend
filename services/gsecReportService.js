@@ -51,10 +51,10 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     LEFT JOIN isin_master im ON g.isin = im.isin_number 
     WHERE 1=1`;
   const params = [];
+  
+  // Add GSEC filters
   if (portfolio) {
     sql += ' AND g.portfolio = ?';
-    params.push(portfolio);
-    // Add portfolio parameter for buyback_deals JOIN
     params.push(portfolio);
   }
   if (isin) {
@@ -74,8 +74,6 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     params.push(asAtDate);
   }
 
-  // Note: GROUP BY will be handled after the UNION
-  
   // Add UNION for leg2 buy transactions from buyback deals
   sql += `
     UNION ALL
@@ -106,7 +104,7 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     WHERE bd.leg2_transaction_type = 'Buy' 
       AND bd.deal_status IN ('Approved', 'Settled')`;
   
-  // Add filters for leg2 buyback deals
+  // Add buyback filters - add parameters in same order as GSEC section
   if (portfolio) {
     sql += ' AND bd.leg2_portfolio = ?';
     params.push(portfolio);
