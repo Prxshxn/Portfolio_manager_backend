@@ -1,10 +1,11 @@
 const BuybackDeal = require('../models/buybackDealModel');
+const db = require('../config/database');
 
 const buybackDealController = {
   // Create a new buyback deal
   createDeal: async (req, res) => {
     try {
-      const { leg1, leg2 } = req.body;
+      const { leg1, leg2, sellDeals } = req.body;
       
       // Validate required fields
       if (!leg1 || !leg2) {
@@ -74,6 +75,45 @@ const buybackDealController = {
       };
 
       const result = await BuybackDeal.create(dealData);
+      
+      // Handle sell deals if this is a sell transaction
+      if (Array.isArray(sellDeals) && leg1.transactionType === 'Sell') {
+        console.log('Processing sell deals for buyback:', sellDeals);
+        
+        for (const sellDeal of sellDeals) {
+          if (sellDeal.buy_deal_number && sellDeal.amountToSell) {
+            try {
+              // Update the remaining face value of the original buy deal
+              const [buyDeals] = await db.query(
+                'SELECT * FROM gsec WHERE deal_number = ? AND transaction_type = "Buy"', 
+                [sellDeal.buy_deal_number]
+              );
+              
+              if (buyDeals && buyDeals.length > 0) {
+                const buyDeal = buyDeals[0];
+                const original = parseFloat(buyDeal.remaining_face_value || buyDeal.face_value || 0);
+                const sold = parseFloat(sellDeal.amountToSell || 0);
+                let newRemaining = original - sold;
+                
+                // Truncate to 4 decimals (not round) - matching GSEC form logic
+                newRemaining = Math.trunc(newRemaining * 10000) / 10000;
+                
+                await db.query(
+                  'UPDATE gsec SET remaining_face_value = ? WHERE id = ?', 
+                  [newRemaining.toFixed(4), buyDeal.id]
+                );
+                
+                console.log(`Updated deal ${sellDeal.buy_deal_number}: Original ${original}, Sold ${sold}, New remaining ${newRemaining}`);
+              } else {
+                console.warn(`Buy deal not found for sell deal: ${sellDeal.buy_deal_number}`);
+              }
+            } catch (sellError) {
+              console.error(`Error updating sell deal ${sellDeal.buy_deal_number}:`, sellError);
+              // Continue with other sell deals even if one fails
+            }
+          }
+        }
+      }
       
       res.status(201).json({
         success: true,

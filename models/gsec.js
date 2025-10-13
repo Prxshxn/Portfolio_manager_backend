@@ -528,8 +528,22 @@ const Gsec = {
    * Filtered by ISIN and/or portfolio if provided.
    */
   getBuyDealsWithBalanceFiltered: async (isin, portfolio) => {
-    // Build SQL with optional filters - only show finally approved deals
-    let sql = `SELECT * FROM gsec WHERE transaction_type = 'Buy' AND status = 'final_approved' AND (remaining_face_value > 0 OR remaining_face_value IS NULL)`;
+    // Build SQL with optional filters - show approved deals with remaining balance
+    let sql = `SELECT 
+      id,
+      deal_number,
+      isin,
+      yield,
+      face_value,
+      COALESCE(remaining_face_value, face_value) as remaining_face_value,
+      portfolio,
+      value_date,
+      transaction_type,
+      status
+    FROM gsec 
+    WHERE transaction_type = 'Buy' 
+      AND status IN ('Approved', 'Settled', 'final_approved') 
+      AND COALESCE(remaining_face_value, face_value) > 0`;
     const params = [];
     if (isin) {
       sql += ' AND isin = ?';
@@ -539,6 +553,7 @@ const Gsec = {
       sql += ' AND portfolio = ?';
       params.push(portfolio);
     }
+    sql += ' ORDER BY deal_number DESC';
     const [rows] = await db.query(sql, params);
     return rows;
   },
