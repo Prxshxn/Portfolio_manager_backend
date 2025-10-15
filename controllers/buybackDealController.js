@@ -77,13 +77,23 @@ const buybackDealController = {
       const result = await BuybackDeal.create(dealData);
       
       // Handle sell deals if this is a sell transaction
+      console.log('=== BUYBACK DEBUG ===');
+      console.log('sellDeals received:', sellDeals);
+      console.log('leg1.transactionType:', leg1.transactionType);
+      console.log('Array.isArray(sellDeals):', Array.isArray(sellDeals));
+      console.log('sellDeals length:', sellDeals ? sellDeals.length : 'undefined');
+      
       if (Array.isArray(sellDeals) && leg1.transactionType === 'Sell') {
         console.log('Processing sell deals for buyback:', sellDeals);
         
         for (const sellDeal of sellDeals) {
+          console.log('Processing sellDeal:', sellDeal);
+          console.log('sellDeal.buy_deal_number:', sellDeal.buy_deal_number);
+          console.log('sellDeal.amountToSell:', sellDeal.amountToSell);
+          
           if (sellDeal.buy_deal_number && sellDeal.amountToSell) {
             try {
-              // Update the remaining face value of the original buy deal
+              // Get the original buy deal
               const [buyDeals] = await db.query(
                 'SELECT * FROM gsec WHERE deal_number = ? AND transaction_type = "Buy"', 
                 [sellDeal.buy_deal_number]
@@ -98,17 +108,68 @@ const buybackDealController = {
                 // Truncate to 4 decimals (not round) - matching GSEC form logic
                 newRemaining = Math.trunc(newRemaining * 10000) / 10000;
                 
+                // Update the remaining face value of the original buy deal
                 await db.query(
                   'UPDATE gsec SET remaining_face_value = ? WHERE id = ?', 
                   [newRemaining.toFixed(4), buyDeal.id]
                 );
                 
-                console.log(`Updated deal ${sellDeal.buy_deal_number}: Original ${original}, Sold ${sold}, New remaining ${newRemaining}`);
+                // Create a corresponding "Sell" transaction record for balance calculations
+                const sellTransactionData = {
+                  deal_number: `SELL_${buyDeal.deal_number}_${Date.now()}`, // Unique sell deal number
+                  transaction_type: 'Sell',
+                  isin: buyDeal.isin,
+                  face_value: sold,
+                  portfolio: buyDeal.portfolio,
+                  counterparty: leg1.counterparty || buyDeal.counterparty,
+                  value_date: leg1.valueDate || new Date().toISOString().split('T')[0],
+                  trade_date: leg1.tradeDate || new Date().toISOString().split('T')[0],
+                  clean_price: leg1.cleanPrice || buyDeal.clean_price,
+                  dirty_price: leg1.dirtyPrice || buyDeal.dirty_price,
+                  yield: leg1.yield || buyDeal.yield,
+                  settlement_amount: leg1.settlementAmount || (sold * (parseFloat(leg1.dirtyPrice || buyDeal.dirty_price) / 100)),
+                  accrued_interest: leg1.accruedInterest || buyDeal.accrued_interest,
+                  currency: leg1.currency || 'LKR',
+                  status: 'final_approved', // Auto-approve sell transactions from buyback
+                  buy_deal_number: buyDeal.deal_number, // Reference to original buy deal
+                  created_by: req.user?.id || 1
+                };
+                
+                // Insert the sell transaction
+                const sellInsertSql = `INSERT INTO gsec (
+                  deal_number, transaction_type, isin, face_value, portfolio, counterparty,
+                  value_date, trade_date, clean_price, dirty_price, yield, settlement_amount,
+                  accrued_interest, currency, status, buy_deal_number, created_by, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`;
+                
+                const sellValues = [
+                  sellTransactionData.deal_number,
+                  sellTransactionData.transaction_type,
+                  sellTransactionData.isin,
+                  sellTransactionData.face_value,
+                  sellTransactionData.portfolio,
+                  sellTransactionData.counterparty,
+                  sellTransactionData.value_date,
+                  sellTransactionData.trade_date,
+                  sellTransactionData.clean_price,
+                  sellTransactionData.dirty_price,
+                  sellTransactionData.yield,
+                  sellTransactionData.settlement_amount,
+                  sellTransactionData.accrued_interest,
+                  sellTransactionData.currency,
+                  sellTransactionData.status,
+                  sellTransactionData.buy_deal_number,
+                  sellTransactionData.created_by
+                ];
+                
+                await db.query(sellInsertSql, sellValues);
+                
+                console.log(`Created sell transaction for deal ${sellDeal.buy_deal_number}: Sold ${sold}, New remaining ${newRemaining}`);
               } else {
                 console.warn(`Buy deal not found for sell deal: ${sellDeal.buy_deal_number}`);
               }
             } catch (sellError) {
-              console.error(`Error updating sell deal ${sellDeal.buy_deal_number}:`, sellError);
+              console.error(`Error processing sell deal ${sellDeal.buy_deal_number}:`, sellError);
               // Continue with other sell deals even if one fails
             }
           }

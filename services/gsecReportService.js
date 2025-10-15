@@ -39,9 +39,9 @@ function formatPercentage(value, decimals = 4) {
 }
 
 exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityDate, page, pageSize }) => {
-  // Build query with filters - include both regular GSEC deals and leg2 buy transactions from buyback deals
+  // Build query with filters - only include regular GSEC deals
   let sql = `SELECT * FROM (
-    -- Regular GSEC deals
+    -- Regular GSEC deals only
     SELECT g.id, g.portfolio, g.custodian, g.deal_number, g.face_value, g.value_date, g.maturity_date, g.isin, g.coupon_interest, g.clean_price, g.yield, g.counterparty, g.transaction_type, 
            im.coupon_rate, im.issue_date, im.coupon_date_1, im.coupon_date_2,
            0 as repo_collateral,
@@ -73,58 +73,6 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     sql += ' AND g.value_date <= ?';
     params.push(asAtDate);
   }
-
-  // Add UNION for leg2 buy transactions from buyback deals
-  sql += `
-    UNION ALL
-    
-    -- Leg2 buy transactions from buyback deals
-    SELECT 
-      CONCAT('BB_', bd.id) as id,
-      bd.leg2_portfolio COLLATE utf8mb4_unicode_ci as portfolio,
-      '' COLLATE utf8mb4_unicode_ci as custodian,
-      CONCAT('BB_', bd.deal_number) COLLATE utf8mb4_unicode_ci as deal_number,
-      bd.leg2_face_value as face_value,
-      bd.leg2_value_date as value_date,
-      bd.maturity_date,
-      bd.leg2_isin COLLATE utf8mb4_unicode_ci as isin,
-      (bd.leg2_face_value * bd.coupon_rate / 100) as coupon_interest,
-      bd.leg2_clean_price as clean_price,
-      bd.leg2_yield_rate as yield,
-      bd.leg2_counterparty COLLATE utf8mb4_unicode_ci as counterparty,
-      bd.leg2_transaction_type COLLATE utf8mb4_unicode_ci as transaction_type,
-      bd.coupon_rate,
-      bd.issue_date,
-      bd.coupon_date1,
-      bd.coupon_date2,
-      0 as repo_collateral,
-      0 as sell_back,
-      'buyback_leg2' COLLATE utf8mb4_unicode_ci as source_table
-    FROM buyback_deals bd
-    WHERE bd.leg2_transaction_type = 'Buy' 
-      AND bd.deal_status IN ('Approved', 'Settled')`;
-  
-  // Add buyback filters - add parameters in same order as GSEC section
-  if (portfolio) {
-    sql += ' AND bd.leg2_portfolio = ?';
-    params.push(portfolio);
-  }
-  if (isin) {
-    sql += ' AND bd.leg2_isin = ?';
-    params.push(isin);
-  }
-  if (valueDate) {
-    sql += ' AND bd.leg2_value_date = ?';
-    params.push(valueDate);
-  }
-  if (maturityDate) {
-    sql += ' AND bd.maturity_date = ?';
-    params.push(maturityDate);
-  }
-  if (asAtDate) {
-    sql += ' AND bd.leg2_value_date <= ?';
-    params.push(asAtDate);
-  }
   
   // Close the subquery and add ordering
   sql += `
@@ -153,13 +101,24 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     `, [row.isin]);
     row.repo_collateral = repoRows[0].repo_collateral;
     
-    // Calculate sell_back for this ISIN
-    const [sellBackRows] = await db.query(`
-      SELECT COALESCE(SUM(CASE WHEN leg1_transaction_type = 'Sell' AND leg2_transaction_type = 'Buy' THEN leg1_face_value ELSE 0 END), 0) as sell_back
-      FROM buyback_deals 
-      WHERE leg1_isin = ? AND deal_status IN ('Approved', 'Settled')
-    `, [row.isin]);
-    row.sell_back = sellBackRows[0].sell_back;
+    // Calculate sell_back for this specific deal
+    let sellBackAmount = 0;
+    
+    // For regular GSEC deals, check if there are any sell transactions that reference this deal
+    if (row.source_table === 'gsec') {
+      // Check if this is a buy deal that has been partially sold
+      if (row.transaction_type && row.transaction_type.toLowerCase() === 'buy') {
+        // Calculate how much has been sold from this specific deal
+        const [sellBackRows] = await db.query(`
+          SELECT COALESCE(SUM(face_value), 0) as sell_back
+          FROM gsec 
+          WHERE buy_deal_number = ? AND transaction_type = 'Sell'
+        `, [row.deal_number]);
+        sellBackAmount = sellBackRows[0].sell_back;
+      }
+    }
+    
+    row.sell_back = sellBackAmount;
   }
 
   // Get all unique ISINs from the current page results
@@ -171,9 +130,8 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
   
   for (const isin of uniqueIsins) {
     // Query all records for this ISIN to calculate correct balance
-    // Include both GSEC deals and leg2 buy transactions from buyback deals
-    let balanceSql = `SELECT face_value, transaction_type, clean_price FROM (
-      SELECT face_value, transaction_type, clean_price FROM gsec WHERE isin = ?`;
+    // Only include regular GSEC deals
+    let balanceSql = `SELECT face_value, transaction_type, clean_price FROM gsec WHERE isin = ?`;
     const balanceParams = [isin];
     
     // Apply the same filters as the main query for GSEC deals
@@ -193,39 +151,6 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       balanceSql += ' AND value_date <= ?';
       balanceParams.push(asAtDate);
     }
-    
-    // Add UNION for leg2 buy transactions from buyback deals
-    balanceSql += `
-      UNION ALL
-      SELECT 
-        leg2_face_value as face_value, 
-        leg2_transaction_type COLLATE utf8mb4_unicode_ci as transaction_type, 
-        leg2_clean_price as clean_price
-      FROM buyback_deals 
-      WHERE leg2_isin = ? 
-        AND leg2_transaction_type = 'Buy' 
-        AND deal_status IN ('Approved', 'Settled')`;
-    balanceParams.push(isin);
-    
-    // Apply filters for buyback deals
-    if (portfolio) {
-      balanceSql += ' AND leg2_portfolio = ?';
-      balanceParams.push(portfolio);
-    }
-    if (valueDate) {
-      balanceSql += ' AND leg2_value_date = ?';
-      balanceParams.push(valueDate);
-    }
-    if (maturityDate) {
-      balanceSql += ' AND maturity_date = ?';
-      balanceParams.push(maturityDate);
-    }
-    if (asAtDate) {
-      balanceSql += ' AND leg2_value_date <= ?';
-      balanceParams.push(asAtDate);
-    }
-    
-    balanceSql += ') combined_balance';
     
     const [balanceRows] = await db.query(balanceSql, balanceParams);
     
@@ -341,7 +266,7 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     SELECT DISTINCT g.id FROM gsec g 
     LEFT JOIN isin_master im ON g.isin = im.isin_number 
     LEFT JOIN repo_deals rd ON g.isin COLLATE utf8mb4_unicode_ci = rd.isin_number AND rd.status IN ('Active', 'Pending') 
-    LEFT JOIN buyback_deals bd ON g.isin COLLATE utf8mb4_unicode_ci = bd.leg1_isin AND bd.deal_status IN ('Approved', 'Settled')
+    LEFT JOIN buyback_deals bd ON g.isin COLLATE utf8mb4_unicode_ci = bd.leg1_isin AND bd.deal_status IN ('Approved', 'Settled', 'Pending_Verification')
     WHERE 1=1` +
     (portfolio ? ' AND g.portfolio = ?' : '') +
     (isin ? ' AND g.isin = ?' : '') +
@@ -352,7 +277,7 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     UNION ALL
     SELECT DISTINCT CONCAT('BB_', bd.id) as id FROM buyback_deals bd
     WHERE bd.leg2_transaction_type = 'Buy' 
-      AND bd.deal_status IN ('Approved', 'Settled')` +
+      AND bd.deal_status IN ('Approved', 'Settled', 'Pending_Verification')` +
     (portfolio ? ' AND bd.leg2_portfolio = ?' : '') +
     (isin ? ' AND bd.leg2_isin = ?' : '') +
     (valueDate ? ' AND bd.leg2_value_date = ?' : '') +
@@ -382,7 +307,7 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
         leg2_transaction_type COLLATE utf8mb4_unicode_ci as transaction_type
       FROM buyback_deals 
       WHERE leg2_transaction_type = 'Buy' 
-        AND deal_status IN ('Approved', 'Settled')` +
+        AND deal_status IN ('Approved', 'Settled', 'Pending_Verification')` +
       (portfolio ? ' AND leg2_portfolio = ?' : '') +
       (isin ? ' AND leg2_isin = ?' : '') +
       (valueDate ? ' AND leg2_value_date = ?' : '') +
