@@ -124,57 +124,57 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
   // Get all unique ISINs from the current page results
   const uniqueIsins = [...new Set(rows.map(row => row.isin))];
 
-  // Calculate balance for each ISIN across ALL records (not just current page)
-  const isinBalances = {};
-  const isinWapMap = {};
-  
-  for (const isin of uniqueIsins) {
-    // Query all records for this ISIN to calculate correct balance
-    // Only include regular GSEC deals
-    let balanceSql = `SELECT face_value, transaction_type, clean_price FROM gsec WHERE isin = ?`;
-    const balanceParams = [isin];
+    // Calculate balance for each ISIN across ALL records (not just current page)
+    const isinBalances = {};
+    const isinWapMap = {};
     
-    // Apply the same filters as the main query for GSEC deals
-    if (portfolio) {
-      balanceSql += ' AND portfolio = ?';
-      balanceParams.push(portfolio);
-    }
-    if (valueDate) {
-      balanceSql += ' AND value_date = ?';
-      balanceParams.push(valueDate);
-    }
-    if (maturityDate) {
-      balanceSql += ' AND maturity_date = ?';
-      balanceParams.push(maturityDate);
-    }
-    if (asAtDate) {
-      balanceSql += ' AND value_date <= ?';
-      balanceParams.push(asAtDate);
-    }
-    
-    const [balanceRows] = await db.query(balanceSql, balanceParams);
-    
-    // Calculate balance for this ISIN
-    isinBalances[isin] = 0;
-    isinWapMap[isin] = { sumFV: 0, sumFVCP: 0 };
-    
-    balanceRows.forEach(balanceRow => {
-      if (balanceRow.transaction_type && balanceRow.transaction_type.toLowerCase() === 'sell') {
-        isinBalances[isin] -= Number(balanceRow.face_value);
-      } else {
-        // Treat as buy by default
-        isinBalances[isin] += Number(balanceRow.face_value);
+    for (const isin of uniqueIsins) {
+      // Query all records for this ISIN to calculate correct balance
+      // Only include GSEC deals - buyback deals are handled separately
+      let balanceSql = `SELECT face_value, transaction_type, clean_price FROM gsec WHERE isin = ?`;
+      const balanceParams = [isin];
+      
+      // Apply the same filters as the main query for GSEC deals
+      if (portfolio) {
+        balanceSql += ' AND portfolio = ?';
+        balanceParams.push(portfolio);
       }
+      if (valueDate) {
+        balanceSql += ' AND value_date = ?';
+        balanceParams.push(valueDate);
+      }
+      if (maturityDate) {
+        balanceSql += ' AND maturity_date = ?';
+        balanceParams.push(maturityDate);
+      }
+      if (asAtDate) {
+        balanceSql += ' AND value_date <= ?';
+        balanceParams.push(asAtDate);
+      }
+      
+      const [balanceRows] = await db.query(balanceSql, balanceParams);
+      
+      // Calculate balance for this ISIN
+      isinBalances[isin] = 0;
+      isinWapMap[isin] = { sumFV: 0, sumFVCP: 0 };
+      
+      balanceRows.forEach(balanceRow => {
+        if (balanceRow.transaction_type && balanceRow.transaction_type.toLowerCase() === 'sell') {
+          isinBalances[isin] -= Number(balanceRow.face_value);
+        } else {
+          // Treat as buy by default
+          isinBalances[isin] += Number(balanceRow.face_value);
+        }
 
-      // Aggregate for WAP calculation (ignore 'Sell' deals)
-      if (!balanceRow.transaction_type || balanceRow.transaction_type.toLowerCase() !== 'sell') {
-        const fv = Number(balanceRow.face_value) || 0;
-        const cp = Number(balanceRow.clean_price) || 0;
-        isinWapMap[isin].sumFV += fv;
-        isinWapMap[isin].sumFVCP += fv * cp;
-      }
-    });
-  }
+        // Aggregate for WAP calculation (ignore 'Sell' deals)
+        if (!balanceRow.transaction_type || balanceRow.transaction_type.toLowerCase() !== 'sell') {
+          const fv = Number(balanceRow.face_value) || 0;
+          const cp = Number(balanceRow.clean_price) || 0;
+          isinWapMap[isin].sumFV += fv;
+          isinWapMap[isin].sumFVCP += fv * cp;
+        }
+      });
+    }
 
   // Helper to safely parse ISO date strings
   function safeParseISO(val) {
@@ -292,37 +292,15 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
   let totalPortfolioBalance = null;
   if (portfolio) {
     // Calculate total balance only for the filtered results (respecting all filters)
-    // Include both GSEC deals and leg2 buy transactions from buyback deals
-    const balanceSql = `SELECT face_value, transaction_type FROM (
-      SELECT face_value, transaction_type FROM gsec g WHERE 1=1` +
+    // Only include GSEC deals - buyback deals are handled separately
+    const balanceSql = `SELECT face_value, transaction_type FROM gsec g WHERE 1=1` +
       (portfolio ? ' AND g.portfolio = ?' : '') +
       (isin ? ' AND g.isin = ?' : '') +
       (valueDate ? ' AND g.value_date = ?' : '') +
       (maturityDate ? ' AND g.maturity_date = ?' : '') +
-      (asAtDate ? ' AND g.value_date <= ?' : '') +
-      `
-      UNION ALL
-      SELECT 
-        leg2_face_value as face_value, 
-        leg2_transaction_type COLLATE utf8mb4_unicode_ci as transaction_type
-      FROM buyback_deals 
-      WHERE leg2_transaction_type = 'Buy' 
-        AND deal_status IN ('Approved', 'Settled', 'Pending_Verification')` +
-      (portfolio ? ' AND leg2_portfolio = ?' : '') +
-      (isin ? ' AND leg2_isin = ?' : '') +
-      (valueDate ? ' AND leg2_value_date = ?' : '') +
-      (maturityDate ? ' AND maturity_date = ?' : '') +
-      (asAtDate ? ' AND leg2_value_date <= ?' : '') +
-      `
-    ) combined_balance`;
+      (asAtDate ? ' AND g.value_date <= ?' : '');
     
     const balanceParams = [];
-    if (portfolio) balanceParams.push(portfolio);
-    if (isin) balanceParams.push(isin);
-    if (valueDate) balanceParams.push(valueDate);
-    if (maturityDate) balanceParams.push(maturityDate);
-    if (asAtDate) balanceParams.push(asAtDate);
-    // Add parameters for buyback deals
     if (portfolio) balanceParams.push(portfolio);
     if (isin) balanceParams.push(isin);
     if (valueDate) balanceParams.push(valueDate);

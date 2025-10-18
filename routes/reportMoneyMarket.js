@@ -7,7 +7,7 @@ router.get('/', async (req, res) => {
   try {
     const { asAtDate, portfolio, isin, valueDate, maturityDate, format, page = 1, pageSize = 20 } = req.query;
 
-    // Build query with filters similar to GSec report
+    // Build query with filters similar to GSec report - only include GSEC deals
     let sql = `
       SELECT 
         g.portfolio,
