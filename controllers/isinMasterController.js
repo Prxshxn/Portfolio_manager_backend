@@ -253,11 +253,20 @@ module.exports = {
       
       console.log('=== SAVING GSEC TRANSACTION ===');
       
+      // --- SELL DEALS LOGIC (SET BUY_DEAL_NUMBER BEFORE CREATION) ---
+      const { sell_deals } = req.body;
+      if (Array.isArray(sell_deals) && String(formData.transaction_type).toLowerCase() === 'sell') {
+        // Set buy_deal_number on the main sell transaction (use first sell deal's reference)
+        if (sell_deals.length > 0 && sell_deals[0].buy_deal_number) {
+          formData.buyDealNumber = sell_deals[0].buy_deal_number;
+        }
+      }
+      // --- END SELL DEALS LOGIC ---
+      
       // Create GSec transaction with connection
       const result = await Gsec.createWithConnection(formData, connection);
 
-      // --- SELL DEALS LOGIC (OPTIMIZED) ---
-      const { sell_deals } = req.body;
+      // --- UPDATE REMAINING FACE VALUES ---
       if (Array.isArray(sell_deals) && String(formData.transaction_type).toLowerCase() === 'sell') {
         for (const sell of sell_deals) {
           const [buyDeals] = await connection.query('SELECT * FROM gsec WHERE deal_number = ? AND transaction_type = "Buy"', [sell.buy_deal_number]);
@@ -271,7 +280,7 @@ module.exports = {
           }
         }
       }
-      // --- END SELL DEALS LOGIC ---
+      // --- END UPDATE REMAINING FACE VALUES ---
 
       // Commit transaction
       await connection.commit();

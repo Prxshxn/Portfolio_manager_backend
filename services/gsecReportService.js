@@ -82,7 +82,25 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
   // Query DB
   const [rows] = await db.query(sql, params);
 
-  // Calculate repo_collateral for each deal
+  // Build a map of total sold per buy deal_number to compute remaining face value per row
+  const dealNumbers = rows.map(r => r.deal_number).filter(Boolean);
+  const soldByDeal = {};
+  if (dealNumbers.length) {
+    // Grouped query to sum sells referencing these buy deals
+    const placeholders = dealNumbers.map(() => '?').join(',');
+    const sellRefSql = `
+      SELECT buy_deal_number, COALESCE(SUM(face_value), 0) AS total_sold
+      FROM gsec
+      WHERE transaction_type = 'Sell' AND buy_deal_number IN (${placeholders})
+      GROUP BY buy_deal_number
+    `;
+    const [sellRefRows] = await db.query(sellRefSql, dealNumbers);
+    sellRefRows.forEach(r => {
+      soldByDeal[r.buy_deal_number] = Number(r.total_sold) || 0;
+    });
+  }
+
+  // Calculate repo_collateral for each deal and derive remaining face value for display
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
     
@@ -94,6 +112,11 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     `, [row.isin]);
     row.repo_collateral = repoRows[0].repo_collateral;
     
+    // Compute remaining face value for this specific Buy deal for display
+    const soldAgainstThisDeal = Number(soldByDeal[row.deal_number] || 0);
+    const originalFace = Number(row.face_value) || 0;
+    row.remaining_face_value_report = Math.max(0, originalFace - soldAgainstThisDeal);
+
     // No sell_back calculation - sell transactions are handled in separate report
     row.sell_back = 0;
   }
@@ -129,13 +152,13 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       }
       
       const [balanceRows] = await db.query(balanceSql, balanceParams);
-      
-      // Calculate balance for this ISIN (only Buy transactions)
+
+      // Calculate balance for this ISIN (start with Buy totals)
       isinBalances[isin] = 0;
       isinWapMap[isin] = { sumFV: 0, sumFVCP: 0 };
-      
+
       balanceRows.forEach(balanceRow => {
-        // Only Buy transactions contribute to balance
+        // Only Buy transactions contribute to initial balance
         isinBalances[isin] += Number(balanceRow.face_value);
 
         // Aggregate for WAP calculation
@@ -144,6 +167,30 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
         isinWapMap[isin].sumFV += fv;
         isinWapMap[isin].sumFVCP += fv * cp;
       });
+
+      // Subtract normal Sell transactions for this ISIN from balance
+      let sellSql = `SELECT COALESCE(SUM(face_value), 0) AS sold FROM gsec WHERE isin = ? AND transaction_type = 'Sell'`;
+      const sellParams = [isin];
+      if (portfolio) {
+        sellSql += ' AND portfolio = ?';
+        sellParams.push(portfolio);
+      }
+      if (valueDate) {
+        sellSql += ' AND value_date = ?';
+        sellParams.push(valueDate);
+      }
+      if (maturityDate) {
+        sellSql += ' AND maturity_date = ?';
+        sellParams.push(maturityDate);
+      }
+      if (asAtDate) {
+        sellSql += ' AND value_date <= ?';
+        sellParams.push(asAtDate);
+      }
+
+      const [sellAggRows] = await db.query(sellSql, sellParams);
+      const totalSoldForIsin = Number(sellAggRows?.[0]?.sold || 0);
+      isinBalances[isin] = Math.max(0, Number(isinBalances[isin]) - totalSoldForIsin);
     }
 
   // Helper to safely parse ISO date strings
@@ -188,7 +235,8 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       portfolio: row.portfolio,
       custodian: row.custodian || '',
       deal_number: row.deal_number || '',
-      face_value: formatCurrency(row.face_value, 2),
+      // Show remaining face value in the Face Value column (original minus linked sells)
+      face_value: formatCurrency(row.remaining_face_value_report ?? row.face_value, 2),
       value_date: row.value_date,
       maturity_date: row.maturity_date,
       isin: row.isin,
