@@ -11,6 +11,8 @@ const transactionsRoutes = require('./transactions');
 const strategyMasterRoutes = require('./strategyMasterRoutes');
 const reportMoneyMarketRoutes = require('./reportMoneyMarket');
 const reportMarkToMarketRoutes = require('./reportMarkToMarket');
+const reportBuybackRoutes = require('./reportBuyback');
+const reportSellTransactionRoutes = require('./reportSellTransaction');
 const markToMarketRoutes = require('./markToMarketRoutes');
 const cashflowRoutes = require('./cashflowRoutes');
 
@@ -53,6 +55,12 @@ router.use('/reports/money-market', reportMoneyMarketRoutes);
 
 // Mount Mark to Market report API
 router.use('/reports/mark-to-market', reportMarkToMarketRoutes);
+
+// Mount Buyback report API
+router.use('/reports/buyback', reportBuybackRoutes);
+
+// Mount Sell Transaction report API
+router.use('/reports/sell-transaction', reportSellTransactionRoutes);
 
 // Mount GSec workflow API
 router.use('/gsec', require('./gsecRoutes'));
