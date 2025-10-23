@@ -535,15 +535,13 @@ const Gsec = {
       isin,
       yield,
       face_value,
-      COALESCE(remaining_face_value, face_value) as remaining_face_value,
       portfolio,
       value_date,
       transaction_type,
       status
     FROM gsec 
     WHERE transaction_type = 'Buy' 
-      AND status IN ('Approved', 'Settled', 'final_approved') 
-      AND COALESCE(remaining_face_value, face_value) > 0`;
+      AND status IN ('Approved', 'Settled', 'final_approved')`;
     const params = [];
     if (isin) {
       sql += ' AND isin = ?';
@@ -554,8 +552,40 @@ const Gsec = {
       params.push(portfolio);
     }
     sql += ' ORDER BY deal_number DESC';
+    
     const [rows] = await db.query(sql, params);
-    return rows;
+    
+    // Calculate remaining face value dynamically by subtracting sell transactions
+    const dealNumbers = rows.map(r => r.deal_number).filter(Boolean);
+    const soldByDeal = {};
+    
+    if (dealNumbers.length) {
+      // Get total sold per buy_deal_number
+      const placeholders = dealNumbers.map(() => '?').join(',');
+      const sellSql = `
+        SELECT buy_deal_number, COALESCE(SUM(face_value), 0) AS total_sold
+        FROM gsec
+        WHERE transaction_type = 'Sell' AND buy_deal_number IN (${placeholders})
+        GROUP BY buy_deal_number
+      `;
+      const [sellRows] = await db.query(sellSql, dealNumbers);
+      sellRows.forEach(row => {
+        soldByDeal[row.buy_deal_number] = Number(row.total_sold) || 0;
+      });
+    }
+    
+    // Calculate remaining face value for each deal
+    return rows.map(deal => {
+      const originalFace = Number(deal.face_value) || 0;
+      const soldAmount = Number(soldByDeal[deal.deal_number] || 0);
+      const remainingFace = Math.max(0, originalFace - soldAmount);
+      
+      return {
+        ...deal,
+        face_value: originalFace.toFixed(2),
+        remaining_face_value: remainingFace.toFixed(4)
+      };
+    }).filter(deal => Number(deal.remaining_face_value) > 0); // Only show deals with remaining balance
   },
 
   /**

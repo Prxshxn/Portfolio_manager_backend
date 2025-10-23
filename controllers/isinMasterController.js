@@ -253,22 +253,29 @@ module.exports = {
       
       console.log('=== SAVING GSEC TRANSACTION ===');
       
-      // --- SELL DEALS LOGIC (SET BUY_DEAL_NUMBER BEFORE CREATION) ---
+      // --- SELL DEALS LOGIC (CREATE INDIVIDUAL SELL TRANSACTIONS ONLY) ---
       const { sell_deals } = req.body;
-      if (Array.isArray(sell_deals) && String(formData.transaction_type).toLowerCase() === 'sell') {
-        // Set buy_deal_number on the main sell transaction (use first sell deal's reference)
-        if (sell_deals.length > 0 && sell_deals[0].buy_deal_number) {
-          formData.buyDealNumber = sell_deals[0].buy_deal_number;
-        }
-      }
-      // --- END SELL DEALS LOGIC ---
+      let result = null;
       
-      // Create GSec transaction with connection
-      const result = await Gsec.createWithConnection(formData, connection);
-
-      // --- UPDATE REMAINING FACE VALUES ---
       if (Array.isArray(sell_deals) && String(formData.transaction_type).toLowerCase() === 'sell') {
+        // For sell transactions with multiple deals, create individual sell transactions only
+        // Don't create a main sell transaction to avoid double deduction
+        
         for (const sell of sell_deals) {
+          // Create individual sell transaction for each buy deal
+          const individualSellData = {
+            ...formData,
+            dealNumber: `${formData.dealNumber}_${sell.buy_deal_number}_${Date.now()}`,
+            faceValue: sell.amountToSell,
+            buyDealNumber: sell.buy_deal_number,
+            transactionType: 'Sell'
+          };
+          
+          // Insert individual sell transaction
+          const individualResult = await Gsec.createWithConnection(individualSellData, connection);
+          if (!result) result = individualResult; // Use first result as main result
+          
+          // Update remaining face value for the referenced buy deal
           const [buyDeals] = await connection.query('SELECT * FROM gsec WHERE deal_number = ? AND transaction_type = "Buy"', [sell.buy_deal_number]);
           if (buyDeals && buyDeals.length > 0) {
             const buyDeal = buyDeals[0];
@@ -279,8 +286,11 @@ module.exports = {
             await connection.query('UPDATE gsec SET remaining_face_value = ? WHERE id = ?', [newRemaining.toFixed(4), buyDeal.id]);
           }
         }
+      } else {
+        // For non-sell transactions or sell transactions without sell_deals, create normally
+        result = await Gsec.createWithConnection(formData, connection);
       }
-      // --- END UPDATE REMAINING FACE VALUES ---
+      // --- END SELL DEALS LOGIC ---
 
       // Commit transaction
       await connection.commit();
