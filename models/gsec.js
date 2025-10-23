@@ -535,6 +535,7 @@ const Gsec = {
       isin,
       yield,
       face_value,
+      remaining_face_value,
       portfolio,
       value_date,
       transaction_type,
@@ -574,11 +575,15 @@ const Gsec = {
       });
     }
     
-    // Calculate remaining face value for each deal
+    // Use remaining_face_value from database (which includes buyback deductions)
+    // Only fall back to dynamic calculation if remaining_face_value is null/undefined
     return rows.map(deal => {
       const originalFace = Number(deal.face_value) || 0;
+      const dbRemainingFaceValue = Number(deal.remaining_face_value) || 0;
       const soldAmount = Number(soldByDeal[deal.deal_number] || 0);
-      const remainingFace = Math.max(0, originalFace - soldAmount);
+      
+      // Use database value if available, otherwise calculate dynamically
+      const remainingFace = dbRemainingFaceValue > 0 ? dbRemainingFaceValue : Math.max(0, originalFace - soldAmount);
       
       return {
         ...deal,

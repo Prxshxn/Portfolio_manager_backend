@@ -40,7 +40,7 @@ function formatPercentage(value, decimals = 4) {
 
 exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityDate, page, pageSize }) => {
   // Build query with filters - only include Buy transactions from GSEC deals
-  let sql = `SELECT g.id, g.portfolio, g.custodian, g.deal_number, g.face_value, g.value_date, g.maturity_date, g.isin, g.coupon_interest, g.clean_price, g.yield, g.counterparty, g.transaction_type, 
+  let sql = `SELECT g.id, g.portfolio, g.custodian, g.deal_number, g.face_value, g.remaining_face_value, g.value_date, g.maturity_date, g.isin, g.coupon_interest, g.clean_price, g.yield, g.counterparty, g.transaction_type, 
              im.coupon_rate, im.issue_date, im.coupon_date_1, im.coupon_date_2
     FROM gsec g 
     LEFT JOIN isin_master im ON g.isin = im.isin_number 
@@ -112,10 +112,14 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     `, [row.isin]);
     row.repo_collateral = repoRows[0].repo_collateral;
     
-    // Compute remaining face value for this specific Buy deal for display
+    // Use the remaining_face_value from database (which includes buyback deductions)
+    // Only fall back to dynamic calculation if remaining_face_value is null/undefined
     const soldAgainstThisDeal = Number(soldByDeal[row.deal_number] || 0);
     const originalFace = Number(row.face_value) || 0;
-    row.remaining_face_value_report = Math.max(0, originalFace - soldAgainstThisDeal);
+    const dbRemainingFaceValue = Number(row.remaining_face_value) || 0;
+    
+    // Use database value if available, otherwise calculate dynamically
+    row.remaining_face_value_report = dbRemainingFaceValue > 0 ? dbRemainingFaceValue : Math.max(0, originalFace - soldAgainstThisDeal);
 
     // No sell_back calculation - sell transactions are handled in separate report
     row.sell_back = 0;
