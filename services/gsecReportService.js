@@ -87,14 +87,24 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
   const soldByDeal = {};
   if (dealNumbers.length) {
     // Grouped query to sum sells referencing these buy deals
+    // Include asAtDate filter for backdating support
     const placeholders = dealNumbers.map(() => '?').join(',');
-    const sellRefSql = `
+    let sellRefSql = `
       SELECT buy_deal_number, COALESCE(SUM(face_value), 0) AS total_sold
       FROM gsec
       WHERE transaction_type = 'Sell' AND buy_deal_number IN (${placeholders})
-      GROUP BY buy_deal_number
     `;
-    const [sellRefRows] = await db.query(sellRefSql, dealNumbers);
+    const sellRefParams = [...dealNumbers];
+    
+    // Add asAtDate filter for backdating - only include sell transactions on or before asAtDate
+    if (asAtDate) {
+      sellRefSql += ' AND value_date <= ?';
+      sellRefParams.push(asAtDate);
+    }
+    
+    sellRefSql += ' GROUP BY buy_deal_number';
+    
+    const [sellRefRows] = await db.query(sellRefSql, sellRefParams);
     sellRefRows.forEach(r => {
       soldByDeal[r.buy_deal_number] = Number(r.total_sold) || 0;
     });
@@ -118,8 +128,39 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     const originalFace = Number(row.face_value) || 0;
     const dbRemainingFaceValue = Number(row.remaining_face_value) || 0;
     
-    // Use database value if available, otherwise calculate dynamically
-    row.remaining_face_value_report = dbRemainingFaceValue > 0 ? dbRemainingFaceValue : Math.max(0, originalFace - soldAgainstThisDeal);
+    // Calculate buyback deductions with backdating support
+    let buybackDeduction = 0;
+    if (asAtDate) {
+      // Query buyback deals that were approved on or before asAtDate
+      const [buybackRows] = await db.query(`
+        SELECT leg1_face_value, source_buy_deal_number
+        FROM buyback_deals 
+        WHERE leg1_isin = ? AND leg1_portfolio = ? 
+        AND leg1_transaction_type = 'Sell' 
+        AND deal_status = 'Approved'
+        AND approved_at <= ?
+        AND (source_buy_deal_number = ? OR source_buy_deal_number IS NULL)
+      `, [row.isin, row.portfolio, asAtDate, row.deal_number]);
+      
+      buybackRows.forEach(buybackRow => {
+        // If source_buy_deal_number matches this deal, or if it's null (chronological deduction)
+        if (buybackRow.source_buy_deal_number === row.deal_number || !buybackRow.source_buy_deal_number) {
+          buybackDeduction += Number(buybackRow.leg1_face_value) || 0;
+        }
+      });
+    } else {
+      // For current date, use database remaining_face_value which includes all deductions
+      buybackDeduction = 0; // Database value already includes buyback deductions
+    }
+
+    // Calculate final remaining face value
+    if (asAtDate) {
+      // For backdating, calculate dynamically including buyback deductions
+      row.remaining_face_value_report = Math.max(0, originalFace - soldAgainstThisDeal - buybackDeduction);
+    } else {
+      // For current date, use database value if available, otherwise calculate dynamically
+      row.remaining_face_value_report = dbRemainingFaceValue > 0 ? dbRemainingFaceValue : Math.max(0, originalFace - soldAgainstThisDeal);
+    }
 
     // No sell_back calculation - sell transactions are handled in separate report
     row.sell_back = 0;
@@ -128,40 +169,40 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
   // Get all unique ISINs from the current page results
   const uniqueIsins = [...new Set(rows.map(row => row.isin))];
 
-    // Calculate balance for each ISIN across ALL records (not just current page)
-    const isinBalances = {};
-    const isinWapMap = {};
-    
-    for (const isin of uniqueIsins) {
+  // Calculate balance for each ISIN across ALL records (not just current page)
+  const isinBalances = {};
+  const isinWapMap = {};
+  
+  for (const isin of uniqueIsins) {
       // Query all Buy records for this ISIN to calculate correct balance
       let balanceSql = `SELECT face_value, clean_price FROM gsec WHERE isin = ? AND transaction_type = 'Buy'`;
-      const balanceParams = [isin];
-      
-      // Apply the same filters as the main query for GSEC deals
-      if (portfolio) {
-        balanceSql += ' AND portfolio = ?';
-        balanceParams.push(portfolio);
-      }
-      if (valueDate) {
-        balanceSql += ' AND value_date = ?';
-        balanceParams.push(valueDate);
-      }
-      if (maturityDate) {
-        balanceSql += ' AND maturity_date = ?';
-        balanceParams.push(maturityDate);
-      }
-      if (asAtDate) {
-        balanceSql += ' AND value_date <= ?';
-        balanceParams.push(asAtDate);
-      }
-      
-      const [balanceRows] = await db.query(balanceSql, balanceParams);
-
+    const balanceParams = [isin];
+    
+    // Apply the same filters as the main query for GSEC deals
+    if (portfolio) {
+      balanceSql += ' AND portfolio = ?';
+      balanceParams.push(portfolio);
+    }
+    if (valueDate) {
+      balanceSql += ' AND value_date = ?';
+      balanceParams.push(valueDate);
+    }
+    if (maturityDate) {
+      balanceSql += ' AND maturity_date = ?';
+      balanceParams.push(maturityDate);
+    }
+    if (asAtDate) {
+      balanceSql += ' AND value_date <= ?';
+      balanceParams.push(asAtDate);
+    }
+    
+    const [balanceRows] = await db.query(balanceSql, balanceParams);
+    
       // Calculate balance for this ISIN (start with Buy totals)
-      isinBalances[isin] = 0;
-      isinWapMap[isin] = { sumFV: 0, sumFVCP: 0 };
-
-      balanceRows.forEach(balanceRow => {
+    isinBalances[isin] = 0;
+    isinWapMap[isin] = { sumFV: 0, sumFVCP: 0 };
+    
+    balanceRows.forEach(balanceRow => {
         // Only Buy transactions contribute to initial balance
         isinBalances[isin] += Number(balanceRow.face_value);
 
@@ -195,7 +236,28 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       const [sellAggRows] = await db.query(sellSql, sellParams);
       const totalSoldForIsin = Number(sellAggRows?.[0]?.sold || 0);
       isinBalances[isin] = Math.max(0, Number(isinBalances[isin]) - totalSoldForIsin);
-    }
+
+      // Subtract buyback deductions for this ISIN with backdating support
+      if (asAtDate) {
+        let buybackSql = `
+          SELECT COALESCE(SUM(leg1_face_value), 0) AS buyback_deduction
+          FROM buyback_deals 
+          WHERE leg1_isin = ? AND leg1_transaction_type = 'Sell' 
+          AND deal_status = 'Approved' AND approved_at <= ?
+        `;
+        const buybackParams = [isin, asAtDate];
+        
+        if (portfolio) {
+          buybackSql += ' AND leg1_portfolio = ?';
+          buybackParams.push(portfolio);
+        }
+        
+        const [buybackRows] = await db.query(buybackSql, buybackParams);
+        const totalBuybackDeduction = Number(buybackRows?.[0]?.buyback_deduction || 0);
+        isinBalances[isin] = Math.max(0, Number(isinBalances[isin]) - totalBuybackDeduction);
+      }
+      // For current date, buyback deductions are already included in the database remaining_face_value
+  }
 
   // Helper to safely parse ISO date strings
   function safeParseISO(val) {
@@ -309,7 +371,7 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     
     let totalBalance = 0;
     balanceRows.forEach(balanceRow => {
-      totalBalance += Number(balanceRow.face_value);
+        totalBalance += Number(balanceRow.face_value);
     });
     
     totalPortfolioBalance = formatPrice(totalBalance, 4);

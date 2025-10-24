@@ -5,7 +5,7 @@ const buybackDealController = {
   // Create a new buyback deal
   createDeal: async (req, res) => {
     try {
-      const { leg1, leg2, sellDeals } = req.body;
+      const { leg1, leg2, sellDeals, source_buy_deal_number } = req.body;
       
       // Validate required fields
       if (!leg1 || !leg2) {
@@ -71,7 +71,8 @@ const buybackDealController = {
         // Status and tracking
         deal_status: 'Pending_Verification',
         created_by: req.user?.id || 1, // TODO: Get from auth middleware
-        notes: req.body.notes || null
+        notes: req.body.notes || null,
+        source_buy_deal_number: source_buy_deal_number || null
       };
 
       const result = await BuybackDeal.create(dealData);
@@ -220,22 +221,44 @@ const buybackDealController = {
             if (buybackDeal.leg1_transaction_type === 'Sell') {
               console.log('Processing face value deduction for approved buyback deal:', buybackDeal.deal_number);
               
-              // For buyback deals, we need to find the original buy deal that was sold from
-              // The leg1_face_value represents the amount sold from the original buy deal
               const sellAmount = parseFloat(buybackDeal.leg1_face_value || 0);
               const isin = buybackDeal.leg1_isin;
               const portfolio = buybackDeal.leg1_portfolio;
+              const sourceBuyDealNumber = buybackDeal.source_buy_deal_number;
               
               if (sellAmount > 0 && isin && portfolio) {
-                // Find buy deals for this ISIN and portfolio that have remaining face value
-                const [buyDeals] = await db.query(`
-                  SELECT * FROM gsec 
-                  WHERE isin = ? AND portfolio = ? AND transaction_type = 'Buy' 
-                  AND remaining_face_value > 0
-                  ORDER BY created_at ASC
-                `, [isin, portfolio]);
+                let buyDeals = [];
                 
-                console.log(`Found ${buyDeals.length} buy deals for ISIN ${isin} in portfolio ${portfolio}`);
+                // If we have a specific source buy deal number, deduct from that deal
+                if (sourceBuyDealNumber) {
+                  console.log(`Deducting from specific buy deal: ${sourceBuyDealNumber}`);
+                  const [specificBuyDeals] = await db.query(`
+                    SELECT * FROM gsec 
+                    WHERE deal_number = ? AND transaction_type = 'Buy' 
+                    AND remaining_face_value > 0
+                  `, [sourceBuyDealNumber]);
+                  
+                  if (specificBuyDeals && specificBuyDeals.length > 0) {
+                    buyDeals = specificBuyDeals;
+                    console.log(`Found specific buy deal: ${sourceBuyDealNumber} with remaining: ${specificBuyDeals[0].remaining_face_value}`);
+                  } else {
+                    console.warn(`Specific buy deal ${sourceBuyDealNumber} not found or has no remaining balance`);
+                  }
+                }
+                
+                // If no specific deal or specific deal not found, fall back to chronological order
+                if (buyDeals.length === 0) {
+                  console.log('Falling back to chronological order for deduction');
+                  const [chronologicalBuyDeals] = await db.query(`
+                    SELECT * FROM gsec 
+                    WHERE isin = ? AND portfolio = ? AND transaction_type = 'Buy' 
+                    AND remaining_face_value > 0
+                    ORDER BY created_at ASC
+                  `, [isin, portfolio]);
+                  buyDeals = chronologicalBuyDeals;
+                }
+                
+                console.log(`Found ${buyDeals.length} buy deals for deduction`);
                 
                 let remainingToDeduct = sellAmount;
                 

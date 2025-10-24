@@ -257,6 +257,10 @@ module.exports = {
       const { sell_deals } = req.body;
       let result = null;
       
+      console.log('=== SELL DEALS DEBUG ===');
+      console.log('sell_deals:', JSON.stringify(sell_deals, null, 2));
+      console.log('formData.transaction_type:', formData.transaction_type);
+      
       if (Array.isArray(sell_deals) && String(formData.transaction_type).toLowerCase() === 'sell') {
         // For sell transactions with multiple deals, create individual sell transactions only
         // Don't create a main sell transaction to avoid double deduction
@@ -267,15 +271,18 @@ module.exports = {
             ...formData,
             dealNumber: `${formData.dealNumber}_${sell.buy_deal_number}_${Date.now()}`,
             faceValue: sell.amountToSell,
-            buyDealNumber: sell.buy_deal_number,
+            buyDealNumber: sell.buy_deal_number, // This should be the selected deal's deal_number
             transactionType: 'Sell'
           };
+          
+          console.log(`Creating sell transaction for deal: ${sell.buy_deal_number}, amount: ${sell.amountToSell}`);
           
           // Insert individual sell transaction
           const individualResult = await Gsec.createWithConnection(individualSellData, connection);
           if (!result) result = individualResult; // Use first result as main result
           
           // Update remaining face value for the referenced buy deal
+          console.log(`Updating remaining face value for buy deal: ${sell.buy_deal_number}`);
           const [buyDeals] = await connection.query('SELECT * FROM gsec WHERE deal_number = ? AND transaction_type = "Buy"', [sell.buy_deal_number]);
           if (buyDeals && buyDeals.length > 0) {
             const buyDeal = buyDeals[0];
@@ -283,7 +290,12 @@ module.exports = {
             const sold = parseFloat(sell.amountToSell || 0);
             let newRemaining = original - sold;
             newRemaining = Math.trunc(newRemaining * 10000) / 10000;
+            
+            console.log(`Buy deal ${sell.buy_deal_number}: original=${original}, sold=${sold}, newRemaining=${newRemaining}`);
+            
             await connection.query('UPDATE gsec SET remaining_face_value = ? WHERE id = ?', [newRemaining.toFixed(4), buyDeal.id]);
+          } else {
+            console.error(`Buy deal not found: ${sell.buy_deal_number}`);
           }
         }
       } else {
