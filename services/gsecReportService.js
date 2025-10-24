@@ -298,10 +298,12 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       couponDate2: row.coupon_date_2
     });
 
-    // Calculate available balance: balance - repo_collateral (sell transactions handled separately)
-    const balance = Number(truncate4(isinBalances[row.isin]).toFixed(4));
+    // Calculate available balance: deal face value - repo_collateral (deal-wise calculation)
+    const dealFaceValue = Number(row.remaining_face_value_report ?? row.face_value) || 0;
     const repoCollateral = Number(row.repo_collateral) || 0;
-    const availableBalance = balance - repoCollateral;
+    const availableBalance = dealFaceValue - repoCollateral;
+    
+    console.log(`Deal ${row.deal_number}: dealFaceValue=${dealFaceValue}, repoCollateral=${repoCollateral}, availableBalance=${availableBalance}`);
 
     return {
       id: row.id,
