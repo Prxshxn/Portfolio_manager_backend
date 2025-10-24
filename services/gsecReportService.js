@@ -140,7 +140,7 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
         WHERE leg1_isin = ? AND leg1_portfolio = ? 
         AND leg1_transaction_type = 'Sell' 
         AND deal_status = 'Approved'
-        AND approved_at <= ?
+        AND DATE(approved_at) <= ?
         AND (source_buy_deal_number = ? OR source_buy_deal_number IS NULL)
       `, [row.isin, row.portfolio, asAtDate, row.deal_number]);
       
@@ -150,8 +150,10 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
           buybackDeduction += Number(buybackRow.leg1_face_value) || 0;
         }
       });
+      
+      console.log(`Deal ${row.deal_number}: buybackDeduction=${buybackDeduction} for asAtDate=${asAtDate}`);
     } else {
-      // For current date, use database remaining_face_value which includes all deductions
+      // For no asAtDate, use database remaining_face_value which includes all deductions
       buybackDeduction = 0; // Database value already includes buyback deductions
     }
 
@@ -159,11 +161,11 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     const today = new Date().toISOString().split('T')[0];
     const isCurrentDate = asAtDate === today;
     
-    if (asAtDate && !isCurrentDate) {
-      // For backdating (not current date), calculate dynamically including buyback deductions
+    if (asAtDate) {
+      // For any asAtDate (including today), calculate dynamically including buyback deductions
       row.remaining_face_value_report = Math.max(0, originalFace - soldAgainstThisDeal - buybackDeduction);
     } else {
-      // For current date or no asAtDate, use database value if available, otherwise calculate dynamically
+      // For no asAtDate, use database value if available, otherwise calculate dynamically
       row.remaining_face_value_report = dbRemainingFaceValue > 0 ? dbRemainingFaceValue : Math.max(0, originalFace - soldAgainstThisDeal);
     }
     
@@ -361,8 +363,8 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
   // Calculate total portfolio balance when portfolio filter is applied
   let totalPortfolioBalance = null;
   if (portfolio) {
-    // Calculate total balance only for Buy transactions
-    const balanceSql = `SELECT face_value FROM gsec g WHERE g.transaction_type = 'Buy'` +
+    // Calculate total balance using remaining face value (after deducting sells)
+    const balanceSql = `SELECT g.deal_number, g.face_value, g.remaining_face_value FROM gsec g WHERE g.transaction_type = 'Buy'` +
       (portfolio ? ' AND g.portfolio = ?' : '') +
       (isin ? ' AND g.isin = ?' : '') +
       (valueDate ? ' AND g.value_date = ?' : '') +
@@ -378,12 +380,48 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     
     const [balanceRows] = await db.query(balanceSql, balanceParams);
     
+    // Calculate remaining face value for each deal (same logic as in main query)
+    const dealNumbers = balanceRows.map(r => r.deal_number).filter(Boolean);
+    const soldByDeal = {};
+    if (dealNumbers.length) {
+      const placeholders = dealNumbers.map(() => '?').join(',');
+      const sellSql = `
+        SELECT buy_deal_number, COALESCE(SUM(face_value), 0) AS total_sold
+        FROM gsec
+        WHERE transaction_type = 'Sell' AND buy_deal_number IN (${placeholders})
+        ${asAtDate ? ' AND value_date <= ?' : ''}
+        GROUP BY buy_deal_number
+      `;
+      const sellParams = [...dealNumbers];
+      if (asAtDate) sellParams.push(asAtDate);
+      const [sellRows] = await db.query(sellSql, sellParams);
+      sellRows.forEach(row => {
+        soldByDeal[row.buy_deal_number] = Number(row.total_sold) || 0;
+      });
+    }
+    
     let totalBalance = 0;
     balanceRows.forEach(balanceRow => {
-        totalBalance += Number(balanceRow.face_value);
+      const originalFace = Number(balanceRow.face_value) || 0;
+      const dbRemainingFaceValue = Number(balanceRow.remaining_face_value) || 0;
+      const soldAgainstThisDeal = Number(soldByDeal[balanceRow.deal_number] || 0);
+      
+      // Use same calculation as main query
+      const today = new Date().toISOString().split('T')[0];
+      const isCurrentDate = asAtDate === today;
+      
+      let remainingFaceValue;
+      if (asAtDate && !isCurrentDate) {
+        remainingFaceValue = Math.max(0, originalFace - soldAgainstThisDeal);
+      } else {
+        remainingFaceValue = dbRemainingFaceValue > 0 ? dbRemainingFaceValue : Math.max(0, originalFace - soldAgainstThisDeal);
+      }
+      
+      totalBalance += remainingFaceValue;
     });
     
     totalPortfolioBalance = formatPrice(totalBalance, 4);
+    console.log(`Portfolio ${portfolio} total balance: ${totalPortfolioBalance}`);
   }
 
   return { data, total: count, totalPortfolioBalance };
