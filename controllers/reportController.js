@@ -4,6 +4,9 @@ const reportExporter = require('../utils/reportExporter');
 // GET /api/reports/gsec
 exports.getGsecReport = async (req, res) => {
   try {
+    console.log('=== GSEC REPORT API CALLED ===');
+    console.log('Query params:', req.query);
+    
     const {
       asAtDate,
       portfolio,
@@ -36,6 +39,13 @@ exports.getGsecReport = async (req, res) => {
     }
     
     const { data, total, totalPortfolioBalance } = await gsecReportService.getGsecReport(reportParams);
+
+    console.log('GSEC Report Service returned:');
+    console.log('Data length:', data.length);
+    console.log('First few face values:');
+    data.slice(0, 2).forEach(row => {
+      console.log(`- ${row.deal_number}: face_value=${row.face_value}`);
+    });
 
     // Handle export formats
     if (format === 'csv' || format === 'excel' || format === 'pdf') {

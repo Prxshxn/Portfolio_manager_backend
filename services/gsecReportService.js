@@ -128,6 +128,8 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     const originalFace = Number(row.face_value) || 0;
     const dbRemainingFaceValue = Number(row.remaining_face_value) || 0;
     
+    console.log(`Deal ${row.deal_number}: originalFace=${originalFace}, dbRemainingFaceValue=${dbRemainingFaceValue}, soldAgainstThisDeal=${soldAgainstThisDeal}`);
+    
     // Calculate buyback deductions with backdating support
     let buybackDeduction = 0;
     if (asAtDate) {
@@ -154,13 +156,18 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     }
 
     // Calculate final remaining face value
-    if (asAtDate) {
-      // For backdating, calculate dynamically including buyback deductions
+    const today = new Date().toISOString().split('T')[0];
+    const isCurrentDate = asAtDate === today;
+    
+    if (asAtDate && !isCurrentDate) {
+      // For backdating (not current date), calculate dynamically including buyback deductions
       row.remaining_face_value_report = Math.max(0, originalFace - soldAgainstThisDeal - buybackDeduction);
     } else {
-      // For current date, use database value if available, otherwise calculate dynamically
+      // For current date or no asAtDate, use database value if available, otherwise calculate dynamically
       row.remaining_face_value_report = dbRemainingFaceValue > 0 ? dbRemainingFaceValue : Math.max(0, originalFace - soldAgainstThisDeal);
     }
+    
+    console.log(`Deal ${row.deal_number}: final remaining_face_value_report=${row.remaining_face_value_report}`);
 
     // No sell_back calculation - sell transactions are handled in separate report
     row.sell_back = 0;
