@@ -5,7 +5,7 @@ const buybackDealController = {
   // Create a new buyback deal
   createDeal: async (req, res) => {
     try {
-      const { leg1, leg2, sellDeals } = req.body;
+      const { leg1, leg2, sellDeals, source_buy_deal_number } = req.body;
       
       // Validate required fields
       if (!leg1 || !leg2) {
@@ -71,50 +71,14 @@ const buybackDealController = {
         // Status and tracking
         deal_status: 'Pending_Verification',
         created_by: req.user?.id || 1, // TODO: Get from auth middleware
-        notes: req.body.notes || null
+        notes: req.body.notes || null,
+        source_buy_deal_number: source_buy_deal_number || null
       };
 
       const result = await BuybackDeal.create(dealData);
       
-      // Handle sell deals if this is a sell transaction - just update remaining face value
-      if (Array.isArray(sellDeals) && leg1.transactionType === 'Sell') {
-        console.log('Processing sell deals for buyback:', sellDeals);
-        
-        for (const sellDeal of sellDeals) {
-          if (sellDeal.buy_deal_number && sellDeal.amountToSell) {
-            try {
-              // Get the original buy deal
-              const [buyDeals] = await db.query(
-                'SELECT * FROM gsec WHERE deal_number = ? AND transaction_type = "Buy"', 
-                [sellDeal.buy_deal_number]
-              );
-              
-              if (buyDeals && buyDeals.length > 0) {
-                const buyDeal = buyDeals[0];
-                const original = parseFloat(buyDeal.remaining_face_value || buyDeal.face_value || 0);
-                const sold = parseFloat(sellDeal.amountToSell || 0);
-                let newRemaining = original - sold;
-                
-                // Truncate to 4 decimals (not round) - matching GSEC form logic
-                newRemaining = Math.trunc(newRemaining * 10000) / 10000;
-                
-                // Update the remaining face value of the original buy deal
-                await db.query(
-                  'UPDATE gsec SET remaining_face_value = ? WHERE id = ?', 
-                  [newRemaining.toFixed(4), buyDeal.id]
-                );
-                
-                console.log(`Updated remaining face value for deal ${sellDeal.buy_deal_number}: Sold ${sold}, New remaining ${newRemaining}`);
-              } else {
-                console.warn(`Buy deal not found for sell deal: ${sellDeal.buy_deal_number}`);
-              }
-            } catch (sellError) {
-              console.error(`Error processing sell deal ${sellDeal.buy_deal_number}:`, sellError);
-              // Continue with other sell deals even if one fails
-            }
-          }
-        }
-      }
+      // Store sell deals data for later processing when deal is approved
+      // Face value deduction will happen in updateDealStatus when status becomes 'Approved'
       
       res.status(201).json({
         success: true,
@@ -243,6 +207,93 @@ const buybackDealController = {
           success: false,
           error: 'Buyback deal not found'
         });
+      }
+
+      // Process face value deduction when deal is approved
+      if (status === 'Approved') {
+        try {
+          // Get the buyback deal details
+          const [buybackDeals] = await db.query('SELECT * FROM buyback_deals WHERE id = ?', [id]);
+          if (buybackDeals && buybackDeals.length > 0) {
+            const buybackDeal = buybackDeals[0];
+            
+            // If this is a sell transaction, deduct from original buy deals
+            if (buybackDeal.leg1_transaction_type === 'Sell') {
+              console.log('Processing face value deduction for approved buyback deal:', buybackDeal.deal_number);
+              
+              const sellAmount = parseFloat(buybackDeal.leg1_face_value || 0);
+              const isin = buybackDeal.leg1_isin;
+              const portfolio = buybackDeal.leg1_portfolio;
+              const sourceBuyDealNumber = buybackDeal.source_buy_deal_number;
+              
+              if (sellAmount > 0 && isin && portfolio) {
+                let buyDeals = [];
+                
+                // If we have a specific source buy deal number, deduct from that deal
+                if (sourceBuyDealNumber) {
+                  console.log(`Deducting from specific buy deal: ${sourceBuyDealNumber}`);
+                  const [specificBuyDeals] = await db.query(`
+                    SELECT * FROM gsec 
+                    WHERE deal_number = ? AND transaction_type = 'Buy' 
+                    AND remaining_face_value > 0
+                  `, [sourceBuyDealNumber]);
+                  
+                  if (specificBuyDeals && specificBuyDeals.length > 0) {
+                    buyDeals = specificBuyDeals;
+                    console.log(`Found specific buy deal: ${sourceBuyDealNumber} with remaining: ${specificBuyDeals[0].remaining_face_value}`);
+                  } else {
+                    console.warn(`Specific buy deal ${sourceBuyDealNumber} not found or has no remaining balance`);
+                  }
+                }
+                
+                // If no specific deal or specific deal not found, fall back to chronological order
+                if (buyDeals.length === 0) {
+                  console.log('Falling back to chronological order for deduction');
+                  const [chronologicalBuyDeals] = await db.query(`
+                    SELECT * FROM gsec 
+                    WHERE isin = ? AND portfolio = ? AND transaction_type = 'Buy' 
+                    AND remaining_face_value > 0
+                    ORDER BY created_at ASC
+                  `, [isin, portfolio]);
+                  buyDeals = chronologicalBuyDeals;
+                }
+                
+                console.log(`Found ${buyDeals.length} buy deals for deduction`);
+                
+                let remainingToDeduct = sellAmount;
+                
+                for (const buyDeal of buyDeals) {
+                  if (remainingToDeduct <= 0) break;
+                  
+                  const availableToDeduct = parseFloat(buyDeal.remaining_face_value || buyDeal.face_value || 0);
+                  const deductAmount = Math.min(remainingToDeduct, availableToDeduct);
+                  
+                  if (deductAmount > 0) {
+                    const newRemaining = availableToDeduct - deductAmount;
+                    const truncatedRemaining = Math.trunc(newRemaining * 10000) / 10000;
+                    
+                    // Update the remaining face value
+                    await db.query(
+                      'UPDATE gsec SET remaining_face_value = ? WHERE id = ?', 
+                      [truncatedRemaining.toFixed(4), buyDeal.id]
+                    );
+                    
+                    console.log(`Deducted ${deductAmount} from buy deal ${buyDeal.deal_number}. New remaining: ${truncatedRemaining}`);
+                    
+                    remainingToDeduct -= deductAmount;
+                  }
+                }
+                
+                if (remainingToDeduct > 0) {
+                  console.warn(`Could not fully deduct ${remainingToDeduct} from buyback deal ${buybackDeal.deal_number} - insufficient buy deal balances`);
+                }
+              }
+            }
+          }
+        } catch (deductionError) {
+          console.error('Error processing face value deduction for approved buyback:', deductionError);
+          // Don't fail the approval if deduction fails - log and continue
+        }
       }
 
       res.json({

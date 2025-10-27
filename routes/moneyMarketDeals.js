@@ -193,11 +193,47 @@ router.get('/', async (req, res) => {
       values.push(Number(req.query.limit));
     }
     const [rows] = await pool.query(sql, values);
-    res.json({ success: true, data: rows });
+    
+    // Format dates to ensure consistent YYYY-MM-DD format
+    const formattedRows = rows.map(deal => ({
+      ...deal,
+      trade_date: deal.trade_date ? formatDate(deal.trade_date) : null,
+      value_date: deal.value_date ? formatDate(deal.value_date) : null,
+      maturity_date: deal.maturity_date ? formatDate(deal.maturity_date) : null,
+      authorized_at: deal.authorized_at ? formatDateTime(deal.authorized_at) : null
+    }));
+    
+    res.json({ success: true, data: formattedRows });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Failed to fetch deals', error: err.message });
   }
 });
+
+// Helper function to format dates
+function formatDate(date) {
+  if (!date) return null;
+  if (typeof date === 'string') {
+    // If already a string, return first 10 characters (YYYY-MM-DD)
+    return date.slice(0, 10);
+  }
+  // If Date object, format it
+  const d = new Date(date);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+// Helper function to format datetime
+function formatDateTime(dateTime) {
+  if (!dateTime) return null;
+  if (typeof dateTime === 'string') {
+    return dateTime;
+  }
+  // If Date object, format it
+  const d = new Date(dateTime);
+  return d.toISOString().slice(0, 19).replace('T', ' ');
+}
 
 // PUT /api/money-market-deals/:deal_number - Update status/authorization
 router.put('/:deal_number', async (req, res) => {
