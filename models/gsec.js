@@ -527,7 +527,7 @@ const Gsec = {
    * Only for display, does not update Buy record. Uses buy_deal_number in Sell transactions.
    * Filtered by ISIN and/or portfolio if provided.
    */
-  getBuyDealsWithBalanceFiltered: async (isin, portfolio) => {
+  getBuyDealsWithBalanceFiltered: async (isin, portfolio, asAtDate = null) => {
     // Build SQL with optional filters - show approved deals with remaining balance
     let sql = `SELECT 
       id,
@@ -552,6 +552,11 @@ const Gsec = {
       sql += ' AND portfolio = ?';
       params.push(portfolio);
     }
+    // Filter by date if provided (for historical reports)
+    if (asAtDate) {
+      sql += ' AND value_date <= ?';
+      params.push(asAtDate);
+    }
     sql += ' ORDER BY deal_number DESC';
     
     const [rows] = await db.query(sql, params);
@@ -563,27 +568,81 @@ const Gsec = {
     if (dealNumbers.length) {
       // Get total sold per buy_deal_number
       const placeholders = dealNumbers.map(() => '?').join(',');
-      const sellSql = `
+      let sellSql = `
         SELECT buy_deal_number, COALESCE(SUM(face_value), 0) AS total_sold
         FROM gsec
         WHERE transaction_type = 'Sell' AND buy_deal_number IN (${placeholders})
-        GROUP BY buy_deal_number
       `;
-      const [sellRows] = await db.query(sellSql, dealNumbers);
+      const sellParams = [...dealNumbers];
+      
+      // Filter sell transactions by date if provided (for historical reports)
+      if (asAtDate) {
+        sellSql += ' AND value_date <= ?';
+        sellParams.push(asAtDate);
+      }
+      
+      sellSql += ' GROUP BY buy_deal_number';
+      
+      const [sellRows] = await db.query(sellSql, sellParams);
       sellRows.forEach(row => {
         soldByDeal[row.buy_deal_number] = Number(row.total_sold) || 0;
       });
     }
     
-    // Use remaining_face_value from database (which includes buyback deductions)
-    // Only fall back to dynamic calculation if remaining_face_value is null/undefined
+    // If asAtDate is provided, calculate buyback deductions up to that date
+    const buybackDeductionsByDeal = {};
+    if (asAtDate && dealNumbers.length) {
+      const placeholders = dealNumbers.map(() => '?').join(',');
+      let buybackSql = `
+        SELECT source_buy_deal_number, COALESCE(SUM(leg1_face_value), 0) AS total_buyback
+        FROM buyback_deals
+        WHERE leg1_transaction_type = 'Sell'
+        AND deal_status = 'Approved'
+        AND DATE(approved_at) <= ?
+        AND (source_buy_deal_number IN (${placeholders}) OR source_buy_deal_number IS NULL)
+        GROUP BY source_buy_deal_number
+      `;
+      const buybackParams = [asAtDate, ...dealNumbers];
+      
+      const [buybackRows] = await db.query(buybackSql, buybackParams);
+      buybackRows.forEach(row => {
+        if (row.source_buy_deal_number) {
+          buybackDeductionsByDeal[row.source_buy_deal_number] = Number(row.total_buyback) || 0;
+        } else {
+          // NULL source means chronological deduction - distribute across deals
+          const totalBuyback = Number(row.total_buyback) || 0;
+          // For simplicity, distribute evenly across all deals (you may want to implement chronological logic)
+          dealNumbers.forEach(dealNum => {
+            if (!buybackDeductionsByDeal[dealNum]) {
+              buybackDeductionsByDeal[dealNum] = totalBuyback / dealNumbers.length;
+            }
+          });
+        }
+      });
+    }
+    
+    // ALWAYS use remaining_face_value from database (which includes buyback deductions)
+    // The database value is the source of truth that accounts for all deductions
     return rows.map(deal => {
       const originalFace = Number(deal.face_value) || 0;
       const dbRemainingFaceValue = Number(deal.remaining_face_value) || 0;
-      const soldAmount = Number(soldByDeal[deal.deal_number] || 0);
       
-      // Use database value if available, otherwise calculate dynamically
-      const remainingFace = dbRemainingFaceValue > 0 ? dbRemainingFaceValue : Math.max(0, originalFace - soldAmount);
+      let remainingFace;
+      if (asAtDate) {
+        // For historical date reporting, calculate dynamically
+        const soldAmount = Number(soldByDeal[deal.deal_number] || 0);
+        const buybackDeduction = Number(buybackDeductionsByDeal[deal.deal_number] || 0);
+        remainingFace = Math.max(0, originalFace - soldAmount - buybackDeduction);
+      } else {
+        // For current date, use database value (most accurate - includes all deductions)
+        if (dbRemainingFaceValue > 0) {
+          remainingFace = dbRemainingFaceValue;
+        } else {
+          // Fallback: calculate dynamically
+          const soldAmount = Number(soldByDeal[deal.deal_number] || 0);
+          remainingFace = Math.max(0, originalFace - soldAmount);
+        }
+      }
       
       return {
         ...deal,

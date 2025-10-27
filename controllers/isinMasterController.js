@@ -52,8 +52,8 @@ module.exports = {
    */
   getBuyDealsWithBalance: async (req, res) => {
     try {
-      const { isin, portfolio } = req.query;
-      const deals = await Gsec.getBuyDealsWithBalanceFiltered(isin, portfolio);
+      const { isin, portfolio, asAtDate } = req.query;
+      const deals = await Gsec.getBuyDealsWithBalanceFiltered(isin, portfolio, asAtDate || null);
       res.json({ success: true, data: deals });
     } catch (err) {
       res.status(500).json({ success: false, error: err.message });
