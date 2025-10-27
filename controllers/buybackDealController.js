@@ -101,7 +101,7 @@ const buybackDealController = {
             
             // Fetch coupon schedule for this ISIN
             const [couponSchedule] = await db.query(
-              'SELECT * FROM isin_coupon_schedule WHERE isin_number = ? ORDER BY coupon_date ASC',
+              'SELECT * FROM isin_coupon_schedule WHERE isin = ? ORDER BY coupon_date ASC',
               [leg2.isin]
             );
             
