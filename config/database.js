@@ -14,7 +14,10 @@ const pool = mysql.createPool({
   acquireTimeout: 30000, // 30 seconds
   timeout: 30000, // 30 seconds
   idleTimeout: 300000, // 5 minutes
-  reconnect: true
+  reconnect: true,
+  // Fix date handling to prevent timezone conversion issues
+  dateStrings: false,
+  timezone: '+00:00'
 });
 
 // Test the connection and create database/tables if needed
