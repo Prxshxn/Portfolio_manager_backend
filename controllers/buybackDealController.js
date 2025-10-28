@@ -140,39 +140,60 @@ const buybackDealController = {
               numberOfDaysForCouponPeriod = Math.floor((nextDate - lastDate) / (1000 * 60 * 60 * 24));
             }
             
-            // Prepare GSec deal data from leg2
+          // Use pre-calculated values from leg2 (already calculated in frontend like manual GSec form)
+          // If not provided, calculate fallback values from coupon schedule or pricing service
+          const { calculatePrices } = require('../services/bondPricingService');
+
+          // If prices are missing, compute them server-side to ensure DB is complete
+          if ((!leg2.cleanPrice || !leg2.dirtyPrice || !leg2.accruedInterestPer100) && leg2.couponRate && leg2.yield) {
+            const calc = calculatePrices({
+              couponRate: leg2.couponRate,
+              yieldRate: leg2.yield,
+              valueDate: leg2.valueDate,
+              maturityDate: leg2.maturityDate || maturityDate,
+              issueDate: leg2.issueDate || issueDate,
+              couponDate1: leg2.couponDate1 || couponDate1,
+              couponDate2: leg2.couponDate2 || couponDate2
+            });
+            leg2.cleanPrice = leg2.cleanPrice || calc.cleanPrice;
+            leg2.dirtyPrice = leg2.dirtyPrice || calc.dirtyPrice;
+            leg2.accruedInterestPer100 = leg2.accruedInterestPer100 || calc.accruedInterestPer100;
+          }
             const gsecDealData = {
-              tradeType: 'BuyBack',
+              tradeType: leg2.tradeType || 'BuyBack',
               transactionType: 'Buy',
               counterparty: leg2.counterparty,
+              broker: leg2.broker || null,
               dealNumber: null, // Will be auto-generated
               isin: leg2.isin,
               faceValue: leg2.faceValue,
               valueDate: leg2.valueDate,
-              nextCouponDate: nextCouponDate,
-              lastCouponDate: lastCouponDate,
-              numberOfDaysInterestAccrued: numberOfDaysInterestAccrued,
-              numberOfDaysForCouponPeriod: numberOfDaysForCouponPeriod,
-              accruedInterest: leg2.accruedInterest || null,
-              couponInterest: couponInterest,
+              nextCouponDate: leg2.nextCouponDate || nextCouponDate,
+              lastCouponDate: leg2.lastCouponDate || lastCouponDate,
+              numberOfDaysInterestAccrued: leg2.numberOfDaysInterestAccrued || numberOfDaysInterestAccrued,
+              numberOfDaysForCouponPeriod: leg2.numberOfDaysForCouponPeriod || numberOfDaysForCouponPeriod,
+              accruedInterest: leg2.accruedInterestPer100 || leg2.accruedInterest || null,
+              couponInterest: leg2.couponInterest || couponInterest,
               cleanPrice: leg2.cleanPrice,
               dirtyPrice: leg2.dirtyPrice,
-              accruedInterestCalculation: leg2.accruedInterest,
-              accruedInterestSixDecimals: null,
-              accruedInterestFor100: null,
+              accruedInterestCalculation: leg2.accruedInterestCalculation || leg2.accruedInterestPer100,
+              accruedInterestSixDecimals: leg2.accruedInterestSixDecimals || null,
+              accruedInterestFor100: leg2.accruedInterestFor100 || null,
+              accruedInterestBase: leg2.accruedInterestBase || null,
               settlementAmount: leg2.settlementAmount,
               settlementMode: leg2.settlementMode,
-              issueDate: issueDate,
-              maturityDate: maturityDate,
-              couponDates: `${couponDate1},${couponDate2}`,
+              issueDate: leg2.issueDate || issueDate,
+              maturityDate: leg2.maturityDate || maturityDate,
+              couponDates: leg2.couponDate1 && leg2.couponDate2 ? `${leg2.couponDate1},${leg2.couponDate2}` : `${couponDate1},${couponDate2}`,
               yield: leg2.yield,
-              brokerage: 0,
+              brokerage: leg2.brokerage || 0,
               currency: leg2.currency || 'LKR',
               portfolio: leg2.portfolio,
               strategy: leg2.strategy,
               accruedInterestAdjustment: null,
               cleanPriceAdjustment: null,
               custodian: leg2.custodian,
+              tradeDate: leg2.tradeDate || leg2.valueDate,
               userId: req.user?.id || 1,
               current_approval_level: 1, // Start at front office
               status: 'pending'
