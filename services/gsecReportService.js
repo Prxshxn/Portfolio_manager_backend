@@ -86,16 +86,18 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
   const [rows] = await db.query(sql, params);
 
   // Build a map of total sold per buy deal_number to compute remaining face value per row
-  const dealNumbers = rows.map(r => r.deal_number).filter(Boolean);
+  const dealNumbers = rows.map(r => (r.deal_number || '').trim()).filter(Boolean);
   const soldByDeal = {};
   if (dealNumbers.length) {
     // Grouped query to sum sells referencing these buy deals
     // Include asAtDate filter for backdating support
     const placeholders = dealNumbers.map(() => '?').join(',');
     let sellRefSql = `
-      SELECT buy_deal_number, COALESCE(SUM(face_value), 0) AS total_sold
+      SELECT TRIM(buy_deal_number) AS buy_deal_number, COALESCE(SUM(face_value), 0) AS total_sold
       FROM gsec
-      WHERE transaction_type = 'Sell' AND buy_deal_number IN (${placeholders})
+      WHERE transaction_type = 'Sell' 
+      AND buy_deal_number IS NOT NULL 
+      AND TRIM(buy_deal_number) IN (${placeholders})
     `;
     const sellRefParams = [...dealNumbers];
     
@@ -114,13 +116,17 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       sellRefSql += '';
     }
     
-    sellRefSql += ' GROUP BY buy_deal_number';
+    sellRefSql += ' GROUP BY TRIM(buy_deal_number)';
+    
+    console.log(`[DEBUG] Sell query: ${sellRefSql}`);
+    console.log(`[DEBUG] Sell query params:`, sellRefParams);
     
     const [sellRefRows] = await db.query(sellRefSql, sellRefParams);
     console.log(`[DEBUG] Sell query returned ${sellRefRows.length} rows:`, sellRefRows);
     sellRefRows.forEach(r => {
-      soldByDeal[r.buy_deal_number] = Number(r.total_sold) || 0;
-      console.log(`[DEBUG] soldByDeal[${r.buy_deal_number}] = ${soldByDeal[r.buy_deal_number]}`);
+      const trimmedKey = (r.buy_deal_number || '').trim();
+      soldByDeal[trimmedKey] = Number(r.total_sold) || 0;
+      console.log(`[DEBUG] soldByDeal["${trimmedKey}"] = ${soldByDeal[trimmedKey]}`);
     });
   }
 
@@ -138,7 +144,9 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     
     // Use the remaining_face_value from database (which includes buyback deductions)
     // Only fall back to dynamic calculation if remaining_face_value is null/undefined
-    const soldAgainstThisDeal = Number(soldByDeal[row.deal_number] || 0);
+    // Normalize deal_number by trimming for lookup
+    const normalizedDealNumber = (row.deal_number || '').trim();
+    const soldAgainstThisDeal = Number(soldByDeal[normalizedDealNumber] || 0);
     const originalFace = Number(row.face_value) || 0;
     const dbRemainingFaceValue = Number(row.remaining_face_value) || 0;
     
@@ -406,14 +414,16 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     const [balanceRows] = await db.query(balanceSql, balanceParams);
     
     // Calculate remaining face value for each deal (same logic as in main query)
-    const dealNumbers = balanceRows.map(r => r.deal_number).filter(Boolean);
+    const dealNumbers = balanceRows.map(r => (r.deal_number || '').trim()).filter(Boolean);
     const soldByDeal = {};
     if (dealNumbers.length) {
       const placeholders = dealNumbers.map(() => '?').join(',');
       let sellSql = `
-        SELECT buy_deal_number, COALESCE(SUM(face_value), 0) AS total_sold
+        SELECT TRIM(buy_deal_number) AS buy_deal_number, COALESCE(SUM(face_value), 0) AS total_sold
         FROM gsec
-        WHERE transaction_type = 'Sell' AND buy_deal_number IN (${placeholders})
+        WHERE transaction_type = 'Sell' 
+        AND buy_deal_number IS NOT NULL 
+        AND TRIM(buy_deal_number) IN (${placeholders})
       `;
       const sellParams = [...dealNumbers];
       
@@ -425,10 +435,11 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
         sellParams.push(asAtDate);
       }
       
-      sellSql += ' GROUP BY buy_deal_number';
+      sellSql += ' GROUP BY TRIM(buy_deal_number)';
       const [sellRows] = await db.query(sellSql, sellParams);
       sellRows.forEach(row => {
-        soldByDeal[row.buy_deal_number] = Number(row.total_sold) || 0;
+        const trimmedKey = (row.buy_deal_number || '').trim();
+        soldByDeal[trimmedKey] = Number(row.total_sold) || 0;
       });
     }
     
@@ -458,8 +469,10 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     balanceRows.forEach(balanceRow => {
       const originalFace = Number(balanceRow.face_value) || 0;
       const dbRemainingFaceValue = Number(balanceRow.remaining_face_value) || 0;
-      const soldAgainstThisDeal = Number(soldByDeal[balanceRow.deal_number] || 0);
-      const buybackDeduction = Number(buybackByDeal[balanceRow.deal_number] || 0);
+      // Normalize deal_number by trimming for lookup
+      const normalizedDealNumber = (balanceRow.deal_number || '').trim();
+      const soldAgainstThisDeal = Number(soldByDeal[normalizedDealNumber] || 0);
+      const buybackDeduction = Number(buybackByDeal[normalizedDealNumber] || 0);
       
       // Use same calculation as main query
       const today = new Date().toISOString().split('T')[0];
