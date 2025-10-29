@@ -195,8 +195,8 @@ const buybackDealController = {
               custodian: leg2.custodian,
               tradeDate: leg2.tradeDate || leg2.valueDate,
               userId: req.user?.id || 1,
-              current_approval_level: 1, // Start at front office
-              status: 'pending'
+              current_approval_level: null, // No approval workflow needed for buyback GSec
+              status: 'final_approved' // Auto-approved for buyback deals
             };
             
             // Create the GSec deal
