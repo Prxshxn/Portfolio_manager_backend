@@ -336,8 +336,9 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       portfolio: row.portfolio,
       custodian: row.custodian || '',
       deal_number: row.deal_number || '',
-      // Show remaining face value in the Face Value column (original minus linked sells)
-      face_value: formatCurrency(row.remaining_face_value_report ?? row.face_value, 2),
+      // Show original face value in the Face Value column for display purposes
+      // The remaining face value is used for balance calculations only
+      face_value: formatCurrency(row.face_value, 2),
       value_date: row.value_date,
       maturity_date: row.maturity_date,
       isin: row.isin,
