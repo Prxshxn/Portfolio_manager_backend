@@ -1,0 +1,59 @@
+name: Node.js CI/CD (Backend)
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: Portfolio_manager_backend
+
+    strategy:
+      matrix:
+        node-version: [21.x]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+          cache-dependency-path: Portfolio_manager_backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install PM2
+        run: npm install -g pm2
+
+      - name: Write environment file
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+        run: |
+          touch .env
+          echo "DB_HOST=${DB_HOST}" >> .env
+          echo "DB_USER=${DB_USER}" >> .env
+          echo "DB_PASSWORD=${DB_PASSWORD}" >> .env
+          echo "DB_NAME=${DB_NAME}" >> .env
+          echo "JWT_SECRET=${JWT_SECRET}" >> .env
+
+      - name: Deploy with PM2 (start or restart Portfolio_Backend)
+        run: |
+          if pm2 describe Portfolio_Backend > /dev/null 2>&1; then
+            pm2 restart Portfolio_Backend
+          else
+            pm2 start server.js --name Portfolio_Backend
+          fi
+
+
