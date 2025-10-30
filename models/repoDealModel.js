@@ -5,7 +5,7 @@ const RepoDeal = {
   // Create a new repo deal
   create: async (dealData) => {
     try {
-             const sql = `
+            const sql = `
          INSERT INTO repo_deals (
            deal_type, counterparty_id, trade_date, value_date, maturity_date,
            principal_amount, interest_amount, rate, maturity_amount, tenor,
@@ -38,6 +38,29 @@ const RepoDeal = {
       ];
 
       const [result] = await db.query(sql, values);
+
+      // Insert ISIN rows into child table if provided
+      const selectedIsins = Array.isArray(dealData.isins) ? dealData.isins : [];
+      const isinsToInsert = selectedIsins.length > 0
+        ? selectedIsins
+        : (dealData.isin ? [{ isin: dealData.isin, faceValue: dealData.faceValue }] : []);
+
+      if (isinsToInsert.length > 0) {
+        const insertChildSql = `
+          INSERT INTO repo_deal_isins (repo_deal_id, isin_number, face_value)
+          VALUES ?
+        `;
+        const childValues = isinsToInsert
+          .filter(i => i && (i.isin || i.isin_number))
+          .map(i => [
+            result.insertId,
+            (i.isin || i.isin_number),
+            i.faceValue != null ? i.faceValue : null
+          ]);
+        if (childValues.length > 0) {
+          await db.query(insertChildSql, [childValues]);
+        }
+      }
       
       // Capture cashflow for the new repo deal
       try {
@@ -63,7 +86,7 @@ const RepoDeal = {
   // Get all repo deals with optional filters
   getAll: async (filters = {}) => {
     try {
-             let sql = `
+            let sql = `
          SELECT 
            rd.*,
            COALESCE(
@@ -115,7 +138,22 @@ const RepoDeal = {
       sql += ' ORDER BY rd.created_at DESC';
       
       const [results] = await db.query(sql, values);
-      return results;
+
+      if (results.length === 0) return results;
+
+      // Load isins for all deals in one query
+      const dealIds = results.map(r => r.id);
+      const [isinRows] = await db.query(
+        `SELECT repo_deal_id, isin_number, face_value FROM repo_deal_isins WHERE repo_deal_id IN (${dealIds.map(() => '?').join(',')})`,
+        dealIds
+      );
+      const byDealId = new Map();
+      for (const row of isinRows) {
+        const arr = byDealId.get(row.repo_deal_id) || [];
+        arr.push({ isin: row.isin_number, faceValue: row.face_value });
+        byDealId.set(row.repo_deal_id, arr);
+      }
+      return results.map(r => ({ ...r, isins: byDealId.get(r.id) || [] }));
     } catch (error) {
       console.error('Error fetching repo deals:', error);
       throw error;
@@ -125,7 +163,7 @@ const RepoDeal = {
   // Get repo deal by ID
   getById: async (id) => {
     try {
-             const sql = `
+            const sql = `
          SELECT 
            rd.*,
            COALESCE(
@@ -148,7 +186,13 @@ const RepoDeal = {
        `;
       
       const [results] = await db.query(sql, [id]);
-      return results[0] || null;
+      const deal = results[0] || null;
+      if (!deal) return null;
+      const [rows] = await db.query(
+        'SELECT isin_number, face_value FROM repo_deal_isins WHERE repo_deal_id = ?',
+        [id]
+      );
+      return { ...deal, isins: rows.map(r => ({ isin: r.isin_number, faceValue: r.face_value })) };
     } catch (error) {
       console.error('Error fetching repo deal by ID:', error);
       throw error;
@@ -233,14 +277,31 @@ const RepoDeal = {
   // Get repo deals by ISIN
   getByIsin: async (isinNumber) => {
     try {
-      const sql = `
-        SELECT * FROM repo_deals 
-        WHERE isin_number = ? 
-        ORDER BY created_at DESC
-      `;
-      
-      const [results] = await db.query(sql, [isinNumber]);
-      return results;
+      // Match either legacy column or child table
+      const [results] = await db.query(
+        `SELECT rd.*
+         FROM repo_deals rd
+         LEFT JOIN repo_deal_isins rdi ON rdi.repo_deal_id = rd.id
+         WHERE rd.isin_number = ? OR rdi.isin_number = ?
+         GROUP BY rd.id
+         ORDER BY rd.created_at DESC`,
+        [isinNumber, isinNumber]
+      );
+
+      if (results.length === 0) return results;
+
+      const dealIds = results.map(r => r.id);
+      const [isinRows] = await db.query(
+        `SELECT repo_deal_id, isin_number, face_value FROM repo_deal_isins WHERE repo_deal_id IN (${dealIds.map(() => '?').join(',')})`,
+        dealIds
+      );
+      const byDealId = new Map();
+      for (const row of isinRows) {
+        const arr = byDealId.get(row.repo_deal_id) || [];
+        arr.push({ isin: row.isin_number, faceValue: row.face_value });
+        byDealId.set(row.repo_deal_id, arr);
+      }
+      return results.map(r => ({ ...r, isins: byDealId.get(r.id) || [] }));
     } catch (error) {
       console.error('Error fetching repo deals by ISIN:', error);
       throw error;

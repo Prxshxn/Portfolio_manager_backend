@@ -4,7 +4,7 @@ const repoDealController = {
   // Create a new repo deal
   create: async (req, res) => {
     try {
-             const {
+      const {
          dealType,
          counterparty,
          tradeDate,
@@ -17,6 +17,7 @@ const repoDealController = {
         tenor,
         calculationDayBasis,
         isin,
+        isins,
         issueDate,
         haircut,
         faceValue,
@@ -25,11 +26,12 @@ const repoDealController = {
       } = req.body;
 
              // Validation
-       if (!dealType || !counterparty || !tradeDate || !valueDate || !maturityDate || 
-           !principalAmount || !rate || !tenor || !calculationDayBasis || !isin) {
+      const hasIsinsArray = Array.isArray(isins) && isins.length > 0;
+      if (!dealType || !counterparty || !tradeDate || !valueDate || !maturityDate || 
+          !principalAmount || !rate || !tenor || !calculationDayBasis || (!isin && !hasIsinsArray)) {
          return res.status(400).json({
            success: false,
-           message: 'Missing required fields'
+          message: 'Missing required fields'
          });
        }
 
@@ -79,7 +81,7 @@ const repoDealController = {
       }
 
              // Create deal data object
-       const dealData = {
+      const dealData = {
          dealType,
          counterparty,
          tradeDate,
@@ -92,6 +94,7 @@ const repoDealController = {
         tenor: parseInt(tenor),
         calculationDayBasis: parseInt(calculationDayBasis),
         isin,
+        isins: hasIsinsArray ? isins : undefined,
         issueDate,
         haircut: parseFloat(haircut) || 0,
         faceValue: parseFloat(faceValue) || null,

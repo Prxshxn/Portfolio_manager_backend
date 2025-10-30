@@ -106,7 +106,7 @@ const Gsec = {
         data.accruedInterestAdjustment,
         data.cleanPriceAdjustment,
         data.per_day_accrual,
-        'pending', // Default status for authorization workflow
+        data.status || 'pending', // Use provided status or default to pending
         data.userId || null, // Creator's user ID
         currentDate, // Creation timestamp
         data.current_approval_level !== undefined ? data.current_approval_level : 1, // Use frontend value or default to 1

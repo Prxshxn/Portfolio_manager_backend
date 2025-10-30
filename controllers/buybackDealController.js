@@ -1,4 +1,5 @@
 const BuybackDeal = require('../models/buybackDealModel');
+const Gsec = require('../models/gsec');
 const db = require('../config/database');
 
 const buybackDealController = {
@@ -77,8 +78,145 @@ const buybackDealController = {
 
       const result = await BuybackDeal.create(dealData);
       
-      // Store sell deals data for later processing when deal is approved
-      // Face value deduction will happen in updateDealStatus when status becomes 'Approved'
+      // CRITICAL: If leg2 is a Buy transaction, automatically create a GSec deal
+      // This mirrors the behavior when manually creating a buy deal in Fixed Income GSec page
+      if (leg2.transactionType === 'Buy') {
+        try {
+          console.log('Creating automatic GSec deal for buyback leg2 (Buy transaction)...');
+          
+          // Fetch ISIN master data for the leg
+          const [isinData] = await db.query(
+            'SELECT * FROM isin_master WHERE isin_number = ?',
+            [leg2.isin]
+          );
+          
+          if (isinData && isinData.length > 0) {
+            const isin = isinData[0];
+            
+            // Calculate coupon dates from ISIN master data
+            const issueDate = leg1.issueDate || isin.issue_date;
+            const maturityDate = leg1.maturityDate || isin.maturity_date;
+            const couponDate1 = leg1.couponDate1 || isin.coupon_date_1;
+            const couponDate2 = leg1.couponDate2 || isin.coupon_date_2;
+            
+            // Fetch coupon schedule for this ISIN
+            const [couponSchedule] = await db.query(
+              'SELECT * FROM isin_coupon_schedule WHERE isin = ? ORDER BY coupon_date ASC',
+              [leg2.isin]
+            );
+            
+            let lastCouponDate = null;
+            let nextCouponDate = null;
+            
+            if (couponSchedule && couponSchedule.length > 0) {
+              const valueDateObj = new Date(leg2.valueDate);
+              
+              for (let i = 0; i < couponSchedule.length; i++) {
+                const couponDate = new Date(couponSchedule[i].coupon_date);
+                if (couponDate <= valueDateObj) {
+                  lastCouponDate = couponSchedule[i].coupon_date;
+                }
+                if (couponDate > valueDateObj) {
+                  nextCouponDate = couponSchedule[i].coupon_date;
+                  break;
+                }
+              }
+            }
+            
+            // Calculate coupon interest
+            const couponRate = leg1.couponRate || isin.coupon_rate || 0;
+            const couponInterest = (parseFloat(leg2.faceValue) * parseFloat(couponRate)) / 100;
+            
+            // Calculate number of days if we have coupon dates
+            let numberOfDaysInterestAccrued = null;
+            let numberOfDaysForCouponPeriod = null;
+            
+            if (lastCouponDate && nextCouponDate && leg2.valueDate) {
+              const lastDate = new Date(lastCouponDate);
+              const nextDate = new Date(nextCouponDate);
+              const valueDate = new Date(leg2.valueDate);
+              
+              numberOfDaysInterestAccrued = Math.floor((valueDate - lastDate) / (1000 * 60 * 60 * 24));
+              numberOfDaysForCouponPeriod = Math.floor((nextDate - lastDate) / (1000 * 60 * 60 * 24));
+            }
+            
+          // Use pre-calculated values from leg2 (already calculated in frontend like manual GSec form)
+          // If not provided, calculate fallback values from coupon schedule or pricing service
+          const { calculatePrices } = require('../services/bondPricingService');
+
+          // If prices are missing, compute them server-side to ensure DB is complete
+          if ((!leg2.cleanPrice || !leg2.dirtyPrice || !leg2.accruedInterestPer100) && leg2.couponRate && leg2.yield) {
+            const calc = calculatePrices({
+              couponRate: leg2.couponRate,
+              yieldRate: leg2.yield,
+              valueDate: leg2.valueDate,
+              maturityDate: leg2.maturityDate || maturityDate,
+              issueDate: leg2.issueDate || issueDate,
+              couponDate1: leg2.couponDate1 || couponDate1,
+              couponDate2: leg2.couponDate2 || couponDate2
+            });
+            leg2.cleanPrice = leg2.cleanPrice || calc.cleanPrice;
+            leg2.dirtyPrice = leg2.dirtyPrice || calc.dirtyPrice;
+            leg2.accruedInterestPer100 = leg2.accruedInterestPer100 || calc.accruedInterestPer100;
+          }
+            const gsecDealData = {
+              tradeType: leg2.tradeType || 'BuyBack',
+              transactionType: 'Buy',
+              counterparty: leg2.counterparty,
+              broker: leg2.broker || null,
+              dealNumber: null, // Will be auto-generated
+              isin: leg2.isin,
+              faceValue: leg2.faceValue,
+              valueDate: leg2.valueDate,
+              nextCouponDate: leg2.nextCouponDate || nextCouponDate,
+              lastCouponDate: leg2.lastCouponDate || lastCouponDate,
+              numberOfDaysInterestAccrued: leg2.numberOfDaysInterestAccrued || numberOfDaysInterestAccrued,
+              numberOfDaysForCouponPeriod: leg2.numberOfDaysForCouponPeriod || numberOfDaysForCouponPeriod,
+              accruedInterest: leg2.accruedInterestPer100 || leg2.accruedInterest || null,
+              couponInterest: leg2.couponInterest || couponInterest,
+              cleanPrice: leg2.cleanPrice,
+              dirtyPrice: leg2.dirtyPrice,
+              accruedInterestCalculation: leg2.accruedInterestCalculation || leg2.accruedInterestPer100,
+              accruedInterestSixDecimals: leg2.accruedInterestSixDecimals || null,
+              accruedInterestFor100: leg2.accruedInterestFor100 || null,
+              accruedInterestBase: leg2.accruedInterestBase || null,
+              settlementAmount: leg2.settlementAmount,
+              settlementMode: leg2.settlementMode,
+              issueDate: leg2.issueDate || issueDate,
+              maturityDate: leg2.maturityDate || maturityDate,
+              couponDates: leg2.couponDate1 && leg2.couponDate2 ? `${leg2.couponDate1},${leg2.couponDate2}` : `${couponDate1},${couponDate2}`,
+              yield: leg2.yield,
+              brokerage: leg2.brokerage || 0,
+              currency: leg2.currency || 'LKR',
+              portfolio: leg2.portfolio,
+              strategy: leg2.strategy,
+              accruedInterestAdjustment: null,
+              cleanPriceAdjustment: null,
+              custodian: leg2.custodian,
+              tradeDate: leg2.tradeDate || leg2.valueDate,
+              userId: req.user?.id || 1,
+              current_approval_level: null, // No approval workflow needed for buyback GSec
+              status: 'final_approved' // Auto-approved for buyback deals
+            };
+            
+            // Create the GSec deal
+            const gsecResult = await Gsec.create(gsecDealData);
+            console.log(`Successfully created GSec deal with ID: ${gsecResult.insertId}`);
+            
+            // Optionally, you could update the buyback deal to reference this GSec deal
+            // await db.query('UPDATE buyback_deals SET leg2_gsec_deal_id = ? WHERE id = ?', 
+            //                [gsecResult.insertId, result.insertId]);
+            
+            console.log('Automatic GSec deal creation completed successfully');
+          } else {
+            console.warn(`ISIN master data not found for ${leg2.isin}, skipping automatic GSec creation`);
+          }
+        } catch (gsecError) {
+          console.error('Error creating automatic GSec deal:', gsecError);
+          // Don't fail the buyback creation if GSec creation fails
+          // Log the error but continue
+        }
+      }
       
       res.status(201).json({
         success: true,

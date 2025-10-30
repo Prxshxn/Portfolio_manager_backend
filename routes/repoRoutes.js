@@ -77,7 +77,19 @@ const repoDealController = require('../controllers/repoDealController');
  *           description: Day basis for interest calculation
  *         isin:
  *           type: string
- *           description: ISIN number of the security
+ *           description: Primary ISIN (kept for backward compatibility)
+ *         isins:
+ *           type: array
+ *           description: Optional list of ISINs attached to the deal
+ *           items:
+ *             type: object
+ *             properties:
+ *               isin:
+ *                 type: string
+ *                 description: ISIN number
+ *               faceValue:
+ *                 type: number
+ *                 description: Optional face value tagged to this ISIN
  *         issueDate:
  *           type: string
  *           description: Issue date of the security (DD/MM/YYYY format)
@@ -165,6 +177,15 @@ const repoDealController = require('../controllers/repoDealController');
  *           enum: [364, 365]
  *         isin:
  *           type: string
+ *         isins:
+ *           type: array
+ *           items:
+ *             type: object
+ *             properties:
+ *               isin:
+ *                 type: string
+ *               faceValue:
+ *                 type: number
  *         issueDate:
  *           type: string
  *         haircut:
@@ -324,6 +345,10 @@ const repoDealController = require('../controllers/repoDealController');
  *             tenor: 30
  *             calculationDayBasis: 365
  *             isin: "IN1234567890"
+ *             isins: [
+ *               { isin: "IN1234567890", faceValue: 500000 },
+ *               { isin: "IN0987654321", faceValue: 500000 }
+ *             ]
  *             issueDate: "25/01/2025"
  *             haircut: 2.50
  *             faceValue: 1000000
