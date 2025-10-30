@@ -1,4 +1,4 @@
-name: Node.js CI/CD (Backend)
+name: Node.js CI/CD
 
 on:
   push:
@@ -34,26 +34,16 @@ jobs:
         run: npm install -g pm2
 
       - name: Write environment file
-        env:
-          DB_HOST: ${{ secrets.DB_HOST }}
-          DB_USER: ${{ secrets.DB_USER }}
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          DB_NAME: ${{ secrets.DB_NAME }}
-          JWT_SECRET: ${{ secrets.JWT_SECRET }}
         run: |
           touch .env
-          echo "DB_HOST=${DB_HOST}" >> .env
-          echo "DB_USER=${DB_USER}" >> .env
-          echo "DB_PASSWORD=${DB_PASSWORD}" >> .env
-          echo "DB_NAME=${DB_NAME}" >> .env
-          echo "JWT_SECRET=${JWT_SECRET}" >> .env
+          echo "${{ secrets.DB_HOST }}" > .env
 
-      - name: Deploy with PM2 (start or restart Portfolio_Backend)
+      - name: Deploy with PM2 (start or restart BackendAPI)
         run: |
-          if pm2 describe Portfolio_Backend > /dev/null 2>&1; then
-            pm2 restart Portfolio_Backend
+          if pm2 describe BackendAPI > /dev/null 2>&1; then
+            pm2 restart BackendAPI
           else
-            pm2 start server.js --name Portfolio_Backend
-          fi   
+            pm2 start server.js --name BackendAPI
+          fi
 
 
