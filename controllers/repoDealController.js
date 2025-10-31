@@ -4,6 +4,8 @@ const repoDealController = {
   // Create a new repo deal
   create: async (req, res) => {
     try {
+      console.log('📥 Repo deal creation request body:', JSON.stringify(req.body, null, 2));
+      
       const {
          dealType,
          counterparty,
@@ -27,13 +29,52 @@ const repoDealController = {
 
              // Validation
       const hasIsinsArray = Array.isArray(isins) && isins.length > 0;
+      const hasIsin = isin && typeof isin === 'string' && isin.trim() !== '';
+      
+      console.log('🔍 Validation check:', {
+        hasIsin,
+        hasIsinsArray,
+        isin: isin || '(empty)',
+        isins: isins || '(not provided)',
+        dealType: dealType || '(missing)',
+        counterparty: counterparty || '(missing)',
+        tradeDate: tradeDate || '(missing)',
+        valueDate: valueDate || '(missing)',
+        maturityDate: maturityDate || '(missing)',
+        principalAmount: principalAmount || '(missing)',
+        rate: rate || '(missing)',
+        tenor: tenor || '(missing)',
+        calculationDayBasis: calculationDayBasis || '(missing)'
+      });
+      
+      // Check numeric fields - they can be 0 but not undefined/null
+      const hasPrincipalAmount = principalAmount !== undefined && principalAmount !== null && principalAmount !== '';
+      const hasRate = rate !== undefined && rate !== null && rate !== '';
+      const hasTenor = tenor !== undefined && tenor !== null && tenor !== '';
+      
       if (!dealType || !counterparty || !tradeDate || !valueDate || !maturityDate || 
-          !principalAmount || !rate || !tenor || !calculationDayBasis || (!isin && !hasIsinsArray)) {
+          !hasPrincipalAmount || !hasRate || !hasTenor || !calculationDayBasis || (!hasIsin && !hasIsinsArray)) {
+         const missingFields = [];
+         if (!dealType) missingFields.push('dealType');
+         if (!counterparty) missingFields.push('counterparty');
+         if (!tradeDate) missingFields.push('tradeDate');
+         if (!valueDate) missingFields.push('valueDate');
+         if (!maturityDate) missingFields.push('maturityDate');
+         if (!hasPrincipalAmount) missingFields.push('principalAmount');
+         if (!hasRate) missingFields.push('rate');
+         if (!hasTenor) missingFields.push('tenor');
+         if (!calculationDayBasis) missingFields.push('calculationDayBasis');
+         if (!hasIsin && !hasIsinsArray) missingFields.push('isin or isins array');
+         
+         console.error('❌ Validation failed. Missing fields:', missingFields);
          return res.status(400).json({
            success: false,
-          message: 'Missing required fields'
+          message: `Missing required fields: ${missingFields.join(', ')}. Please provide either a single ISIN or select multiple ISINs.`
          });
        }
+       
+       // If using multiple ISINs but no primary ISIN, use first ISIN from array as primary
+       const primaryIsin = hasIsin ? isin : (hasIsinsArray ? isins[0].isin : null);
 
       // Validate deal type
       if (!['Repo', 'Reverse Repo'].includes(dealType)) {
@@ -93,7 +134,7 @@ const repoDealController = {
         maturityAmount: parseFloat(maturityAmount) || 0,
         tenor: parseInt(tenor),
         calculationDayBasis: parseInt(calculationDayBasis),
-        isin,
+        isin: primaryIsin, // Use primary ISIN (either provided or first from array)
         isins: hasIsinsArray ? isins : undefined,
         issueDate,
         haircut: parseFloat(haircut) || 0,
