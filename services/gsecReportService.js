@@ -135,12 +135,23 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     const row = rows[i];
     
     // Calculate repo_collateral for this ISIN
-    const [repoRows] = await db.query(`
-      SELECT COALESCE(SUM(face_value), 0) as repo_collateral
-      FROM repo_deals 
-      WHERE isin_number = ? AND status IN ('Active', 'Pending')
+    // New: support multi-ISIN allocations via repo_deal_isins, while remaining backward compatible
+    const [repoChildRows] = await db.query(`
+      SELECT COALESCE(SUM(rdi.face_value), 0) AS repo_collateral
+      FROM repo_deal_isins rdi
+      JOIN repo_deals rd ON rd.id = rdi.repo_deal_id
+      WHERE rdi.isin_number = ? AND rd.status IN ('Active', 'Pending')
     `, [row.isin]);
-    row.repo_collateral = repoRows[0].repo_collateral;
+
+    // Legacy fallback: deals that still store a single ISIN directly on repo_deals and have no child rows
+    const [repoLegacyRows] = await db.query(`
+      SELECT COALESCE(SUM(rd.face_value), 0) AS repo_collateral
+      FROM repo_deals rd
+      LEFT JOIN repo_deal_isins rdi ON rdi.repo_deal_id = rd.id
+      WHERE rdi.id IS NULL AND rd.isin_number = ? AND rd.status IN ('Active', 'Pending')
+    `, [row.isin]);
+
+    row.repo_collateral = Number(repoChildRows?.[0]?.repo_collateral || 0) + Number(repoLegacyRows?.[0]?.repo_collateral || 0);
     
     // Use the remaining_face_value from database (which includes buyback deductions)
     // Only fall back to dynamic calculation if remaining_face_value is null/undefined
