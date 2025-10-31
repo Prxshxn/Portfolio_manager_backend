@@ -1,0 +1,52 @@
+name: Node.js CI/CD
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: Portfolio_manager_backend
+
+    strategy:
+      matrix:
+        node-version: [21.x]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: Portfolio_manager_backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Optional: run tests or build
+      # - name: Run tests
+      #   run: npm test -- --ci
+
+      # CI env file (optional)
+      - name: Write environment file
+        run: |
+          touch .env
+          echo "DB_HOST=${{ secrets.DB_HOST }}" >> .env
+          echo "DB_USER=${{ secrets.DB_USER }}" >> .env
+          echo "DB_PASSWORD=${{ secrets.DB_PASSWORD }}" >> .env
+          echo "DB_NAME=${{ secrets.DB_NAME }}" >> .env
+          echo "JWT_SECRET=${{ secrets.JWT_SECRET }}" >> .env
+
+      # NOTE: PM2 here won’t persist on GitHub-hosted runners. Use SSH deploy instead.
+      # - name: Start app (for smoke test only)
+      #   run: |
+      #     npm install -g pm2
+      #     pm2 start server.js --name BackendAPI
+      #     pm2 status
