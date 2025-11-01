@@ -319,8 +319,9 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     return null;
   }
 
-  // Get current system date for NVP calculation
-  const systemDate = new Date().toISOString().split('T')[0];
+  // Use asAtDate for NVP calculation if provided, otherwise use current system date
+  // This ensures NVP is calculated to the asAtDate (historical date) when viewing past reports
+  const valueDateForNVP = asAtDate || new Date().toISOString().split('T')[0];
 
   // Format results
   const data = rows.map(row => {
@@ -331,12 +332,13 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       dtm = differenceInDays(maturityDateObj, asAtDateObj);
     }
 
-    // Calculate NVP using system date as value date
+    // Calculate NVP using asAtDate as value date (same calculation as fixed income entry form)
+    // This matches the clean price calculation logic from the frontend
     const nvpResult = calculateNVP({
       faceValue: row.face_value,
       couponRate: row.coupon_rate,
       yieldRate: row.yield,
-      systemDate: systemDate,
+      systemDate: valueDateForNVP, // Use asAtDate if provided, otherwise current date
       maturityDate: row.maturity_date,
       issueDate: row.issue_date,
       couponDate1: row.coupon_date_1,

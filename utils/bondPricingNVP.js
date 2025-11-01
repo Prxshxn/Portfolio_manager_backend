@@ -89,32 +89,27 @@ function calculateNVP({
     return { nvp: '', accruedInterest: '' };
   }
 
-  // Generate full coupon schedule
-  const schedule = generateFullCouponSchedule(issueDate, maturityDate, couponDate1, couponDate2);
-  
-  if (schedule.length < 2) {
-    return { nvp: '', accruedInterest: '' };
+  // Find last and next coupon dates (matching frontend logic exactly)
+  // Start from issue date and move forward until past settle date, then step back
+  let lastCoupon = new Date(issue);
+  const monthsPerPeriod = 12 / frequency; // 6 months for semi-annual
+
+  // Move forward until we're past the settle date
+  while (lastCoupon <= settle) {
+    lastCoupon.setMonth(lastCoupon.getMonth() + monthsPerPeriod);
   }
 
-  // Find last and next coupon dates
-  let lastCouponDate = null;
-  let nextCouponDate = null;
-  
-  for (let i = 0; i < schedule.length; i++) {
-    if (schedule[i] <= settle) {
-      lastCouponDate = schedule[i];
-    }
-    if (schedule[i] > settle) {
-      nextCouponDate = schedule[i];
-      break;
-    }
-  }
+  // Step back to get the last coupon date before settle date
+  lastCoupon.setMonth(lastCoupon.getMonth() - monthsPerPeriod);
 
-  if (!lastCouponDate || !nextCouponDate) {
-    return { nvp: '', accruedInterest: '' };
-  }
+  // Create next coupon date by adding one period to last coupon
+  const nextCoupon = new Date(lastCoupon);
+  nextCoupon.setMonth(nextCoupon.getMonth() + monthsPerPeriod);
 
-  // Calculate accrued interest
+  const lastCouponDate = lastCoupon;
+  const nextCouponDate = nextCoupon;
+
+  // Calculate days for accrued interest
   const daysSinceLastCoupon = getDaysDifference(settle, lastCouponDate);
   const daysInCouponPeriod = getDaysDifference(nextCouponDate, lastCouponDate);
   
@@ -122,73 +117,72 @@ function calculateNVP({
     return { nvp: '', accruedInterest: '' };
   }
 
-  const couponPayment = (Number(faceValue) * Number(couponRate) / 100) / frequency;
+  // Use per-100 basis from the start (matching frontend calculation exactly)
+  const fv = 100; // Always use 100 as face value for per-100 calculations
+  const cr = Number(couponRate) / 100; // Convert percentage to decimal
+  const ytm = Number(yieldRate) / 100; // Convert percentage to decimal
+  // monthsPerPeriod already declared above
 
-  // Calculate dirty price using the same logic as main form
-  const yieldPerPeriod = Number(yieldRate) / 100 / frequency;
+  // Calculate coupon payment per 100 (matching frontend)
+  const coupon = fv * cr / frequency;
+  const ytmPerPeriod = ytm / frequency;
   
-  // Generate cash flows (same as main form)
+  // Calculate fractional period (matching frontend logic exactly)
+  // Fractional period = days from settle date to next coupon / days in coupon period
+  const daysToNextCoupon = getDaysDifference(nextCouponDate, settle);
+  const fractionalPeriod = daysToNextCoupon / daysInCouponPeriod;
+  
+  // Generate cash flows from next coupon to maturity (matching frontend)
   const cashFlows = [];
-  for (let i = 0; i < schedule.length; i++) {
-    const couponDate = schedule[i];
-    if (couponDate > settle) {
-      if (couponDate.getTime() === maturity.getTime()) {
-        // Maturity payment (face value + final coupon)
-        cashFlows.push({
-          date: couponDate,
-          amount: Number(faceValue) + couponPayment,
-          periodCount: i
-        });
-      } else {
-        // Regular coupon payment
-        cashFlows.push({
-          date: couponDate,
-          amount: couponPayment,
-          periodCount: i
-        });
-      }
-    }
+  let cfDate = new Date(nextCouponDate);
+  let periodCount = 0;
+
+  while (cfDate <= maturity) {
+    const isFinal = cfDate.getTime() === maturity.getTime();
+    const amount = isFinal ? coupon + fv : coupon; // Final includes face value
+    cashFlows.push({
+      date: new Date(cfDate),
+      amount,
+      periodCount
+    });
+    cfDate.setMonth(cfDate.getMonth() + monthsPerPeriod);
+    periodCount++;
   }
   
-  // Calculate fractional period (same as main form)
-  const nextCoupon = schedule.find(d => d > settle);
-  const lastCoupon = schedule.find(d => d <= settle);
-  const fractionalPeriod = nextCoupon && lastCoupon ? 
-    getDaysDifference(settle, lastCoupon) / getDaysDifference(nextCoupon, lastCoupon) : 0;
-  
-  // Calculate present value of each cash flow (same as main form)
+  // Calculate present value of each cash flow (matching frontend)
   let dirtyPrice = 0;
   for (const cf of cashFlows) {
     const t = fractionalPeriod + cf.periodCount;
-    const pv = cf.amount / Math.pow(1 + yieldPerPeriod, t);
+    const pv = cf.amount / Math.pow(1 + ytmPerPeriod, t);
     dirtyPrice += pv;
   }
 
-  // Convert dirty price to per 100 basis
-  const dirtyPricePer100 = (dirtyPrice / Number(faceValue)) * 100;
-  const truncatedDirtyPrice = Math.floor(dirtyPricePer100 * 10000) / 10000;
+  // Truncate dirty price to 4 decimals (matching frontend)
+  const dirtyPrice10000 = Math.floor(dirtyPrice * 10000 + 0.0001);
+  const truncatedDirtyPrice = dirtyPrice10000 / 10000;
 
-  // Calculate accrued interest per 100 (same logic as main form)
-  // First calculate coupon payment per 100 face value
-  const couponPer100 = (Number(couponRate) / 100) / frequency * 100; // Per 100 basis
-  const accruedInterestPer100 = (couponPer100 * daysSinceLastCoupon) / daysInCouponPeriod;
-  const truncatedAccruedInterestPer100 = Math.floor(accruedInterestPer100 * 10000) / 10000;
+  // Calculate accrued interest per 100 (matching frontend logic)
+  const daysAccrued = getDaysDifference(settle, lastCouponDate);
+  const accruedInterest = coupon * (daysAccrued / daysInCouponPeriod);
+  const truncatedAccruedInterestPer100 = Math.floor(accruedInterest * 10000) / 10000;
 
-  // Clean price is dirty price minus accrued interest (same logic as main form)
+  // Clean price is dirty price minus accrued interest (matching frontend)
   const cleanPrice = truncatedDirtyPrice - truncatedAccruedInterestPer100;
   const truncatedCleanPrice = Math.floor(cleanPrice * 10000) / 10000;
 
   // Debug logging
   console.log('NVP Calculation Debug:');
-  console.log('System Date (Value Date):', systemDate);
-  console.log('Face Value:', faceValue);
+  console.log('Value Date (systemDate):', systemDate);
+  console.log('Face Value (input):', faceValue, '(using fv=100 for calculation)');
   console.log('Coupon Rate:', couponRate);
   console.log('Yield Rate:', yieldRate);
   console.log('Maturity Date:', maturityDate);
   console.log('Last Coupon Date:', lastCouponDate);
   console.log('Next Coupon Date:', nextCouponDate);
-  console.log('Days Since Last Coupon:', daysSinceLastCoupon);
+  console.log('Days Accrued:', daysAccrued);
   console.log('Days In Coupon Period:', daysInCouponPeriod);
+  console.log('Fractional Period:', fractionalPeriod);
+  console.log('Number of cash flows:', cashFlows.length);
   console.log('Dirty Price Per 100:', truncatedDirtyPrice);
   console.log('Accrued Interest Per 100:', truncatedAccruedInterestPer100);
   console.log('Clean Price Per 100 (NVP):', truncatedCleanPrice);
