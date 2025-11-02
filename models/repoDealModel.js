@@ -46,19 +46,19 @@ const RepoDeal = {
         : (dealData.isin ? [{ isin: dealData.isin, faceValue: dealData.faceValue }] : []);
 
       if (isinsToInsert.length > 0) {
-        const insertChildSql = `
-          INSERT INTO repo_deal_isins (repo_deal_id, isin_number, face_value)
-          VALUES ?
-        `;
-        const childValues = isinsToInsert
-          .filter(i => i && (i.isin || i.isin_number))
-          .map(i => [
+        const filteredIsins = isinsToInsert.filter(i => i && (i.isin || i.isin_number));
+        if (filteredIsins.length > 0) {
+          const placeholders = filteredIsins.map(() => '(?, ?, ?)').join(', ');
+          const flatValues = filteredIsins.flatMap(i => [
             result.insertId,
             (i.isin || i.isin_number),
             i.faceValue != null ? i.faceValue : null
           ]);
-        if (childValues.length > 0) {
-          await db.query(insertChildSql, [childValues]);
+          const insertChildSql = `
+            INSERT INTO repo_deal_isins (repo_deal_id, isin_number, face_value)
+            VALUES ${placeholders}
+          `;
+          await db.query(insertChildSql, flatValues);
         }
       }
       
