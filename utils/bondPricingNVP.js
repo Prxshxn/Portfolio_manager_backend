@@ -1,4 +1,4 @@
-const { differenceInDays, parseISO, addMonths } = require('date-fns');
+const { parseISO, addMonths } = require('date-fns');
 
 // Helper to truncate to 4 decimals
 function truncate4(val) {
@@ -13,13 +13,16 @@ function safeParseISO(val) {
   return null;
 }
 
-// Calculate days difference between two dates
+// Calculate days difference between two dates (matching frontend exactly)
+// Frontend uses: Math.round(Math.abs((date1 - date2) / millisecondsPerDay))
 function getDaysDifference(date1, date2) {
   if (!date1 || !date2) return 0;
   const d1 = safeParseISO(date1);
   const d2 = safeParseISO(date2);
   if (!d1 || !d2) return 0;
-  return differenceInDays(d1, d2);
+  // Match frontend calculation exactly: Math.round(Math.abs((date1 - date2) / millisecondsPerDay))
+  const millisecondsPerDay = 24 * 60 * 60 * 1000;
+  return Math.round(Math.abs((d1 - d2) / millisecondsPerDay));
 }
 
 // Generate full coupon schedule
@@ -170,22 +173,35 @@ function calculateNVP({
   const cleanPrice = truncatedDirtyPrice - truncatedAccruedInterestPer100;
   const truncatedCleanPrice = Math.floor(cleanPrice * 10000) / 10000;
 
-  // Debug logging
-  console.log('NVP Calculation Debug:');
-  console.log('Value Date (systemDate):', systemDate);
+  // Debug logging with detailed calculation breakdown
+  console.log('=== NVP Calculation Debug ===');
+  console.log('Value Date (systemDate/asAtDate):', systemDate);
+  console.log('Issue Date:', issueDate);
+  console.log('Maturity Date:', maturityDate);
   console.log('Face Value (input):', faceValue, '(using fv=100 for calculation)');
   console.log('Coupon Rate:', couponRate);
   console.log('Yield Rate:', yieldRate);
-  console.log('Maturity Date:', maturityDate);
-  console.log('Last Coupon Date:', lastCouponDate);
-  console.log('Next Coupon Date:', nextCouponDate);
-  console.log('Days Accrued:', daysAccrued);
-  console.log('Days In Coupon Period:', daysInCouponPeriod);
-  console.log('Fractional Period:', fractionalPeriod);
+  console.log('--- Coupon Dates ---');
+  console.log('Last Coupon Date:', lastCouponDate.toISOString().split('T')[0]);
+  console.log('Next Coupon Date:', nextCouponDate.toISOString().split('T')[0]);
+  console.log('Settle Date:', settle.toISOString().split('T')[0]);
+  console.log('--- Day Calculations (matching frontend) ---');
+  console.log('Days Accrued (settle - lastCoupon):', daysAccrued);
+  console.log('Days In Coupon Period (nextCoupon - lastCoupon):', daysInCouponPeriod);
+  console.log('Days To Next Coupon (nextCoupon - settle):', daysToNextCoupon);
+  console.log('Fractional Period (daysToNextCoupon / daysInCouponPeriod):', fractionalPeriod);
+  console.log('--- Cash Flows ---');
   console.log('Number of cash flows:', cashFlows.length);
-  console.log('Dirty Price Per 100:', truncatedDirtyPrice);
-  console.log('Accrued Interest Per 100:', truncatedAccruedInterestPer100);
-  console.log('Clean Price Per 100 (NVP):', truncatedCleanPrice);
+  cashFlows.forEach((cf, idx) => {
+    const t = fractionalPeriod + cf.periodCount;
+    const pv = cf.amount / Math.pow(1 + ytmPerPeriod, t);
+    console.log(`  CF ${idx + 1}: date=${cf.date.toISOString().split('T')[0]}, amount=${cf.amount.toFixed(4)}, t=${t.toFixed(6)}, PV=${pv.toFixed(6)}`);
+  });
+  console.log('Raw Dirty Price (sum of PVs):', dirtyPrice);
+  console.log('--- Final Values ---');
+  console.log('Dirty Price Per 100 (truncated):', truncatedDirtyPrice);
+  console.log('Accrued Interest Per 100 (truncated):', truncatedAccruedInterestPer100);
+  console.log('Clean Price (dirty - accrued, truncated):', truncatedCleanPrice);
   console.log('================================');
 
   return {
