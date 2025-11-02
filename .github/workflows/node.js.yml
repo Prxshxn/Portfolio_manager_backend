@@ -37,7 +37,7 @@ jobs:
     - name: Create .env file from secrets
       run: |
         touch .env
-        echo "${{ secrets.PROD_ENV_FILE }}" > .env
+        echo "${{ secrets.DB_HOST }}" > .env
 
     - name: Check PM2 status
       run: |
