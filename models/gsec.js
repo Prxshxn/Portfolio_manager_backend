@@ -630,7 +630,7 @@ const Gsec = {
       let remainingFace;
       if (asAtDate) {
         // For historical date reporting, calculate dynamically
-        const soldAmount = Number(soldByDeal[deal.deal_number] || 0);
+      const soldAmount = Number(soldByDeal[deal.deal_number] || 0);
         const buybackDeduction = Number(buybackDeductionsByDeal[deal.deal_number] || 0);
         remainingFace = Math.max(0, originalFace - soldAmount - buybackDeduction);
       } else {
