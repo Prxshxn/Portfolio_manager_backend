@@ -794,22 +794,30 @@ const Gsec = {
    * Update status of a GSec transaction (approve/reject)
    */
   updateStatus: async (id, data) => {
-    // Determine the new approval level based on current status and action
-    let newApprovalLevel = data.current_approval_level || 1;
+    // First, fetch the current transaction to get the actual current_approval_level
+    const [currentTx] = await db.query('SELECT current_approval_level, status FROM gsec WHERE id = ?', [id]);
+    if (!currentTx || currentTx.length === 0) {
+      throw new Error('Transaction not found');
+    }
+    
+    const currentApprovalLevel = currentTx[0].current_approval_level || 1;
+    let newApprovalLevel = currentApprovalLevel;
     let newStatus = data.status;
     
     if (data.status === 'approved') {
-      // Advance to next approval level
-      if (newApprovalLevel === 1) {
+      // Advance to next approval level based on CURRENT approval level
+      if (currentApprovalLevel === 1) {
+        // Front office approved -> move to back office verifier (level 2)
         newApprovalLevel = 2;
         newStatus = 'pending';
-      } else if (newApprovalLevel === 2) {
-      } else if (data.current_approval_level === 2) {
+      } else if (currentApprovalLevel === 2) {
+        // Back office verifier approved -> move to back office final (level 3)
         newApprovalLevel = 3;
         newStatus = 'pending';
-      } else if (data.current_approval_level === 3) {
+      } else if (currentApprovalLevel === 3) {
+        // Back office final approved -> mark as final_approved
         newApprovalLevel = 3; // Stay at final
-        newStatus = 'approved';
+        newStatus = 'final_approved';
       }
     } else if (data.status === 'rejected') {
       // Reset to front office on rejection
