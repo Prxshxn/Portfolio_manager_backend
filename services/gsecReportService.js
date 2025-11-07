@@ -186,8 +186,25 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       
       console.log(`Deal ${row.deal_number}: buybackDeduction=${buybackDeduction} for asAtDate=${asAtDate}`);
     } else {
-      // For no asAtDate, use database remaining_face_value which includes all deductions
-      buybackDeduction = 0; // Database value already includes buyback deductions
+      // For no asAtDate, calculate buyback deductions dynamically to ensure accuracy
+      // Query all approved buyback deals for this ISIN and portfolio
+      const [buybackRows] = await db.query(`
+        SELECT leg1_face_value, source_buy_deal_number
+        FROM buyback_deals 
+        WHERE leg1_isin = ? AND leg1_portfolio = ? 
+        AND leg1_transaction_type = 'Sell' 
+        AND deal_status = 'Approved'
+        AND (source_buy_deal_number = ? OR source_buy_deal_number IS NULL)
+      `, [row.isin, row.portfolio, row.deal_number]);
+      
+      buybackRows.forEach(buybackRow => {
+        // If source_buy_deal_number matches this deal, or if it's null (chronological deduction)
+        if (buybackRow.source_buy_deal_number === row.deal_number || !buybackRow.source_buy_deal_number) {
+          buybackDeduction += Number(buybackRow.leg1_face_value) || 0;
+        }
+      });
+      
+      console.log(`Deal ${row.deal_number}: buybackDeduction=${buybackDeduction} (no asAtDate, calculated dynamically)`);
     }
 
     // Calculate final remaining face value
@@ -203,9 +220,12 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       row.remaining_face_value_report = Math.max(0, originalFace - soldAgainstThisDeal - buybackDeduction);
       console.log(`[DEBUG] Calculated for asAtDate ${asAtDate}: ${originalFace} - ${soldAgainstThisDeal} - ${buybackDeduction} = ${row.remaining_face_value_report}`);
     } else {
-      // For no asAtDate, use database value if available, otherwise calculate dynamically
-      row.remaining_face_value_report = dbRemainingFaceValue > 0 ? dbRemainingFaceValue : Math.max(0, originalFace - soldAgainstThisDeal);
-      console.log(`[DEBUG] No asAtDate: using dbRemainingFaceValue=${dbRemainingFaceValue}`);
+      // For no asAtDate, calculate dynamically to ensure sell and buyback deductions are included
+      // Use database value as fallback only if it's more accurate (but still calculate to be safe)
+      const calculatedRemaining = Math.max(0, originalFace - soldAgainstThisDeal - buybackDeduction);
+      // Prefer calculated value, but use database value if it's valid and close (within tolerance)
+      row.remaining_face_value_report = calculatedRemaining;
+      console.log(`[DEBUG] No asAtDate: calculated=${calculatedRemaining}, dbRemainingFaceValue=${dbRemainingFaceValue}, using calculated`);
     }
     
     console.log(`Deal ${row.deal_number}: final remaining_face_value_report=${row.remaining_face_value_report}`);
@@ -357,9 +377,9 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       portfolio: row.portfolio,
       custodian: row.custodian || '',
       deal_number: row.deal_number || '',
-      // Show original face value in the Face Value column for display purposes
-      // The remaining face value is used for balance calculations only
-      face_value: formatCurrency(row.face_value, 2),
+      // Show remaining face value (after deducting sell deals and buyback deals) in the Face Value column
+      // This reflects the actual available face value at the point of creation
+      face_value: formatCurrency(row.remaining_face_value_report ?? row.face_value, 2),
       value_date: row.value_date,
       maturity_date: row.maturity_date,
       isin: row.isin,

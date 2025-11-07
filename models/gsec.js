@@ -65,13 +65,13 @@ const Gsec = {
       data.per_day_accrual = perDayAccrual;
 
       const sql = `INSERT INTO gsec (
-        trade_type, transaction_type, counterparty, deal_number, isin, face_value, value_date, next_coupon_date, 
+        trade_type, transaction_type, counterparty, deal_number, isin, face_value, trade_date, value_date, next_coupon_date, 
         last_coupon_date, number_of_days_interest_accrued, number_of_days_for_coupon_period, accrued_interest, 
         coupon_interest, clean_price, dirty_price, accrued_interest_calculation, accrued_interest_six_decimals, 
         accrued_interest_for_100, settlement_amount, settlement_mode, issue_date, maturity_date, coupon_dates, 
         yield, brokerage, currency, portfolio, strategy, broker, accrued_interest_adjustment, clean_price_adjustment, 
         per_day_accrual, status, created_by, created_at, current_approval_level, custodian, buy_deal_number
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
       
       const values = [
         data.tradeType,
@@ -80,6 +80,7 @@ const Gsec = {
         data.dealNumber,
         data.isin,
         data.faceValue,
+        data.tradeDate || data.valueDate, // Use tradeDate if provided, otherwise fallback to valueDate
         data.valueDate,
         data.nextCouponDate,
         data.lastCouponDate,
@@ -476,8 +477,28 @@ const Gsec = {
    * Get recent GSec transactions with associated data
    */
   getRecent: async () => {
-    // Use a simple query first to debug the issue
-    const sql = `SELECT * FROM gsec ORDER BY id DESC LIMIT 150`;
+    // Query with JOIN to get counterparty short names
+    // Counterparty IDs are stored with prefixes: c1, i1, j2, etc.
+    // Extract numeric part to match with counterparty table IDs
+    const sql = `
+      SELECT 
+        g.*,
+        COALESCE(
+          corp.short_name,
+          ind.short_name,
+          joint.short_name,
+          g.counterparty
+        ) as counterparty_name
+      FROM gsec g
+      LEFT JOIN counterparty_master_corporate corp ON 
+        (g.counterparty LIKE 'c%' AND SUBSTRING(g.counterparty, 2) = corp.id)
+      LEFT JOIN counterparty_master_individual ind ON 
+        (g.counterparty LIKE 'i%' AND SUBSTRING(g.counterparty, 2) = ind.id)
+      LEFT JOIN counterparty_master_joint joint ON 
+        (g.counterparty LIKE 'j%' AND SUBSTRING(g.counterparty, 2) = joint.id)
+      ORDER BY g.id DESC 
+      LIMIT 150
+    `;
     
     try {
       const [results] = await db.query(sql);
@@ -492,8 +513,8 @@ const Gsec = {
           clean_price: transaction.clean_price ? parseFloat(transaction.clean_price).toFixed(4) : null,
           dirty_price: transaction.dirty_price ? parseFloat(transaction.dirty_price).toFixed(4) : null,
           face_value: transaction.face_value ? parseFloat(transaction.face_value).toFixed(2) : null,
-          // Add default counterparty name since we're not joining tables yet
-          counterparty_name: 'Unknown'
+          // Use counterparty_name from JOIN, fallback to counterparty ID if not found
+          counterparty_name: transaction.counterparty_name || transaction.counterparty || 'Unknown'
         };
       });
       
