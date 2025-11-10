@@ -524,4 +524,63 @@ router.get('/reinvestment-details', MaturityController.getDealDetailsForReinvest
 router.get('/amounts', MaturityController.getMaturityAmounts);
 router.post('/approve', MaturityController.approveMaturities);
 
+/**
+ * @swagger
+ * /maturity/premature:
+ *   get:
+ *     summary: Get deals available for premature maturity
+ *     description: Retrieves all deals that are not yet matured and can be matured early
+ *     tags: [Maturity]
+ *     parameters:
+ *       - in: query
+ *         name: productType
+ *         required: false
+ *         schema:
+ *           type: string
+ *           enum: [all, gsec, money_market, repo]
+ *           default: all
+ *         description: Product type filter
+ *     responses:
+ *       200:
+ *         description: Deals retrieved successfully
+ */
+router.get('/premature', MaturityController.getPrematureMaturityDeals);
+
+/**
+ * @swagger
+ * /maturity/premature:
+ *   post:
+ *     summary: Mature deals prematurely
+ *     description: Updates maturity date for selected deals to mature them early
+ *     tags: [Maturity]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - dealIds
+ *               - prematureMaturityDate
+ *               - productType
+ *             properties:
+ *               dealIds:
+ *                 type: array
+ *                 items:
+ *                   type: integer
+ *                 description: Array of deal IDs to mature prematurely
+ *               prematureMaturityDate:
+ *                 type: string
+ *                 format: date
+ *                 description: New maturity date (YYYY-MM-DD)
+ *               productType:
+ *                 type: string
+ *                 enum: [gsec, money_market, repo]
+ *                 description: Product type
+ *     responses:
+ *       200:
+ *         description: Deals matured successfully
+ */
+router.post('/premature', MaturityController.processPrematureMaturity);
+
 module.exports = router;

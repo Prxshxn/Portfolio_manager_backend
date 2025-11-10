@@ -1910,3 +1910,295 @@ MaturityController.approveMaturities = async (req, res) => {
     return res.status(500).json({ success: false, error: error.message });
   }
 };
+
+/**
+ * Get deals available for premature maturity
+ * Returns all deals that are not yet matured (matured = 0 or NULL)
+ */
+MaturityController.getPrematureMaturityDeals = async (req, res) => {
+  try {
+    const { productType = 'all' } = req.query;
+    const db = require('../config/database');
+    
+    let deals = [];
+    
+    // Get GSEC deals
+    if (productType === 'all' || productType === 'gsec') {
+      const gsecQuery = `
+        SELECT 
+          g.id,
+          g.deal_number,
+          g.isin,
+          g.counterparty,
+          COALESCE(
+            corp.short_name,
+            ind.short_name,
+            joint.short_name,
+            g.counterparty
+          ) as counterparty_name,
+          g.face_value,
+          g.maturity_date,
+          g.status,
+          DATEDIFF(g.maturity_date, CURDATE()) as days_to_maturity,
+          'gsec' as product_type
+        FROM gsec g
+        LEFT JOIN counterparty_master_corporate corp ON 
+          (g.counterparty LIKE 'c%' AND SUBSTRING(g.counterparty, 2) = corp.id)
+        LEFT JOIN counterparty_master_individual ind ON 
+          (g.counterparty LIKE 'i%' AND SUBSTRING(g.counterparty, 2) = ind.id)
+        LEFT JOIN counterparty_master_joint joint ON 
+          (g.counterparty LIKE 'j%' AND SUBSTRING(g.counterparty, 2) = joint.id)
+        WHERE COALESCE(g.matured, 0) = 0
+          AND g.status = 'final_approved'
+          AND g.transaction_type = 'Buy'
+        ORDER BY g.maturity_date ASC
+      `;
+      const [gsecRows] = await db.query(gsecQuery);
+      deals = deals.concat(gsecRows.map(row => ({ ...row, product_type: 'gsec' })));
+    }
+    
+    // Get Money Market deals
+    if (productType === 'all' || productType === 'money_market') {
+      const mmQuery = `
+        SELECT 
+          mmd.id,
+          mmd.deal_number,
+          NULL as isin,
+          mmd.counterparty_id as counterparty,
+          COALESCE(
+            corp.short_name,
+            ind.short_name,
+            joint.short_name,
+            mmd.counterparty_id
+          ) as counterparty_name,
+          mmd.principal_amount as face_value,
+          mmd.maturity_date,
+          mmd.status,
+          DATEDIFF(mmd.maturity_date, CURDATE()) as days_to_maturity,
+          'money_market' as product_type
+        FROM money_market_deals mmd
+        LEFT JOIN counterparty_master_corporate corp ON mmd.counterparty_id = corp.id
+        LEFT JOIN counterparty_master_individual ind ON mmd.counterparty_id = ind.id
+        LEFT JOIN counterparty_master_joint joint ON mmd.counterparty_id = joint.id
+        WHERE COALESCE(mmd.matured, 0) = 0
+          AND mmd.status = 'Approved'
+        ORDER BY mmd.maturity_date ASC
+      `;
+      const [mmRows] = await db.query(mmQuery);
+      deals = deals.concat(mmRows.map(row => ({ ...row, product_type: 'money_market' })));
+    }
+    
+    // Get Repo deals
+    if (productType === 'all' || productType === 'repo') {
+      const repoQuery = `
+        SELECT 
+          rd.id,
+          rd.deal_number,
+          NULL as isin,
+          rd.counterparty_id as counterparty,
+          COALESCE(
+            corp.short_name,
+            ind.short_name,
+            joint.short_name,
+            rd.counterparty_id
+          ) as counterparty_name,
+          rd.principal_amount as face_value,
+          rd.maturity_date,
+          rd.status,
+          DATEDIFF(rd.maturity_date, CURDATE()) as days_to_maturity,
+          'repo' as product_type
+        FROM repo_deals rd
+        LEFT JOIN counterparty_master_corporate corp ON rd.counterparty_id = corp.id
+        LEFT JOIN counterparty_master_individual ind ON rd.counterparty_id = ind.id
+        LEFT JOIN counterparty_master_joint joint ON rd.counterparty_id = joint.id
+        WHERE COALESCE(rd.matured, 0) = 0
+          AND rd.status = 'Approved'
+        ORDER BY rd.maturity_date ASC
+      `;
+      const [repoRows] = await db.query(repoQuery);
+      deals = deals.concat(repoRows.map(row => ({ ...row, product_type: 'repo' })));
+    }
+    
+    res.json({
+      success: true,
+      data: deals,
+      message: `Found ${deals.length} deals available for premature maturity`
+    });
+  } catch (error) {
+    console.error('Error fetching premature maturity deals:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch premature maturity deals: ' + error.message
+    });
+  }
+};
+
+/**
+ * Process premature maturity - update maturity date for selected deals
+ */
+MaturityController.processPrematureMaturity = async (req, res) => {
+  try {
+    const { dealIds, prematureMaturityDate, productType } = req.body;
+    
+    if (!dealIds || !Array.isArray(dealIds) || dealIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'dealIds array is required'
+      });
+    }
+    
+    if (!prematureMaturityDate) {
+      return res.status(400).json({
+        success: false,
+        error: 'prematureMaturityDate is required'
+      });
+    }
+    
+    if (!productType) {
+      return res.status(400).json({
+        success: false,
+        error: 'productType is required'
+      });
+    }
+    
+    // Validate date format
+    const maturityDate = new Date(prematureMaturityDate);
+    if (isNaN(maturityDate.getTime())) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid date format. Use YYYY-MM-DD'
+      });
+    }
+    
+    // Ensure date is not in the past
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    if (maturityDate < today) {
+      return res.status(400).json({
+        success: false,
+        error: 'Premature maturity date cannot be in the past'
+      });
+    }
+    
+    const db = require('../config/database');
+    const user = req.headers['x-user-data'] ? JSON.parse(req.headers['x-user-data']) : null;
+    const userId = user?.id || null;
+    
+    const dateStr = prematureMaturityDate.split('T')[0]; // Ensure YYYY-MM-DD format
+    
+    let updatedCount = 0;
+    const errors = [];
+    
+    // Process each deal - try to determine product type from database if not provided
+    for (const dealId of dealIds) {
+      try {
+        let dealUpdated = false;
+        
+        // Try GSEC first
+        const [gsecResult] = await db.query(`
+          UPDATE gsec 
+          SET maturity_date = ?,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE id = ? 
+            AND COALESCE(matured, 0) = 0
+            AND status = 'final_approved'
+        `, [dateStr, dealId]);
+        
+        if (gsecResult.affectedRows > 0) {
+          updatedCount++;
+          dealUpdated = true;
+          // Log the premature maturity action
+          await db.query(`
+            INSERT INTO maturity_processing_log
+            (deal_id, deal_number, maturity_action, principal_amount, interest_amount, total_amount,
+             processed_date, processed_by, authorization_level, notes)
+            SELECT 
+              id, deal_number, 'premature_maturity', face_value, 0, face_value,
+              ?, ?, 'system', ?
+            FROM gsec WHERE id = ?
+          `, [dateStr, userId, `Premature maturity: Original maturity date updated to ${dateStr}`, dealId]);
+        }
+        
+        // Try Money Market if GSEC didn't work
+        if (!dealUpdated) {
+          const [mmResult] = await db.query(`
+            UPDATE money_market_deals 
+            SET maturity_date = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? 
+              AND COALESCE(matured, 0) = 0
+              AND status = 'Approved'
+          `, [dateStr, dealId]);
+          
+          if (mmResult.affectedRows > 0) {
+            updatedCount++;
+            dealUpdated = true;
+            await db.query(`
+              INSERT INTO maturity_processing_log
+              (deal_id, deal_number, maturity_action, principal_amount, interest_amount, total_amount,
+               processed_date, processed_by, authorization_level, notes)
+              SELECT 
+                id, deal_number, 'premature_maturity', principal_amount, 0, principal_amount,
+                ?, ?, 'system', ?
+              FROM money_market_deals WHERE id = ?
+            `, [dateStr, userId, `Premature maturity: Original maturity date updated to ${dateStr}`, dealId]);
+          }
+        }
+        
+        // Try Repo if neither GSEC nor Money Market worked
+        if (!dealUpdated) {
+          const [repoResult] = await db.query(`
+            UPDATE repo_deals 
+            SET maturity_date = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ? 
+              AND COALESCE(matured, 0) = 0
+              AND status = 'Approved'
+          `, [dateStr, dealId]);
+          
+          if (repoResult.affectedRows > 0) {
+            updatedCount++;
+            dealUpdated = true;
+            await db.query(`
+              INSERT INTO maturity_processing_log
+              (deal_id, deal_number, maturity_action, principal_amount, interest_amount, total_amount,
+               processed_date, processed_by, authorization_level, notes)
+              SELECT 
+                id, deal_number, 'premature_maturity', principal_amount, interest_amount, maturity_amount,
+                ?, ?, 'system', ?
+              FROM repo_deals WHERE id = ?
+            `, [dateStr, userId, `Premature maturity: Original maturity date updated to ${dateStr}`, dealId]);
+          }
+        }
+        
+        if (!dealUpdated) {
+          errors.push(`Deal ID ${dealId}: Deal not found or already matured or incorrect status`);
+        }
+      } catch (err) {
+        errors.push(`Deal ID ${dealId}: ${err.message}`);
+        console.error(`Error updating deal ${dealId}:`, err);
+      }
+    }
+    
+    if (updatedCount === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'No deals were updated. Please check that deals are not already matured and have correct status.',
+        errors
+      });
+    }
+    
+    res.json({
+      success: true,
+      message: `Successfully updated maturity date for ${updatedCount} deal(s) to ${dateStr}`,
+      updatedCount,
+      errors: errors.length > 0 ? errors : undefined
+    });
+  } catch (error) {
+    console.error('Error processing premature maturity:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to process premature maturity: ' + error.message
+    });
+  }
+};
