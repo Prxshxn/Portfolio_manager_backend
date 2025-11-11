@@ -594,6 +594,7 @@ async function getMaturitiesWithApprovalLevel(db, productType, date) {
       END as approval_level_display,
       CASE 
         WHEN mpl.authorization_level = 'back_office_final' THEN 1
+        WHEN mpl.id IS NULL AND ${productType === 'money_market' ? "mmd.status = 'Approved'" : productType === 'gsec' ? "g.status = 'final_approved'" : "rd.status = 'Active'"} THEN 1
         ELSE 0
       END as is_selectable
     FROM ${tableName} ${productType === 'money_market' ? 'mmd' : productType === 'gsec' ? 'g' : 'rd'}
@@ -2111,12 +2112,12 @@ MaturityController.processPrematureMaturity = async (req, res) => {
           await db.query(`
             INSERT INTO maturity_processing_log
             (deal_id, deal_number, maturity_action, principal_amount, interest_amount, total_amount,
-             processed_date, processed_by, authorization_level)
+             processed_date, processed_by, authorization_level, notes)
             SELECT 
               id, deal_number, 'premature_maturity', face_value, 0, face_value,
-              ?, ?, 'system'
+              ?, ?, 'system', ?
             FROM gsec WHERE id = ?
-          `, [dateStr, userId, dealId]);
+          `, [dateStr, userId, `Premature maturity: Original maturity date updated to ${dateStr}`, dealId]);
         }
         
         // Try Money Market if GSEC didn't work
@@ -2136,12 +2137,12 @@ MaturityController.processPrematureMaturity = async (req, res) => {
             await db.query(`
               INSERT INTO maturity_processing_log
               (deal_id, deal_number, maturity_action, principal_amount, interest_amount, total_amount,
-               processed_date, processed_by, authorization_level)
+               processed_date, processed_by, authorization_level, notes)
               SELECT 
                 id, deal_number, 'premature_maturity', principal_amount, 0, principal_amount,
-                ?, ?, 'system'
+                ?, ?, 'system', ?
               FROM money_market_deals WHERE id = ?
-            `, [dateStr, userId, dealId]);
+            `, [dateStr, userId, `Premature maturity: Original maturity date updated to ${dateStr}`, dealId]);
           }
         }
         
@@ -2162,12 +2163,12 @@ MaturityController.processPrematureMaturity = async (req, res) => {
             await db.query(`
               INSERT INTO maturity_processing_log
               (deal_id, deal_number, maturity_action, principal_amount, interest_amount, total_amount,
-               processed_date, processed_by, authorization_level)
+               processed_date, processed_by, authorization_level, notes)
               SELECT 
                 id, CONCAT('REPO-', id), 'premature_maturity', principal_amount, interest_amount, maturity_amount,
-                ?, ?, 'system'
+                ?, ?, 'system', ?
               FROM repo_deals WHERE id = ?
-            `, [dateStr, userId, dealId]);
+            `, [dateStr, userId, `Premature maturity: Original maturity date updated to ${dateStr}`, dealId]);
           }
         }
         
