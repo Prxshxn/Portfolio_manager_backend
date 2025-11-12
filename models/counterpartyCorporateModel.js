@@ -1,4 +1,5 @@
 const db = require('../config/db');
+const { generateCuxNumber } = require('../utils/cuxGenerator');
 
 const CounterpartyCorporate = {
   getAll: async () => {
@@ -6,13 +7,16 @@ const CounterpartyCorporate = {
     return rows;
   },
   create: async (data) => {
+    // Generate CUX number if not provided
+    const cuxNumber = data.cux_number || await generateCuxNumber('corporate');
+    
     const sql = `INSERT INTO counterparty_master_corporate (
       company_name, short_name, long_name, registration_number, tin_number, vat_number,
       address_line1, address_line2, city, state, country, postal_code, phone_number, 
       email, website, kyc_status, risk_category, sanctions_check, credit_limit,
       primary_bank_name, bank_account_number, swift_bic_code, treasury_contact_person,
-      treasury_contact_email, treasury_contact_phone, custodian_bank, cds_account
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+      treasury_contact_email, treasury_contact_phone, custodian_bank, cds_account, cux_number
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
     const values = [
       data.company_name,
       data.short_name,
@@ -40,10 +44,11 @@ const CounterpartyCorporate = {
       data.treasury_contact_email,
       data.treasury_contact_phone,
       data.custodian_bank,
-      data.cds_account
+      data.cds_account,
+      cuxNumber
     ];
     const [result] = await db.query(sql, values);
-    return result;
+    return { ...result, cux_number: cuxNumber };
   }
 };
 

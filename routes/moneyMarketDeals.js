@@ -372,43 +372,43 @@ router.put('/:deal_number', async (req, res) => {
     // === Trigger ledger entry posting if deal is now final_approved ===
     if (status === 'final_approved' && current_approval_level === 'final_approved') {
       try {
-        // Check if ledger entries already exist for this deal_number
-        const [ledgerRows] = await pool.query('SELECT COUNT(*) as cnt FROM ledger_entries WHERE deal_number = ?', [dealNumber]);
-        if (ledgerRows[0].cnt === 0) {
-          // Fetch the deal details
-          const [dealRows] = await pool.query('SELECT * FROM money_market_deals WHERE deal_number = ?', [dealNumber]);
-          const deal = dealRows[0];
+      // Check if ledger entries already exist for this deal_number
+      const [ledgerRows] = await pool.query('SELECT COUNT(*) as cnt FROM ledger_entries WHERE deal_number = ?', [dealNumber]);
+      if (ledgerRows[0].cnt === 0) {
+        // Fetch the deal details
+        const [dealRows] = await pool.query('SELECT * FROM money_market_deals WHERE deal_number = ?', [dealNumber]);
+        const deal = dealRows[0];
           
           if (!deal) {
             console.error('Deal not found for ledger entry creation:', dealNumber);
             return res.json({ success: true, data: rows[0] });
           }
           
-          // Lookup the selected settlement account by bank_payment_code
+        // Lookup the selected settlement account by bank_payment_code
           let settlementAccount = null;
           if (deal.settlement_mode) {
-            const [settlementRows] = await pool.query('SELECT * FROM settlement_accounts WHERE bank_payment_code = ?', [deal.settlement_mode]);
+        const [settlementRows] = await pool.query('SELECT * FROM settlement_accounts WHERE bank_payment_code = ?', [deal.settlement_mode]);
             settlementAccount = settlementRows[0];
           }
           
-          // Get the chart of accounts entry using the ledger_account_code from settlement_accounts
-          let coaAccount = null;
-          if (settlementAccount && settlementAccount.ledger_account_code) {
-            const [coaRows] = await pool.query('SELECT * FROM chart_of_accounts WHERE account_code = ?', [settlementAccount.ledger_account_code]);
-            coaAccount = coaRows[0];
-          }
+        // Get the chart of accounts entry using the ledger_account_code from settlement_accounts
+        let coaAccount = null;
+        if (settlementAccount && settlementAccount.ledger_account_code) {
+          const [coaRows] = await pool.query('SELECT * FROM chart_of_accounts WHERE account_code = ?', [settlementAccount.ledger_account_code]);
+          coaAccount = coaRows[0];
+        }
           
-          const [lendingControlAccounts] = await pool.query("SELECT * FROM chart_of_accounts WHERE account_code = '1-315-01-01-01'");
-          const lendingControl = lendingControlAccounts[0];
-          const [loanLiabilityAccounts] = await pool.query("SELECT * FROM chart_of_accounts WHERE account_code = '2-708-01-01-01'");
-          const loanLiability = loanLiabilityAccounts[0];
+        const [lendingControlAccounts] = await pool.query("SELECT * FROM chart_of_accounts WHERE account_code = '1-315-01-01-01'");
+        const lendingControl = lendingControlAccounts[0];
+        const [loanLiabilityAccounts] = await pool.query("SELECT * FROM chart_of_accounts WHERE account_code = '2-708-01-01-01'");
+        const loanLiability = loanLiabilityAccounts[0];
           
           if (!lendingControl || !loanLiability) {
             console.error('Required chart of accounts entries not found for ledger posting');
             return res.json({ success: true, data: rows[0] });
           }
           
-          const amount = deal.principal_amount;
+        const amount = deal.principal_amount;
           const dealType = deal.deal_type || 'Lending'; // Default to Lending if not specified
           
           if (dealType === 'Borrowing') {
@@ -416,29 +416,29 @@ router.put('/:deal_number', async (req, res) => {
               console.error('Missing accounts for Borrowing ledger entry');
               return res.json({ success: true, data: rows[0] });
             }
-            // DR: Bank (coaAccount), CR: Loan Liability
-            await pool.query(
-              'INSERT INTO ledger_entries (deal_number, account_id, entry_date, debit_amount, credit_amount, description) VALUES (?, ?, NOW(), ?, 0, ?)',
-              [dealNumber, coaAccount.id, amount, 'Borrowing - DR Bank']
-            );
-            await pool.query(
-              'INSERT INTO ledger_entries (deal_number, account_id, entry_date, debit_amount, credit_amount, description) VALUES (?, ?, NOW(), 0, ?, ?)',
-              [dealNumber, loanLiability.id, amount, 'Borrowing - CR Loan Liability']
-            );
+          // DR: Bank (coaAccount), CR: Loan Liability
+          await pool.query(
+            'INSERT INTO ledger_entries (deal_number, account_id, entry_date, debit_amount, credit_amount, description) VALUES (?, ?, NOW(), ?, 0, ?)',
+            [dealNumber, coaAccount.id, amount, 'Borrowing - DR Bank']
+          );
+          await pool.query(
+            'INSERT INTO ledger_entries (deal_number, account_id, entry_date, debit_amount, credit_amount, description) VALUES (?, ?, NOW(), 0, ?, ?)',
+            [dealNumber, loanLiability.id, amount, 'Borrowing - CR Loan Liability']
+          );
           } else if (dealType === 'Lending') {
             if (!coaAccount || !lendingControl) {
               console.error('Missing accounts for Lending ledger entry');
               return res.json({ success: true, data: rows[0] });
             }
-            // DR: Lending Control (1-315-01-01-01), CR: Selected Bank Account
-            await pool.query(
-              'INSERT INTO ledger_entries (deal_number, account_id, entry_date, debit_amount, credit_amount, description) VALUES (?, ?, NOW(), ?, 0, ?)',
-              [dealNumber, lendingControl.id, amount, 'Lending - DR Lending Control']
-            );
-            await pool.query(
-              'INSERT INTO ledger_entries (deal_number, account_id, entry_date, debit_amount, credit_amount, description) VALUES (?, ?, NOW(), 0, ?, ?)',
+          // DR: Lending Control (1-315-01-01-01), CR: Selected Bank Account
+          await pool.query(
+            'INSERT INTO ledger_entries (deal_number, account_id, entry_date, debit_amount, credit_amount, description) VALUES (?, ?, NOW(), ?, 0, ?)',
+            [dealNumber, lendingControl.id, amount, 'Lending - DR Lending Control']
+          );
+          await pool.query(
+            'INSERT INTO ledger_entries (deal_number, account_id, entry_date, debit_amount, credit_amount, description) VALUES (?, ?, NOW(), 0, ?, ?)',
               [dealNumber, coaAccount.id, amount, `Lending - CR ${coaAccount.name || 'Bank Account'}`]
-            );
+          );
           }
         }
       } catch (ledgerError) {

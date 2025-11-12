@@ -3,7 +3,11 @@ const CounterpartyIndividual = require('../models/counterpartyIndividualModel');
 exports.createCounterpartyIndividual = async (req, res) => {
   try {
     const result = await CounterpartyIndividual.create(req.body);
-    res.status(201).json({ id: result.insertId, ...req.body });
+    res.status(201).json({ 
+      id: result.insertId, 
+      cux_number: result.cux_number,
+      ...req.body 
+    });
   } catch (err) {
     res.status(500).json({ error: err.message || err });
   }

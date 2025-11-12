@@ -783,8 +783,8 @@ const Gsec = {
         
         // Only include fields that exist in the database
         if (validColumns.includes(dbField)) {
-          setClauses.push(`${dbField} = ?`);
-          values.push(data[key]);
+        setClauses.push(`${dbField} = ?`);
+        values.push(data[key]);
         }
       }
     });
