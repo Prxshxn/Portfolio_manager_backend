@@ -41,30 +41,37 @@ exports.getPortfolioReport = async ({ startDate, endDate, product, portfolio, pa
   console.log(`[Portfolio Report] Called with startDate: ${startDate}, endDate: ${endDate}, product: ${product}, portfolio: ${portfolio}`);
   
   const results = [];
-  const params = [];
   
-  // Build date filter condition
-  let dateFilter = '';
-  if (startDate && endDate) {
-    dateFilter = ' AND value_date >= ? AND value_date <= ?';
-    params.push(startDate, endDate);
-  } else if (startDate) {
-    dateFilter = ' AND value_date >= ?';
-    params.push(startDate);
-  } else if (endDate) {
-    dateFilter = ' AND value_date <= ?';
-    params.push(endDate);
-  }
+  // Helper function to build date filter for a specific column
+  const buildDateFilter = (columnName) => {
+    let filter = '';
+    const filterParams = [];
+    if (startDate && endDate) {
+      filter = ` AND ${columnName} >= ? AND ${columnName} <= ?`;
+      filterParams.push(startDate, endDate);
+    } else if (startDate) {
+      filter = ` AND ${columnName} >= ?`;
+      filterParams.push(startDate);
+    } else if (endDate) {
+      filter = ` AND ${columnName} <= ?`;
+      filterParams.push(endDate);
+    }
+    return { filter, params: filterParams };
+  };
   
-  // Build portfolio filter
-  let portfolioFilter = '';
-  if (portfolio) {
-    portfolioFilter = ' AND portfolio = ?';
-    params.push(portfolio);
-  }
+  // Helper function to build portfolio filter for a specific column
+  const buildPortfolioFilter = (columnName) => {
+    if (!portfolio) {
+      return { filter: '', params: [] };
+    }
+    return { filter: ` AND ${columnName} = ?`, params: [portfolio] };
+  };
   
   // Query GSec deals
   if (!product || product === 'gsec') {
+    const gsecDateFilter = buildDateFilter('g.value_date');
+    const gsecPortfolioFilter = buildPortfolioFilter('g.portfolio');
+    
     let gsecSql = `
       SELECT 
         'GSec' as product_type,
@@ -77,7 +84,7 @@ exports.getPortfolioReport = async ({ startDate, endDate, product, portfolio, pa
         g.dirty_price,
         g.settlement_amount,
         g.maturity_date,
-        g.maturity_amount,
+        NULL as maturity_amount,
         g.portfolio,
         g.custodian,
         g.counterparty,
@@ -97,11 +104,11 @@ exports.getPortfolioReport = async ({ startDate, endDate, product, portfolio, pa
       WHERE 1=1
     `;
     
-    const gsecParams = [...params];
-    gsecSql += dateFilter;
-    gsecSql += portfolioFilter;
+    gsecSql += gsecDateFilter.filter;
+    gsecSql += gsecPortfolioFilter.filter;
     gsecSql += ` ORDER BY g.value_date DESC, g.deal_number`;
     
+    const gsecParams = [...gsecDateFilter.params, ...gsecPortfolioFilter.params];
     const [gsecRows] = await db.query(gsecSql, gsecParams);
     
     gsecRows.forEach(row => {
@@ -138,21 +145,24 @@ exports.getPortfolioReport = async ({ startDate, endDate, product, portfolio, pa
   
   // Query Money Market deals
   if (!product || product === 'money_market') {
+    const mmDateFilter = buildDateFilter('mmd.value_date');
+    // Money Market doesn't have portfolio column, so skip portfolio filter
+    
     let mmSql = `
       SELECT 
         'Money Market' as product_type,
         mmd.deal_number,
         mmd.value_date,
         mmd.trade_date,
-        mmd.isin_number as isin,
+        NULL as isin,
         mmd.principal_amount as face_value,
         NULL as clean_price,
         NULL as dirty_price,
         mmd.principal_amount as settlement_amount,
         mmd.maturity_date,
         mmd.maturity_value as maturity_amount,
-        mmd.portfolio,
-        mmd.custodian,
+        NULL as portfolio,
+        NULL as custodian,
         mmd.counterparty_id as counterparty,
         COALESCE(
           corp.short_name,
@@ -161,7 +171,7 @@ exports.getPortfolioReport = async ({ startDate, endDate, product, portfolio, pa
           mmd.counterparty_id
         ) as counterparty_name,
         'Buy' as transaction_type,
-        mmd.status,
+        NULL as status,
         mmd.currency
       FROM money_market_deals mmd
       LEFT JOIN counterparty_master_corporate corp ON mmd.counterparty_id = corp.id
@@ -170,11 +180,10 @@ exports.getPortfolioReport = async ({ startDate, endDate, product, portfolio, pa
       WHERE 1=1
     `;
     
-    const mmParams = [...params];
-    mmSql += dateFilter.replace('value_date', 'mmd.value_date');
-    mmSql += portfolioFilter.replace('portfolio', 'mmd.portfolio');
+    mmSql += mmDateFilter.filter;
     mmSql += ` ORDER BY mmd.value_date DESC, mmd.deal_number`;
     
+    const mmParams = [...mmDateFilter.params];
     const [mmRows] = await db.query(mmSql, mmParams);
     
     mmRows.forEach(row => {
@@ -211,6 +220,9 @@ exports.getPortfolioReport = async ({ startDate, endDate, product, portfolio, pa
   
   // Query Repo deals
   if (!product || product === 'repo') {
+    const repoDateFilter = buildDateFilter('rd.value_date');
+    // Repo doesn't have portfolio, so skip portfolio filter
+    
     let repoSql = `
       SELECT 
         'Repo' as product_type,
@@ -243,11 +255,10 @@ exports.getPortfolioReport = async ({ startDate, endDate, product, portfolio, pa
       WHERE 1=1
     `;
     
-    const repoParams = [...params];
-    repoSql += dateFilter.replace('value_date', 'rd.value_date');
-    // Repo doesn't have portfolio, so skip portfolio filter
+    repoSql += repoDateFilter.filter;
     repoSql += ` ORDER BY rd.value_date DESC, rd.id`;
     
+    const repoParams = [...repoDateFilter.params];
     const [repoRows] = await db.query(repoSql, repoParams);
     
     repoRows.forEach(row => {
@@ -284,6 +295,9 @@ exports.getPortfolioReport = async ({ startDate, endDate, product, portfolio, pa
   
   // Query Buyback deals
   if (!product || product === 'buyback') {
+    const buybackDateFilter = buildDateFilter('bd.leg1_value_date');
+    const buybackPortfolioFilter = buildPortfolioFilter('bd.leg1_portfolio');
+    
     let buybackSql = `
       SELECT 
         'Buyback' as product_type,
@@ -316,11 +330,11 @@ exports.getPortfolioReport = async ({ startDate, endDate, product, portfolio, pa
       WHERE 1=1
     `;
     
-    const buybackParams = [...params];
-    buybackSql += dateFilter.replace('value_date', 'bd.leg1_value_date');
-    buybackSql += portfolioFilter.replace('portfolio', 'bd.leg1_portfolio');
+    buybackSql += buybackDateFilter.filter;
+    buybackSql += buybackPortfolioFilter.filter;
     buybackSql += ` ORDER BY bd.leg1_value_date DESC, bd.deal_number`;
     
+    const buybackParams = [...buybackDateFilter.params, ...buybackPortfolioFilter.params];
     const [buybackRows] = await db.query(buybackSql, buybackParams);
     
     buybackRows.forEach(row => {
