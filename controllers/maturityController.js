@@ -609,8 +609,15 @@ async function getMaturitiesWithApprovalLevel(db, productType, date) {
       LEFT JOIN counterparty_master_joint joint ON rd.counterparty_id = joint.id
     ` : ''}
     LEFT JOIN maturity_processing_log mpl ON ${dealIdField} = mpl.deal_id
+      AND mpl.id = (
+        SELECT id FROM maturity_processing_log mpl2 
+        WHERE mpl2.deal_id = ${dealIdField} 
+        ORDER BY mpl2.created_at DESC 
+        LIMIT 1
+      )
     WHERE ${productType === 'money_market' ? 'mmd.maturity_date' : productType === 'gsec' ? 'g.maturity_date' : 'rd.maturity_date'} <= ?
       AND COALESCE(${productType === 'money_market' ? 'mmd.matured' : productType === 'gsec' ? 'g.matured' : 'rd.matured'}, 0) = 0
+      AND (mpl.id IS NULL OR mpl.authorization_level != 'back_office_final')
     ORDER BY ${productType === 'money_market' ? 'mmd.maturity_date' : productType === 'gsec' ? 'g.maturity_date' : 'rd.maturity_date'} ASC
   `;
 
