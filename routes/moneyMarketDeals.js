@@ -122,14 +122,25 @@ router.post('/', async (req, res) => {
     const seqStr = String(nextSeq).padStart(4, '0');
     const dealNumber = `${dateStr}${productCode}${seqStr}`;
 
+    // Get user ID from username if provided
+    let userId = null;
+    if (deal.userId || deal.created_by) {
+      userId = deal.userId || deal.created_by;
+    } else if (deal.username) {
+      const [userRows] = await pool.query('SELECT id FROM users WHERE username = ?', [deal.username]);
+      if (userRows.length > 0) {
+        userId = userRows[0].id;
+      }
+    }
+
     const [result] = await pool.query(
       `INSERT INTO money_market_deals
-      (deal_number, trade_date, value_date, maturity_date, counterparty_id, product_type, currency, principal_amount, interest_rate, tenor, interest_amount, maturity_value, settlement_mode, remarks, deal_type)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (deal_number, trade_date, value_date, maturity_date, counterparty_id, product_type, currency, principal_amount, interest_rate, tenor, interest_amount, maturity_value, settlement_mode, remarks, deal_type, created_by, status, current_approval_level)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'front_office')`,
       [
         dealNumber, deal.tradeDate, deal.valueDate, deal.maturityDate, deal.counterpartyId, deal.productType,
         deal.currency, deal.principalAmount, deal.interestRate, deal.tenor, deal.interestAmount, deal.maturityValue,
-        deal.settlementMode, deal.remarks, deal.dealType || null
+        deal.settlementMode, deal.remarks, deal.dealType || null, userId
       ]
     );
 
@@ -256,6 +267,63 @@ router.put('/:deal_number', async (req, res) => {
   if (current_approval_level !== undefined) {
     fields.push('current_approval_level = ?');
     values.push(current_approval_level);
+  }
+  // Allow updating deal fields for rejected deals (when status is being changed from rejected to draft)
+  if (req.body.tradeDate !== undefined) {
+    fields.push('trade_date = ?');
+    values.push(req.body.tradeDate);
+  }
+  if (req.body.valueDate !== undefined) {
+    fields.push('value_date = ?');
+    values.push(req.body.valueDate);
+  }
+  if (req.body.maturityDate !== undefined) {
+    fields.push('maturity_date = ?');
+    values.push(req.body.maturityDate);
+  }
+  if (req.body.counterpartyId !== undefined) {
+    fields.push('counterparty_id = ?');
+    values.push(req.body.counterpartyId);
+  }
+  if (req.body.productType !== undefined) {
+    fields.push('product_type = ?');
+    values.push(req.body.productType);
+  }
+  if (req.body.currency !== undefined) {
+    fields.push('currency = ?');
+    values.push(req.body.currency);
+  }
+  if (req.body.principalAmount !== undefined) {
+    fields.push('principal_amount = ?');
+    values.push(req.body.principalAmount);
+  }
+  if (req.body.interestRate !== undefined) {
+    fields.push('interest_rate = ?');
+    values.push(req.body.interestRate);
+  }
+  if (req.body.tenor !== undefined) {
+    fields.push('tenor = ?');
+    values.push(req.body.tenor);
+  }
+  if (req.body.interestAmount !== undefined) {
+    fields.push('interest_amount = ?');
+    values.push(req.body.interestAmount);
+  }
+  if (req.body.maturityValue !== undefined) {
+    fields.push('maturity_value = ?');
+    values.push(req.body.maturityValue);
+  }
+  if (req.body.settlementMode !== undefined) {
+    fields.push('settlement_mode = ?');
+    values.push(req.body.settlementMode);
+  }
+  if (req.body.remarks !== undefined) {
+    fields.push('remarks = ?');
+    values.push(req.body.remarks);
+  }
+  if (req.body.dealType !== undefined) {
+    fields.push('deal_type = ?');
+    values.push(req.body.dealType);
   }
   if (comment !== undefined) {
     fields.push('comment = ?');

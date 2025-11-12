@@ -760,15 +760,32 @@ const Gsec = {
     const setClauses = [];
     const values = [];
     
+    // Whitelist of valid database columns in gsec table (based on actual schema)
+    const validColumns = [
+      'trade_type', 'transaction_type', 'counterparty', 'deal_number', 'buy_deal_number', 'isin', 'face_value',
+      'value_date', 'trade_date', 'next_coupon_date', 'last_coupon_date', 'number_of_days_interest_accrued',
+      'number_of_days_for_coupon_period', 'accrued_interest', 'daily_accrual', 'coupon_interest', 'clean_price',
+      'dirty_price', 'per_day_accrual', 'accrued_interest_calculation', 'accrued_interest_six_decimals',
+      'accrued_interest_for_100', 'settlement_amount', 'settlement_mode', 'issue_date',
+      'maturity_date', 'coupon_dates', 'yield', 'portfolio', 'clean_price_adjustment',
+      'accrued_interest_adjustment', 'broker', 'strategy', 'stratergy', 'status', 'comment', 'created_by',
+      'created_at', 'updated_by', 'updated_at', 'authorized_by', 'authorized_at',
+      'current_approval_level', 'brokerage', 'currency', 'custodian',
+      'remaining_face_value', 'matured', 'sell_back_amount'
+    ];
+    
     // Map data object to SQL SET clauses
     Object.keys(data).forEach(key => {
       // Skip the id field and any fields that are not DB columns
       if (key !== 'id' && key !== 'userId') {
-
         // Convert camelCase to snake_case for DB fields
         const dbField = key.replace(/([A-Z])/g, '_$1').toLowerCase();
-        setClauses.push(`${dbField} = ?`);
-        values.push(data[key]);
+        
+        // Only include fields that exist in the database
+        if (validColumns.includes(dbField)) {
+          setClauses.push(`${dbField} = ?`);
+          values.push(data[key]);
+        }
       }
     });
     
