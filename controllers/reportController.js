@@ -1,5 +1,6 @@
 const gsecReportService = require('../services/gsecReportService');
 const portfolioReportService = require('../services/portfolioReportService');
+const counterpartyReportService = require('../services/counterpartyReportService');
 const reportExporter = require('../utils/reportExporter');
 
 // GET /api/reports/gsec
@@ -131,5 +132,60 @@ exports.getPortfolioReport = async (req, res) => {
   } catch (err) {
     console.error('Portfolio Report Error:', err);
     res.status(500).json({ error: 'Failed to generate Portfolio report', details: err.message });
+  }
+};
+
+// GET /api/reports/counterparty
+exports.getCounterpartyReport = async (req, res) => {
+  try {
+    console.log('=== COUNTERPARTY REPORT API CALLED ===');
+    console.log('Query params:', req.query);
+    
+    const {
+      counterparty,
+      nicNumber,
+      name,
+      format,
+      page,
+      pageSize
+    } = req.query;
+
+    // Fetch report data
+    const reportParams = {
+      counterparty,
+      nicNumber,
+      name
+    };
+    
+    // Only add pagination if provided (for regular display)
+    if (page && pageSize) {
+      reportParams.page = Number(page);
+      reportParams.pageSize = Number(pageSize);
+    }
+    
+    const { data, total } = await counterpartyReportService.getCounterpartyReport(reportParams);
+
+    console.log('Counterparty Report Service returned:');
+    console.log('Data length:', data.length);
+    console.log('Total:', total);
+
+    // Handle export formats
+    if (format === 'csv' || format === 'excel' || format === 'pdf') {
+      const fileBuffer = await reportExporter.export(format, data);
+      res.setHeader('Content-Disposition', `attachment; filename=counterparty_report.${format === 'excel' ? 'xlsx' : format}`);
+      res.setHeader('Content-Type', reportExporter.getMimeType(format));
+      return res.send(fileBuffer);
+    }
+
+    // Default: return JSON (paginated if page/pageSize provided, otherwise all data)
+    const response = { data, total };
+    if (page && pageSize) {
+      response.page = Number(page);
+      response.pageSize = Number(pageSize);
+    }
+    res.json(response);
+  } catch (err) {
+    console.error('Counterparty Report Error:', err);
+    res.status(500).json({ error: 'Failed to generate Counterparty report', details: err.message });
   }
 };
