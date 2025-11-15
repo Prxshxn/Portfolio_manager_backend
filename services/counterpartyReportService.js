@@ -53,29 +53,79 @@ exports.getCounterpartyReport = async ({ counterparty, nicNumber, name, page, pa
       }
     }
     
+    // Build filter conditions
+    // NIC filter: only applies to individual counterparties (they have id_number)
+    // Name filter: applies to all types (short_name, long_name, company_name)
+    // When both NIC and name are provided, use OR logic (match NIC OR match name)
+    
+    const individualFilters = [];
+    const jointFilters = [];
+    const corporateFilters = [];
+    
     if (nicNumber) {
-      individualWhere.push('id_number LIKE ?');
+      individualFilters.push('id_number LIKE ?');
       individualParams.push(`%${nicNumber}%`);
     }
     
     if (name) {
-      individualWhere.push('(long_name LIKE ? OR short_name LIKE ?)');
+      individualFilters.push('(long_name LIKE ? OR short_name LIKE ?)');
       individualParams.push(`%${name}%`, `%${name}%`);
-      jointWhere.push('(long_name LIKE ? OR short_name LIKE ?)');
+      jointFilters.push('(long_name LIKE ? OR short_name LIKE ?)');
       jointParams.push(`%${name}%`, `%${name}%`);
-      corporateWhere.push('(long_name LIKE ? OR company_name LIKE ? OR short_name LIKE ?)');
+      corporateFilters.push('(long_name LIKE ? OR company_name LIKE ? OR short_name LIKE ?)');
       corporateParams.push(`%${name}%`, `%${name}%`, `%${name}%`);
     }
     
-    const individualWhereClause = individualWhere.length > 0 ? 'WHERE ' + individualWhere.join(' AND ') : '';
-    const jointWhereClause = jointWhere.length > 0 ? 'WHERE ' + jointWhere.join(' AND ') : '';
-    const corporateWhereClause = corporateWhere.length > 0 ? 'WHERE ' + corporateWhere.join(' AND ') : '';
+    // Combine counterparty filter with NIC/name filters
+    // If counterparty is specified, it's AND with other filters
+    // If only NIC/name filters, they use OR between them
+    let individualWhereClause = '';
+    let jointWhereClause = '';
+    let corporateWhereClause = '';
+    
+    // Individual: counterparty filter (if any) + NIC/name filters
+    const allIndividualFilters = [...individualWhere, ...individualFilters];
+    if (allIndividualFilters.length > 0) {
+      if (allIndividualFilters.length === 1) {
+        individualWhereClause = 'WHERE ' + allIndividualFilters[0];
+      } else {
+        // If counterparty filter exists, use AND; otherwise use OR for NIC/name
+        if (individualWhere.length > 0 && individualFilters.length > 0) {
+          // Counterparty AND (NIC OR name)
+          individualWhereClause = `WHERE ${individualWhere[0]} AND (${individualFilters.join(' OR ')})`;
+        } else if (individualFilters.length > 1) {
+          // Multiple name filters (shouldn't happen, but handle it)
+          individualWhereClause = 'WHERE ' + individualFilters.join(' OR ');
+        } else {
+          // Single filter
+          individualWhereClause = 'WHERE ' + allIndividualFilters.join(' OR ');
+        }
+      }
+    }
+    
+    // Joint: counterparty filter (if any) + name filter
+    const allJointFilters = [...jointWhere, ...jointFilters];
+    if (allJointFilters.length > 0) {
+      if (allJointFilters.length === 1) {
+        jointWhereClause = 'WHERE ' + allJointFilters[0];
+      } else {
+        // Joint only has name filter, so if counterparty exists, use AND
+        jointWhereClause = 'WHERE ' + allJointFilters.join(' AND ');
+      }
+    }
+    
+    // Corporate: counterparty filter (if any) + name filter
+    const allCorporateFilters = [...corporateWhere, ...corporateFilters];
+    if (allCorporateFilters.length > 0) {
+      if (allCorporateFilters.length === 1) {
+        corporateWhereClause = 'WHERE ' + allCorporateFilters[0];
+      } else {
+        // Corporate only has name filter, so if counterparty exists, use AND
+        corporateWhereClause = 'WHERE ' + allCorporateFilters.join(' AND ');
+      }
+    }
     
     // Build queries with proper parameter handling
-    // We need to execute each UNION part separately or use a different approach
-    // Let's build the query with proper parameter placeholders
-    
-    // For UNION queries with different WHERE clauses, we need to ensure parameters match
     // Build individual query with COLLATE to fix collation mismatch
     const individualQuery = `
       SELECT 
@@ -160,12 +210,12 @@ exports.getCounterpartyReport = async ({ counterparty, nicNumber, name, page, pa
       ${corporateWhereClause}
     `;
     
-    // If filtering by specific counterparty, only query the relevant table
+    // Determine which tables to query based on filters
     let combinedQuery;
     let allParams;
     
     if (counterparty) {
-      // Only query the table that matches the counterparty type
+      // Specific counterparty selected - only query the relevant table
       const cleanCounterparty = counterparty.trim();
       const type = cleanCounterparty.charAt(0);
       
@@ -184,9 +234,28 @@ exports.getCounterpartyReport = async ({ counterparty, nicNumber, name, page, pa
         allParams = [...individualParams, ...jointParams, ...corporateParams];
       }
     } else {
-      // No specific counterparty filter - query all tables
-      combinedQuery = `${individualQuery} UNION ALL ${jointQuery} UNION ALL ${corporateQuery}`;
-      allParams = [...individualParams, ...jointParams, ...corporateParams];
+      // No specific counterparty - query tables based on filters
+      const queries = [];
+      const params = [];
+      
+      // If only NIC filter: query individual table only (NIC only applies to individuals)
+      if (nicNumber && !name) {
+        queries.push(individualQuery);
+        params.push(...individualParams);
+      } else {
+        // Name filter provided OR no filters - query all tables
+        queries.push(individualQuery);
+        params.push(...individualParams);
+        
+        // Joint and Corporate only have name filter, so include them if name filter or no filters
+        queries.push(jointQuery);
+        params.push(...jointParams);
+        queries.push(corporateQuery);
+        params.push(...corporateParams);
+      }
+      
+      combinedQuery = queries.join(' UNION ALL ');
+      allParams = params;
     }
     
     console.log('[Counterparty Report] Query params:', {
@@ -425,7 +494,7 @@ exports.getCounterpartyReport = async ({ counterparty, nicNumber, name, page, pa
             mmd.status,
             mmd.currency,
             CONCAT(COALESCE(mmd.counterparty_type, 'c'), mmd.counterparty_id) AS counterparty_ref,
-            mmd.isin_number AS isin,
+            NULL AS isin,
             mmd.maturity_date,
             'Money Market' AS product_type
           FROM money_market_deals mmd
@@ -491,24 +560,14 @@ exports.getCounterpartyReport = async ({ counterparty, nicNumber, name, page, pa
       }
     }
     
-    // Query repo_deals (uses counterparty_id + counterparty_type)
-    const repoConditions = [];
-    const repoParams = [];
-    if (dealIndividualIds.length > 0) {
-      repoConditions.push(`(rd.counterparty_type = 'individual' AND rd.counterparty_id IN (${dealIndividualIds.map(() => '?').join(',')}))`);
-      repoParams.push(...dealIndividualIds);
-    }
-    if (dealJointIds.length > 0) {
-      repoConditions.push(`(rd.counterparty_type = 'joint' AND rd.counterparty_id IN (${dealJointIds.map(() => '?').join(',')}))`);
-      repoParams.push(...dealJointIds);
-    }
-    if (dealCorporateIds.length > 0) {
-      repoConditions.push(`(rd.counterparty_id IN (${dealCorporateIds.map(() => '?').join(',')}) AND (rd.counterparty_type = 'corporate' OR rd.counterparty_type IS NULL))`);
-      repoParams.push(...dealCorporateIds);
-    }
+    // Query repo_deals
+    // Note: repo_deals may or may not have counterparty_type column depending on migration
+    // We'll query by counterparty_id only and map the type in JavaScript
+    const allRepoCounterpartyIds = [...dealIndividualIds, ...dealJointIds, ...dealCorporateIds];
     
-    if (repoConditions.length > 0) {
+    if (allRepoCounterpartyIds.length > 0) {
       try {
+        // Query repo deals by counterparty_id only (works whether or not counterparty_type exists)
         const repoQuery = `
           SELECT 
             'Repo' AS deal_source,
@@ -521,15 +580,47 @@ exports.getCounterpartyReport = async ({ counterparty, nicNumber, name, page, pa
             NULL AS portfolio,
             rd.status,
             'LKR' AS currency,
-            CONCAT(COALESCE(rd.counterparty_type, 'c'), rd.counterparty_id) AS counterparty_ref,
+            rd.counterparty_id,
             rd.isin_number AS isin,
             rd.maturity_date,
             rd.deal_type AS product_type
           FROM repo_deals rd
-          WHERE ${repoConditions.join(' OR ')}
+          WHERE rd.counterparty_id IN (${allRepoCounterpartyIds.map(() => '?').join(',')})
         `;
-        const [repoRows] = await db.query(repoQuery, repoParams);
-        allDeals = allDeals.concat(repoRows);
+        const [repoRows] = await db.query(repoQuery, allRepoCounterpartyIds);
+        
+        // Map results to include correct counterparty_ref based on which ID array the counterparty_id belongs to
+        const mappedRepoRows = repoRows.map(row => {
+          const cpId = row.counterparty_id;
+          let cpType = 'c'; // default to corporate
+          
+          if (dealIndividualIds.includes(cpId)) {
+            cpType = 'i';
+          } else if (dealJointIds.includes(cpId)) {
+            cpType = 'j';
+          } else if (dealCorporateIds.includes(cpId)) {
+            cpType = 'c';
+          }
+          
+          return {
+            deal_source: row.deal_source,
+            deal_number: row.deal_number,
+            trade_date: row.trade_date,
+            value_date: row.value_date,
+            amount: row.amount,
+            price: row.price,
+            yield: row.yield,
+            portfolio: row.portfolio,
+            status: row.status,
+            currency: row.currency,
+            counterparty_ref: `${cpType}${cpId}`,
+            isin: row.isin,
+            maturity_date: row.maturity_date,
+            product_type: row.product_type
+          };
+        });
+        
+        allDeals = allDeals.concat(mappedRepoRows);
       } catch (err) {
         console.error('[Counterparty Report] Error fetching repo deals:', err);
       }
@@ -620,4 +711,3 @@ exports.getCounterpartyReport = async ({ counterparty, nicNumber, name, page, pa
     throw error;
   }
 };
-
