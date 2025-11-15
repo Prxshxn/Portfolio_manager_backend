@@ -140,8 +140,10 @@ exports.login = async (req, res) => {
     console.log('Login successful for:', username);
     const userPayload = {
       id: user.id,
-      username: user.username,
-      role: effectiveRole
+      username: user.username, // Ensure username is always included
+      role: effectiveRole,
+      originalRole: user.role, // Keep original role for reference
+      assignments: assignments || [] // Include assignments if any
     };
     const token = jwt.sign(userPayload, JWT_SECRET, { expiresIn: '7d' });
     res.json({

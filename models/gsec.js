@@ -760,15 +760,32 @@ const Gsec = {
     const setClauses = [];
     const values = [];
     
+    // Whitelist of valid database columns in gsec table (based on actual schema)
+    const validColumns = [
+      'trade_type', 'transaction_type', 'counterparty', 'deal_number', 'buy_deal_number', 'isin', 'face_value',
+      'value_date', 'trade_date', 'next_coupon_date', 'last_coupon_date', 'number_of_days_interest_accrued',
+      'number_of_days_for_coupon_period', 'accrued_interest', 'daily_accrual', 'coupon_interest', 'clean_price',
+      'dirty_price', 'per_day_accrual', 'accrued_interest_calculation', 'accrued_interest_six_decimals',
+      'accrued_interest_for_100', 'settlement_amount', 'settlement_mode', 'issue_date',
+      'maturity_date', 'coupon_dates', 'yield', 'portfolio', 'clean_price_adjustment',
+      'accrued_interest_adjustment', 'broker', 'strategy', 'stratergy', 'status', 'comment', 'created_by',
+      'created_at', 'updated_by', 'updated_at', 'authorized_by', 'authorized_at',
+      'current_approval_level', 'brokerage', 'currency', 'custodian',
+      'remaining_face_value', 'matured', 'sell_back_amount'
+    ];
+    
     // Map data object to SQL SET clauses
     Object.keys(data).forEach(key => {
       // Skip the id field and any fields that are not DB columns
       if (key !== 'id' && key !== 'userId') {
-
         // Convert camelCase to snake_case for DB fields
         const dbField = key.replace(/([A-Z])/g, '_$1').toLowerCase();
+        
+        // Only include fields that exist in the database
+        if (validColumns.includes(dbField)) {
         setClauses.push(`${dbField} = ?`);
         values.push(data[key]);
+        }
       }
     });
     
@@ -794,22 +811,30 @@ const Gsec = {
    * Update status of a GSec transaction (approve/reject)
    */
   updateStatus: async (id, data) => {
-    // Determine the new approval level based on current status and action
-    let newApprovalLevel = data.current_approval_level || 1;
+    // First, fetch the current transaction to get the actual current_approval_level
+    const [currentTx] = await db.query('SELECT current_approval_level, status FROM gsec WHERE id = ?', [id]);
+    if (!currentTx || currentTx.length === 0) {
+      throw new Error('Transaction not found');
+    }
+    
+    const currentApprovalLevel = currentTx[0].current_approval_level || 1;
+    let newApprovalLevel = currentApprovalLevel;
     let newStatus = data.status;
     
     if (data.status === 'approved') {
-      // Advance to next approval level
-      if (newApprovalLevel === 1) {
+      // Advance to next approval level based on CURRENT approval level
+      if (currentApprovalLevel === 1) {
+        // Front office approved -> move to back office verifier (level 2)
         newApprovalLevel = 2;
         newStatus = 'pending';
-      } else if (newApprovalLevel === 2) {
-      } else if (data.current_approval_level === 2) {
+      } else if (currentApprovalLevel === 2) {
+        // Back office verifier approved -> move to back office final (level 3)
         newApprovalLevel = 3;
         newStatus = 'pending';
-      } else if (data.current_approval_level === 3) {
+      } else if (currentApprovalLevel === 3) {
+        // Back office final approved -> mark as final_approved
         newApprovalLevel = 3; // Stay at final
-        newStatus = 'approved';
+        newStatus = 'final_approved';
       }
     } else if (data.status === 'rejected') {
       // Reset to front office on rejection
