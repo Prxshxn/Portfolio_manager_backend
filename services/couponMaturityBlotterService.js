@@ -10,9 +10,14 @@ exports.getCouponMaturityBlotter = async (couponDate) => {
     throw new Error('Coupon date is required');
   }
 
-  // Query gsec deals where next_coupon_date matches the input date
-  // Also check isin_coupon_schedule for matching coupon dates
-  // Include both Buy and Sell transactions
+  console.log(`[Coupon Maturity Blotter] Fetching data for coupon date: ${couponDate}`);
+
+  // Query gsec deals that have a coupon payment on the selected date
+  // A deal qualifies if:
+  // 1. The coupon date exists in isin_coupon_schedule for that ISIN
+  // 2. The deal's value_date is before or equal to the coupon date (deal was active)
+  // 3. The deal's maturity_date is after or equal to the coupon date (deal hasn't matured yet)
+  // 4. OR the coupon date is the maturity date (final coupon)
   const sql = `
     SELECT DISTINCT
       g.id,
@@ -39,19 +44,18 @@ exports.getCouponMaturityBlotter = async (couponDate) => {
         g.counterparty
       ) as counterparty_name,
       -- Check if this is a final coupon (maturity date)
-      CASE WHEN g.maturity_date = ? THEN 1 ELSE 0 END as is_maturity_coupon
+      CASE WHEN DATE(g.maturity_date) = ? THEN 1 ELSE 0 END as is_maturity_coupon
     FROM gsec g
     LEFT JOIN isin_master im ON g.isin = im.isin_number
     LEFT JOIN counterparty_master_corporate corp ON CONCAT('c', corp.id) = g.counterparty
     LEFT JOIN counterparty_master_individual ind ON CONCAT('i', ind.id) = g.counterparty
     LEFT JOIN counterparty_master_joint joint ON CONCAT('j', joint.id) = g.counterparty
-    WHERE g.status = 'approved'
+    WHERE g.status IN ('approved', 'pending', 'verified', 'settled')
       AND g.transaction_type IN ('Buy', 'Sell')
+      AND DATE(g.value_date) <= ?
+      AND DATE(g.maturity_date) >= ?
       AND (
-        -- Match by next_coupon_date
-        g.next_coupon_date = ?
-        OR
-        -- Match by coupon schedule
+        -- Match if coupon date exists in the coupon schedule for this ISIN
         EXISTS (
           SELECT 1 
           FROM isin_coupon_schedule ics 
@@ -61,12 +65,41 @@ exports.getCouponMaturityBlotter = async (couponDate) => {
         OR
         -- Match if coupon date is the maturity date (final coupon)
         (DATE(g.maturity_date) = ?)
+        OR
+        -- Match by next_coupon_date (for backward compatibility)
+        (DATE(g.next_coupon_date) = ?)
+        OR
+        -- Fallback: Match if coupon date matches coupon_date_1 or coupon_date_2 pattern from isin_master
+        -- Check if month and day match (handles recurring annual coupon dates)
+        (
+          im.coupon_date_1 IS NOT NULL 
+          AND MONTH(?) = MONTH(im.coupon_date_1)
+          AND DAY(?) = DAY(im.coupon_date_1)
+        )
+        OR
+        (
+          im.coupon_date_2 IS NOT NULL 
+          AND MONTH(?) = MONTH(im.coupon_date_2)
+          AND DAY(?) = DAY(im.coupon_date_2)
+        )
       )
-      AND DATE(g.maturity_date) >= ?
     ORDER BY g.transaction_type, g.deal_number
   `;
 
-  const [rows] = await db.query(sql, [couponDate, couponDate, couponDate, couponDate, couponDate]);
+  const [rows] = await db.query(sql, [
+    couponDate, // 1. for is_maturity_coupon check (CASE WHEN)
+    couponDate, // 2. for value_date <=
+    couponDate, // 3. for maturity_date >=
+    couponDate, // 4. for isin_coupon_schedule check (EXISTS)
+    couponDate, // 5. for maturity_date = (final coupon)
+    couponDate, // 6. for next_coupon_date =
+    couponDate, // 7. for MONTH(coupon_date_1)
+    couponDate, // 8. for DAY(coupon_date_1)
+    couponDate, // 9. for MONTH(coupon_date_2)
+    couponDate  // 10. for DAY(coupon_date_2)
+  ]);
+
+  console.log(`[Coupon Maturity Blotter] Found ${rows.length} deals for coupon date ${couponDate}`);
 
   // Process the results and calculate coupon amounts
   const results = rows.map((row) => {
@@ -128,8 +161,9 @@ exports.getCouponMaturityBlotter = async (couponDate) => {
       trade_date: row.trade_date,
       coupon_rate: Number(row.coupon_rate) || 0
     };
-  }));
+  });
 
+  console.log(`[Coupon Maturity Blotter] Processed ${results.length} results`);
   return results;
 };
 
