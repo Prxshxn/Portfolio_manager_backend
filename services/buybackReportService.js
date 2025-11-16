@@ -110,14 +110,8 @@ exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturi
   
   sql += ' ORDER BY bd.created_at DESC';
   
-  // Pagination
-  if (page && pageSize) {
-    const offset = (page - 1) * pageSize;
-    sql += ' LIMIT ? OFFSET ?';
-    params.push(pageSize, offset);
-  }
-  
-  // Query DB
+  // Don't paginate here - we'll paginate after expanding deals into legs
+  // Query DB - get all matching deals
   const [rows] = await db.query(sql, params);
   
   // Get all unique ISINs from the current page results
@@ -174,8 +168,9 @@ exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturi
     });
   }
   
-  // Format results
-  const data = rows.map(row => {
+  // Format results - create 2 rows per deal (one for each leg)
+  const data = [];
+  rows.forEach(row => {
     // Calculate available balance for leg1 ISIN
     const leg1Balance = isinBalances[row.leg1_isin] || 0;
     const leg1Wap = (() => {
@@ -196,63 +191,63 @@ exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturi
       return 0;
     })();
     
-    return {
-      id: row.id,
+    // Leg 1 row
+    data.push({
+      id: `${row.id}-leg1`,
+      deal_id: row.id,
       deal_number: row.deal_number,
-      deal_status: row.deal_status,
-      created_at: row.created_at,
+      leg: 'Leg 1',
+      transaction_type: row.leg1_transaction_type,
+      status: row.deal_status,
+      trade_date: row.leg1_trade_date,
+      value_date: row.leg1_value_date,
       maturity_date: row.maturity_date,
-      coupon_rate: formatPercentage(row.coupon_rate, 4),
-      issue_date: row.issue_date,
-      coupon_date1: row.coupon_date1,
-      coupon_date2: row.coupon_date2,
-      notes: row.notes || '',
-      verified_by: row.verified_by,
-      verified_at: row.verified_at,
-      approved_by: row.approved_by,
-      approved_at: row.approved_at,
-      
-      // Leg 1 data
-      leg1: {
-        trade_date: row.leg1_trade_date,
-        value_date: row.leg1_value_date,
-        transaction_type: row.leg1_transaction_type,
-        isin: row.leg1_isin,
-        counterparty: row.leg1_counterparty,
-        portfolio: row.leg1_portfolio,
-        face_value: formatCurrency(row.leg1_face_value, 2),
-        yield_rate: formatPercentage(row.leg1_yield_rate, 4),
-        settlement_amount: formatCurrency(row.leg1_settlement_amount, 2),
-        clean_price: formatPrice(row.leg1_clean_price, 4),
-        dirty_price: formatPrice(row.leg1_dirty_price, 4),
-        accrued_interest: formatPrice(row.leg1_accrued_interest, 4),
-        currency: row.leg1_currency,
-        balance: formatPrice(leg1Balance, 4),
-        wap: formatPrice(leg1Wap, 4)
-      },
-      
-      // Leg 2 data
-      leg2: {
-        trade_date: row.leg2_trade_date,
-        value_date: row.leg2_value_date,
-        transaction_type: row.leg2_transaction_type,
-        isin: row.leg2_isin,
-        counterparty: row.leg2_counterparty,
-        portfolio: row.leg2_portfolio,
-        face_value: formatCurrency(row.leg2_face_value, 2),
-        yield_rate: formatPercentage(row.leg2_yield_rate, 4),
-        settlement_amount: formatCurrency(row.leg2_settlement_amount, 2),
-        clean_price: formatPrice(row.leg2_clean_price, 4),
-        dirty_price: formatPrice(row.leg2_dirty_price, 4),
-        accrued_interest: formatPrice(row.leg2_accrued_interest, 4),
-        currency: row.leg2_currency,
-        balance: formatPrice(leg2Balance, 4),
-        wap: formatPrice(leg2Wap, 4)
-      }
-    };
+      isin: row.leg1_isin,
+      portfolio: row.leg1_portfolio,
+      counterparty: row.leg1_counterparty,
+      face_value: Number(row.leg1_face_value) || 0,
+      clean_price: Number(row.leg1_clean_price) || 0,
+      dirty_price: Number(row.leg1_dirty_price) || 0,
+      yield: Number(row.leg1_yield_rate) || 0,
+      settlement_amount: Number(row.leg1_settlement_amount) || 0,
+      accrued_interest: Number(row.leg1_accrued_interest) || 0,
+      currency: row.leg1_currency || 'LKR',
+      balance: leg1Balance,
+      wap: leg1Wap,
+      coupon_rate: Number(row.coupon_rate) || 0,
+      notes: row.notes || ''
+    });
+    
+    // Leg 2 row
+    data.push({
+      id: `${row.id}-leg2`,
+      deal_id: row.id,
+      deal_number: row.deal_number,
+      leg: 'Leg 2',
+      transaction_type: row.leg2_transaction_type,
+      status: row.deal_status,
+      trade_date: row.leg2_trade_date,
+      value_date: row.leg2_value_date,
+      maturity_date: row.maturity_date,
+      isin: row.leg2_isin,
+      portfolio: row.leg2_portfolio,
+      counterparty: row.leg2_counterparty,
+      face_value: Number(row.leg2_face_value) || 0,
+      clean_price: Number(row.leg2_clean_price) || 0,
+      dirty_price: Number(row.leg2_dirty_price) || 0,
+      yield: Number(row.leg2_yield_rate) || 0,
+      settlement_amount: Number(row.leg2_settlement_amount) || 0,
+      accrued_interest: Number(row.leg2_accrued_interest) || 0,
+      currency: row.leg2_currency || 'LKR',
+      balance: leg2Balance,
+      wap: leg2Wap,
+      coupon_rate: Number(row.coupon_rate) || 0,
+      notes: row.notes || ''
+    });
   });
   
-  // Get total count for pagination
+  // Get total count for pagination (count deals, not legs)
+  // Since we return 2 rows per deal, the total rows will be count * 2
   let countSql = 'SELECT COUNT(*) as count FROM buyback_deals bd WHERE 1=1';
   const countParams = [];
   
@@ -278,6 +273,15 @@ exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturi
   }
   
   const [[{ count }]] = await db.query(countSql, countParams);
+  // Total rows = count of deals * 2 (since each deal has 2 legs)
+  const totalRows = count * 2;
+  
+  // Apply pagination to the expanded data (legs)
+  let paginatedData = data;
+  if (page && pageSize) {
+    const offset = (page - 1) * pageSize;
+    paginatedData = data.slice(offset, offset + pageSize);
+  }
   
   // Calculate total portfolio balance when portfolio filter is applied
   let totalPortfolioBalance = null;
@@ -334,5 +338,5 @@ exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturi
     totalPortfolioBalance = formatPrice(totalBalance, 4);
   }
   
-  return { data, total: count, totalPortfolioBalance };
+  return { data: paginatedData, total: totalRows, totalPortfolioBalance };
 };

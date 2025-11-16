@@ -1,6 +1,7 @@
 const gsecReportService = require('../services/gsecReportService');
 const portfolioReportService = require('../services/portfolioReportService');
 const counterpartyReportService = require('../services/counterpartyReportService');
+const buybackReportService = require('../services/buybackReportService');
 const reportExporter = require('../utils/reportExporter');
 
 // GET /api/reports/gsec
@@ -187,5 +188,67 @@ exports.getCounterpartyReport = async (req, res) => {
   } catch (err) {
     console.error('Counterparty Report Error:', err);
     res.status(500).json({ error: 'Failed to generate Counterparty report', details: err.message });
+  }
+};
+
+// GET /api/reports/buyback
+exports.getBuybackReport = async (req, res) => {
+  try {
+    console.log('=== BUYBACK REPORT API CALLED ===');
+    console.log('Query params:', req.query);
+    
+    const {
+      asAtDate,
+      portfolio,
+      isin,
+      valueDate,
+      maturityDate,
+      format,
+      page,
+      pageSize
+    } = req.query;
+
+    // Fetch report data
+    const reportParams = {
+      asAtDate,
+      portfolio,
+      isin,
+      valueDate,
+      maturityDate
+    };
+    
+    // Only add pagination if provided (for regular display)
+    if (page && pageSize) {
+      reportParams.page = Number(page);
+      reportParams.pageSize = Number(pageSize);
+    }
+    
+    const { data, total, totalPortfolioBalance } = await buybackReportService.getBuybackReport(reportParams);
+
+    console.log('Buyback Report Service returned:');
+    console.log('Data length:', data.length);
+    console.log('Total:', total);
+
+    // Handle export formats
+    if (format === 'csv' || format === 'excel' || format === 'pdf') {
+      const fileBuffer = await reportExporter.export(format, data);
+      res.setHeader('Content-Disposition', `attachment; filename=buyback_report.${format === 'excel' ? 'xlsx' : format}`);
+      res.setHeader('Content-Type', reportExporter.getMimeType(format));
+      return res.send(fileBuffer);
+    }
+
+    // Default: return JSON (paginated if page/pageSize provided, otherwise all data)
+    const response = { data, total };
+    if (page && pageSize) {
+      response.page = Number(page);
+      response.pageSize = Number(pageSize);
+    }
+    if (totalPortfolioBalance !== null) {
+      response.totalPortfolioBalance = totalPortfolioBalance;
+    }
+    res.json(response);
+  } catch (err) {
+    console.error('Buyback Report Error:', err);
+    res.status(500).json({ error: 'Failed to generate Buyback report', details: err.message });
   }
 };

@@ -11,4 +11,7 @@ router.get('/portfolio', reportController.getPortfolioReport);
 // Counterparty report endpoint
 router.get('/counterparty', reportController.getCounterpartyReport);
 
+// Buyback report endpoint
+router.get('/buyback', reportController.getBuybackReport);
+
 module.exports = router;
