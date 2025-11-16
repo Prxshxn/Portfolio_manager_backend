@@ -13,6 +13,7 @@ const reportMoneyMarketRoutes = require('./reportMoneyMarket');
 const reportMarkToMarketRoutes = require('./reportMarkToMarket');
 const reportBuybackRoutes = require('./reportBuyback');
 const reportSellTransactionRoutes = require('./reportSellTransaction');
+const reportRoutes = require('./reportRoutes');
 const markToMarketRoutes = require('./markToMarketRoutes');
 const cashflowRoutes = require('./cashflowRoutes');
 
@@ -50,19 +51,22 @@ router.use('/money-market', require('./voucher'));
 router.use('/transaction-types', require('./transactionTypes'));
 // Note: transactionRoutes.js is skipped as transactions.js is already mounted.
 
-// Mount Money Market report API
+// Mount report APIs (using centralized reportRoutes)
+router.use('/reports', reportRoutes);
+
+// Mount Money Market report API (legacy, kept for backward compatibility)
 router.use('/reports/money-market', reportMoneyMarketRoutes);
 
-// Mount Mark to Market report API
+// Mount Mark to Market report API (legacy, kept for backward compatibility)
 router.use('/reports/mark-to-market', reportMarkToMarketRoutes);
 
-// Mount Buyback report API
-router.use('/reports/buyback', reportBuybackRoutes);
-
-// Mount Sell Transaction report API
+// Mount Sell Transaction report API (legacy, kept for backward compatibility)
 router.use('/reports/sell-transaction', reportSellTransactionRoutes);
 
 // Mount GSec workflow API
 router.use('/gsec', require('./gsecRoutes'));
+
+// Mount Coupon Maturity Blotter API
+router.use('/coupon-maturity-blotter', require('./couponMaturityBlotterRoutes'));
 
 module.exports = router;
