@@ -66,4 +66,7 @@ router.use('/reports/sell-transaction', reportSellTransactionRoutes);
 // Mount GSec workflow API
 router.use('/gsec', require('./gsecRoutes'));
 
+// Mount Coupon Maturity Blotter API
+router.use('/coupon-maturity-blotter', require('./couponMaturityBlotterRoutes'));
+
 module.exports = router;
