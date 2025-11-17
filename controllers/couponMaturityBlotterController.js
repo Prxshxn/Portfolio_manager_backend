@@ -6,25 +6,33 @@ const couponMaturityBlotterService = require('../services/couponMaturityBlotterS
  */
 exports.getCouponMaturityBlotter = async (req, res) => {
   try {
-    const { couponDate, counterparty } = req.query;
+    const { startDate, endDate, counterparty } = req.query;
 
-    if (!couponDate) {
+    if (!startDate || !endDate) {
       return res.status(400).json({ 
         success: false, 
-        error: 'Coupon date is required. Format: YYYY-MM-DD' 
+        error: 'Start date and end date are required. Format: YYYY-MM-DD' 
       });
     }
 
     // Validate date format
     const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
-    if (!dateRegex.test(couponDate)) {
+    if (!dateRegex.test(startDate) || !dateRegex.test(endDate)) {
       return res.status(400).json({ 
         success: false, 
         error: 'Invalid date format. Use YYYY-MM-DD' 
       });
     }
 
-    const data = await couponMaturityBlotterService.getCouponMaturityBlotter(couponDate, counterparty);
+    // Validate date range
+    if (new Date(startDate) > new Date(endDate)) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Start date cannot be after end date' 
+      });
+    }
+
+    const data = await couponMaturityBlotterService.getCouponMaturityBlotter(startDate, endDate, counterparty);
 
     // Calculate totals
     const totals = {
@@ -46,7 +54,8 @@ exports.getCouponMaturityBlotter = async (req, res) => {
       success: true,
       data,
       totals,
-      coupon_date: couponDate
+      start_date: startDate,
+      end_date: endDate
     });
   } catch (error) {
     console.error('Error fetching coupon maturity blotter:', error);
