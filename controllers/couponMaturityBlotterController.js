@@ -6,7 +6,7 @@ const couponMaturityBlotterService = require('../services/couponMaturityBlotterS
  */
 exports.getCouponMaturityBlotter = async (req, res) => {
   try {
-    const { couponDate } = req.query;
+    const { couponDate, counterparty } = req.query;
 
     if (!couponDate) {
       return res.status(400).json({ 
@@ -24,7 +24,7 @@ exports.getCouponMaturityBlotter = async (req, res) => {
       });
     }
 
-    const data = await couponMaturityBlotterService.getCouponMaturityBlotter(couponDate);
+    const data = await couponMaturityBlotterService.getCouponMaturityBlotter(couponDate, counterparty);
 
     // Calculate totals
     const totals = {

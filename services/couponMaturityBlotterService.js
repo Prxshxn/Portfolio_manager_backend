@@ -3,14 +3,15 @@ const db = require('../config/db');
 /**
  * Get coupon maturity blotter data for a given coupon date
  * @param {string} couponDate - The coupon date in YYYY-MM-DD format
+ * @param {string} counterparty - Optional counterparty unique_id to filter by
  * @returns {Promise<Array>} Array of coupon deals with transaction type and amounts
  */
-exports.getCouponMaturityBlotter = async (couponDate) => {
+exports.getCouponMaturityBlotter = async (couponDate, counterparty = null) => {
   if (!couponDate) {
     throw new Error('Coupon date is required');
   }
 
-  console.log(`[Coupon Maturity Blotter] Fetching data for coupon date: ${couponDate}`);
+  console.log(`[Coupon Maturity Blotter] Fetching data for coupon date: ${couponDate}${counterparty ? `, counterparty: ${counterparty}` : ''}`);
 
   // Query gsec deals that have a coupon payment on the selected date
   // A deal qualifies if:
@@ -18,6 +19,7 @@ exports.getCouponMaturityBlotter = async (couponDate) => {
   // 2. The deal's value_date is before or equal to the coupon date (deal was active)
   // 3. The deal's maturity_date is after or equal to the coupon date (deal hasn't matured yet)
   // 4. OR the coupon date is the maturity date (final coupon)
+  const counterpartyFilter = counterparty ? 'AND g.counterparty = ?' : '';
   const sql = `
     SELECT DISTINCT
       g.id,
@@ -54,6 +56,7 @@ exports.getCouponMaturityBlotter = async (couponDate) => {
       AND g.transaction_type IN ('Buy', 'Sell')
       AND DATE(g.value_date) <= ?
       AND DATE(g.maturity_date) >= ?
+      ${counterpartyFilter}
       AND (
         -- Match if coupon date exists in the coupon schedule for this ISIN
         EXISTS (
@@ -86,18 +89,30 @@ exports.getCouponMaturityBlotter = async (couponDate) => {
     ORDER BY g.transaction_type, g.deal_number
   `;
 
-  const [rows] = await db.query(sql, [
+  // Build parameters array dynamically
+  const params = [
     couponDate, // 1. for is_maturity_coupon check (CASE WHEN)
     couponDate, // 2. for value_date <=
     couponDate, // 3. for maturity_date >=
-    couponDate, // 4. for isin_coupon_schedule check (EXISTS)
-    couponDate, // 5. for maturity_date = (final coupon)
-    couponDate, // 6. for next_coupon_date =
-    couponDate, // 7. for MONTH(coupon_date_1)
-    couponDate, // 8. for DAY(coupon_date_1)
-    couponDate, // 9. for MONTH(coupon_date_2)
-    couponDate  // 10. for DAY(coupon_date_2)
-  ]);
+  ];
+  
+  // Add counterparty parameter if provided
+  if (counterparty) {
+    params.push(counterparty); // 4. for counterparty filter
+  }
+  
+  // Add remaining coupon date parameters
+  params.push(
+    couponDate, // for isin_coupon_schedule check (EXISTS)
+    couponDate, // for maturity_date = (final coupon)
+    couponDate, // for next_coupon_date =
+    couponDate, // for MONTH(coupon_date_1)
+    couponDate, // for DAY(coupon_date_1)
+    couponDate, // for MONTH(coupon_date_2)
+    couponDate  // for DAY(coupon_date_2)
+  );
+
+  const [rows] = await db.query(sql, params);
 
   console.log(`[Coupon Maturity Blotter] Found ${rows.length} deals for coupon date ${couponDate}`);
 
