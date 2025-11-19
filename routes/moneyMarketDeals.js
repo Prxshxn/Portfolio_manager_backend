@@ -100,6 +100,23 @@ const CashflowCaptureService = require('../services/cashflowCaptureService');
 router.post('/', async (req, res) => {
   const deal = req.body;
   try {
+    // Holiday validation - check if transaction dates are holidays
+    const holidayValidationService = require('../services/holidayValidationService');
+    const currency = deal.currency || 'LKR';
+    const holidayValidation = await holidayValidationService.validateTransactionDates({
+      tradeDate: deal.tradeDate,
+      valueDate: deal.valueDate,
+      currency: currency
+    });
+
+    if (holidayValidation.isHoliday) {
+      return res.status(400).json({
+        success: false,
+        message: holidayValidation.message,
+        error: 'Transaction cannot be saved on a holiday'
+      });
+    }
+
     // Format date to YYYYMMDD
     const tradeDate = new Date(deal.tradeDate);
     const yyyy = tradeDate.getFullYear();

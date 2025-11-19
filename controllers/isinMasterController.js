@@ -4,6 +4,7 @@ const db = require('../config/database');
 const mysql = require('mysql2/promise');
 
 const Gsec = require('../models/gsec');
+const holidayValidationService = require('../services/holidayValidationService');
 
 module.exports = {
   // Save both legs of a G-Sec buyback as a single row in buyback_gsec
@@ -238,6 +239,22 @@ module.exports = {
         });
       }
 
+      // Holiday validation - check if transaction dates are holidays
+      const currency = req.body.currency || 'LKR';
+      const holidayValidation = await holidayValidationService.validateTransactionDates({
+        tradeDate: req.body.tradeDate || req.body.trade_date,
+        valueDate: req.body.valueDate || req.body.value_date,
+        currency: currency
+      });
+
+      if (holidayValidation.isHoliday) {
+        return res.status(400).json({
+          success: false,
+          error: 'Transaction cannot be saved on a holiday',
+          message: holidayValidation.message
+        });
+      }
+
       // Get database connection for transaction
       connection = await db.pool.getConnection();
       await connection.beginTransaction();
@@ -420,6 +437,22 @@ module.exports = {
     };
     
     try {
+      // Holiday validation - check if updated transaction dates are holidays
+      const currency = updateData.currency || 'LKR';
+      const holidayValidation = await holidayValidationService.validateTransactionDates({
+        tradeDate: updateData.tradeDate || updateData.trade_date,
+        valueDate: updateData.valueDate || updateData.value_date,
+        currency: currency
+      });
+
+      if (holidayValidation.isHoliday) {
+        return res.status(400).json({
+          success: false,
+          error: 'Transaction cannot be saved on a holiday',
+          message: holidayValidation.message
+        });
+      }
+
       const result = await Gsec.update(id, updateData);
       if (result.affectedRows === 0) {
         return res.status(404).json({ success: false, error: 'Transaction not found' });

@@ -1,23 +1,26 @@
 const db = require('../config/db');
 
 /**
- * Get coupon maturity blotter data for a given coupon date
- * @param {string} couponDate - The coupon date in YYYY-MM-DD format
+ * Get coupon maturity blotter data for a given date range
+ * @param {string} startDate - The start date in YYYY-MM-DD format
+ * @param {string} endDate - The end date in YYYY-MM-DD format
+ * @param {string} counterparty - Optional counterparty unique_id to filter by
  * @returns {Promise<Array>} Array of coupon deals with transaction type and amounts
  */
-exports.getCouponMaturityBlotter = async (couponDate) => {
-  if (!couponDate) {
-    throw new Error('Coupon date is required');
+exports.getCouponMaturityBlotter = async (startDate, endDate, counterparty = null) => {
+  if (!startDate || !endDate) {
+    throw new Error('Start date and end date are required');
   }
 
-  console.log(`[Coupon Maturity Blotter] Fetching data for coupon date: ${couponDate}`);
+  console.log(`[Coupon Maturity Blotter] Fetching data for date range: ${startDate} to ${endDate}${counterparty ? `, counterparty: ${counterparty}` : ''}`);
 
-  // Query gsec deals that have a coupon payment on the selected date
+  // Query gsec deals that have a coupon payment within the selected date range
   // A deal qualifies if:
-  // 1. The coupon date exists in isin_coupon_schedule for that ISIN
-  // 2. The deal's value_date is before or equal to the coupon date (deal was active)
-  // 3. The deal's maturity_date is after or equal to the coupon date (deal hasn't matured yet)
-  // 4. OR the coupon date is the maturity date (final coupon)
+  // 1. The coupon date exists in isin_coupon_schedule for that ISIN and falls within the date range
+  // 2. The deal's value_date is before or equal to the end date (deal was active)
+  // 3. The deal's maturity_date is after or equal to the start date (deal hasn't matured yet)
+  // 4. OR the maturity date falls within the date range (final coupon)
+  const counterpartyFilter = counterparty ? 'AND g.counterparty = ?' : '';
   const sql = `
     SELECT DISTINCT
       g.id,
@@ -43,8 +46,17 @@ exports.getCouponMaturityBlotter = async (couponDate) => {
         joint.short_name,
         g.counterparty
       ) as counterparty_name,
-      -- Check if this is a final coupon (maturity date)
-      CASE WHEN DATE(g.maturity_date) = ? THEN 1 ELSE 0 END as is_maturity_coupon
+      -- Check if this is a final coupon (maturity date falls within range)
+      CASE WHEN DATE(g.maturity_date) BETWEEN ? AND ? THEN 1 ELSE 0 END as is_maturity_coupon,
+      -- Get the actual coupon date for this deal (from schedule, maturity, or next_coupon_date)
+      COALESCE(
+        (SELECT DATE(ics.coupon_date) FROM isin_coupon_schedule ics 
+         WHERE ics.isin = g.isin 
+           AND DATE(ics.coupon_date) BETWEEN ? AND ? 
+         LIMIT 1),
+        CASE WHEN DATE(g.maturity_date) BETWEEN ? AND ? THEN DATE(g.maturity_date) ELSE NULL END,
+        CASE WHEN DATE(g.next_coupon_date) BETWEEN ? AND ? THEN DATE(g.next_coupon_date) ELSE NULL END
+      ) as coupon_date
     FROM gsec g
     LEFT JOIN isin_master im ON g.isin = im.isin_number
     LEFT JOIN counterparty_master_corporate corp ON CONCAT('c', corp.id) = g.counterparty
@@ -54,52 +66,50 @@ exports.getCouponMaturityBlotter = async (couponDate) => {
       AND g.transaction_type IN ('Buy', 'Sell')
       AND DATE(g.value_date) <= ?
       AND DATE(g.maturity_date) >= ?
+      ${counterpartyFilter}
       AND (
-        -- Match if coupon date exists in the coupon schedule for this ISIN
+        -- Match if coupon date exists in the coupon schedule for this ISIN within date range
         EXISTS (
           SELECT 1 
           FROM isin_coupon_schedule ics 
           WHERE ics.isin = g.isin 
-            AND DATE(ics.coupon_date) = ?
+            AND DATE(ics.coupon_date) BETWEEN ? AND ?
         )
         OR
-        -- Match if coupon date is the maturity date (final coupon)
-        (DATE(g.maturity_date) = ?)
+        -- Match if maturity date falls within the date range (final coupon)
+        (DATE(g.maturity_date) BETWEEN ? AND ?)
         OR
-        -- Match by next_coupon_date (for backward compatibility)
-        (DATE(g.next_coupon_date) = ?)
-        OR
-        -- Fallback: Match if coupon date matches coupon_date_1 or coupon_date_2 pattern from isin_master
-        -- Check if month and day match (handles recurring annual coupon dates)
-        (
-          im.coupon_date_1 IS NOT NULL 
-          AND MONTH(?) = MONTH(im.coupon_date_1)
-          AND DAY(?) = DAY(im.coupon_date_1)
-        )
-        OR
-        (
-          im.coupon_date_2 IS NOT NULL 
-          AND MONTH(?) = MONTH(im.coupon_date_2)
-          AND DAY(?) = DAY(im.coupon_date_2)
-        )
+        -- Match by next_coupon_date if it falls within the date range
+        (DATE(g.next_coupon_date) BETWEEN ? AND ?)
       )
     ORDER BY g.transaction_type, g.deal_number
   `;
 
-  const [rows] = await db.query(sql, [
-    couponDate, // 1. for is_maturity_coupon check (CASE WHEN)
-    couponDate, // 2. for value_date <=
-    couponDate, // 3. for maturity_date >=
-    couponDate, // 4. for isin_coupon_schedule check (EXISTS)
-    couponDate, // 5. for maturity_date = (final coupon)
-    couponDate, // 6. for next_coupon_date =
-    couponDate, // 7. for MONTH(coupon_date_1)
-    couponDate, // 8. for DAY(coupon_date_1)
-    couponDate, // 9. for MONTH(coupon_date_2)
-    couponDate  // 10. for DAY(coupon_date_2)
-  ]);
+  // Build parameters array dynamically
+  const params = [
+    startDate, endDate, // 1-2. for is_maturity_coupon check (CASE WHEN BETWEEN)
+    startDate, endDate, // 3-4. for coupon_date COALESCE (isin_coupon_schedule)
+    startDate, endDate, // 5-6. for coupon_date COALESCE (maturity_date)
+    startDate, endDate, // 7-8. for coupon_date COALESCE (next_coupon_date)
+    endDate, // 9. for value_date <=
+    startDate, // 10. for maturity_date >=
+  ];
+  
+  // Add counterparty parameter if provided
+  if (counterparty) {
+    params.push(counterparty); // for counterparty filter
+  }
+  
+  // Add remaining date range parameters for WHERE clause
+  params.push(
+    startDate, endDate, // for isin_coupon_schedule EXISTS (BETWEEN)
+    startDate, endDate, // for maturity_date BETWEEN
+    startDate, endDate  // for next_coupon_date BETWEEN
+  );
 
-  console.log(`[Coupon Maturity Blotter] Found ${rows.length} deals for coupon date ${couponDate}`);
+  const [rows] = await db.query(sql, params);
+
+  console.log(`[Coupon Maturity Blotter] Found ${rows.length} deals for date range ${startDate} to ${endDate}`);
 
   // Process the results and calculate coupon amounts
   const results = rows.map((row) => {
@@ -149,7 +159,7 @@ exports.getCouponMaturityBlotter = async (couponDate) => {
       isin: row.isin,
       face_value: Number(row.face_value) || 0,
       coupon_amount: couponAmount,
-      coupon_date: couponDate,
+      coupon_date: row.coupon_date || null, // The actual coupon date within the range
       next_coupon_date: row.next_coupon_date,
       last_coupon_date: row.last_coupon_date,
       maturity_date: row.maturity_date,
