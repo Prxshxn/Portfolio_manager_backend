@@ -12,17 +12,42 @@ exports.isHolidayForCurrency = async (date, currency = 'LKR') => {
   try {
     // Format date to YYYY-MM-DD if needed
     let formattedDate = date;
+    let dateObj;
+    
     if (date instanceof Date) {
+      dateObj = date;
       formattedDate = date.toISOString().split('T')[0];
     } else if (typeof date === 'string' && date.includes('/')) {
       // Convert DD/MM/YYYY to YYYY-MM-DD
       const parts = date.split('/');
       if (parts.length === 3) {
         formattedDate = `${parts[2]}-${parts[1]}-${parts[0]}`;
+        dateObj = new Date(formattedDate);
+      } else {
+        dateObj = new Date(date);
       }
+    } else {
+      dateObj = new Date(formattedDate);
     }
     
-    // Check for holidays on this date
+    // Check if the date is a Saturday (6) or Sunday (0)
+    const dayOfWeek = dateObj.getDay();
+    if (dayOfWeek === 0 || dayOfWeek === 6) {
+      const dayName = dayOfWeek === 0 ? 'Sunday' : 'Saturday';
+      return {
+        isHoliday: true,
+        holiday: {
+          id: null,
+          date: formattedDate,
+          reason: `Weekend (${dayName})`,
+          fundCentreName: 'All Fund Centres',
+          fundCentreCode: 'N/A',
+          currency: currency
+        }
+      };
+    }
+    
+    // Check for holidays on this date in the database
     // 1. Check for general holidays (fund_centre_id is NULL - applies to all)
     // 2. Check for currency-specific holidays (fund_centre_id matches the fund centre for this currency)
     const [rows] = await db.query(
