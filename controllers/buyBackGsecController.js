@@ -1,5 +1,6 @@
 const db = require('../config/database');
 const Gsec = require('../models/gsec'); // You may want a separate model later, but start with this for structure
+const holidayValidationService = require('../services/holidayValidationService');
 
 module.exports = {
   /**
@@ -22,10 +23,25 @@ module.exports = {
         portfolio,
         strategy,
         buyback_type, // ABS or ABC
+        currency = 'LKR',
+        value_date,
         // ...add any new or custom fields for buyback here
       } = req.body;
 
-      // TODO: Add buyback-specific validation or logic here
+      // Holiday validation - check if transaction dates are holidays
+      const holidayValidation = await holidayValidationService.validateTransactionDates({
+        tradeDate: trade_date,
+        valueDate: value_date || trade_date,
+        currency: currency
+      });
+
+      if (holidayValidation.isHoliday) {
+        return res.status(400).json({
+          success: false,
+          error: 'Transaction cannot be saved on a holiday',
+          message: holidayValidation.message
+        });
+      }
 
       // Insert into gsec table (or a separate table if you want)
       const result = await db.query(

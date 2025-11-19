@@ -1,4 +1,5 @@
 const RepoDeal = require('../models/repoDealModel');
+const holidayValidationService = require('../services/holidayValidationService');
 
 const repoDealController = {
   // Create a new repo deal
@@ -118,6 +119,22 @@ const repoDealController = {
         return res.status(400).json({
           success: false,
           message: 'Calculation day basis must be 364 or 365'
+        });
+      }
+
+      // Holiday validation - check if transaction dates are holidays
+      // Default currency is LKR for repo deals
+      const currency = 'LKR';
+      const holidayValidation = await holidayValidationService.validateTransactionDates({
+        tradeDate: tradeDate,
+        valueDate: valueDate,
+        currency: currency
+      });
+
+      if (holidayValidation.isHoliday) {
+        return res.status(400).json({
+          success: false,
+          message: holidayValidation.message
         });
       }
 
@@ -287,6 +304,22 @@ const repoDealController = {
             message: 'Maturity date must be after value date'
           });
         }
+      }
+
+      // Holiday validation - check if updated transaction dates are holidays
+      // Default currency is LKR for repo deals
+      const currency = 'LKR';
+      const holidayValidation = await holidayValidationService.validateTransactionDates({
+        tradeDate: updateData.tradeDate || existingDeal.trade_date,
+        valueDate: updateData.valueDate || existingDeal.value_date,
+        currency: currency
+      });
+
+      if (holidayValidation.isHoliday) {
+        return res.status(400).json({
+          success: false,
+          message: holidayValidation.message
+        });
       }
 
       // Update the deal

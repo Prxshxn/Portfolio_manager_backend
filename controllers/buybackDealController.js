@@ -1,6 +1,7 @@
 const BuybackDeal = require('../models/buybackDealModel');
 const Gsec = require('../models/gsec');
 const db = require('../config/database');
+const holidayValidationService = require('../services/holidayValidationService');
 
 const buybackDealController = {
   // Create a new buyback deal
@@ -13,6 +14,41 @@ const buybackDealController = {
         return res.status(400).json({ 
           success: false, 
           error: 'Both leg1 and leg2 data are required' 
+        });
+      }
+
+      // Holiday validation - check if transaction dates are holidays
+      // Check both legs for holidays
+      const currency1 = leg1.currency || 'LKR';
+      const currency2 = leg2.currency || 'LKR';
+      
+      // Check leg1 dates
+      const holidayValidation1 = await holidayValidationService.validateTransactionDates({
+        tradeDate: leg1.tradeDate,
+        valueDate: leg1.valueDate,
+        currency: currency1
+      });
+
+      if (holidayValidation1.isHoliday) {
+        return res.status(400).json({
+          success: false,
+          error: 'Transaction cannot be saved on a holiday',
+          message: `Leg 1: ${holidayValidation1.message}`
+        });
+      }
+
+      // Check leg2 dates
+      const holidayValidation2 = await holidayValidationService.validateTransactionDates({
+        tradeDate: leg2.tradeDate,
+        valueDate: leg2.valueDate,
+        currency: currency2
+      });
+
+      if (holidayValidation2.isHoliday) {
+        return res.status(400).json({
+          success: false,
+          error: 'Transaction cannot be saved on a holiday',
+          message: `Leg 2: ${holidayValidation2.message}`
         });
       }
 
@@ -464,6 +500,41 @@ const buybackDealController = {
         return res.status(400).json({
           success: false,
           error: 'Both leg1 and leg2 data are required'
+        });
+      }
+
+      // Holiday validation - check if updated transaction dates are holidays
+      // Check both legs for holidays
+      const currency1 = leg1.currency || 'LKR';
+      const currency2 = leg2.currency || 'LKR';
+      
+      // Check leg1 dates
+      const holidayValidation1 = await holidayValidationService.validateTransactionDates({
+        tradeDate: leg1.tradeDate,
+        valueDate: leg1.valueDate,
+        currency: currency1
+      });
+
+      if (holidayValidation1.isHoliday) {
+        return res.status(400).json({
+          success: false,
+          error: 'Transaction cannot be saved on a holiday',
+          message: `Leg 1: ${holidayValidation1.message}`
+        });
+      }
+
+      // Check leg2 dates
+      const holidayValidation2 = await holidayValidationService.validateTransactionDates({
+        tradeDate: leg2.tradeDate,
+        valueDate: leg2.valueDate,
+        currency: currency2
+      });
+
+      if (holidayValidation2.isHoliday) {
+        return res.status(400).json({
+          success: false,
+          error: 'Transaction cannot be saved on a holiday',
+          message: `Leg 2: ${holidayValidation2.message}`
         });
       }
 
