@@ -51,6 +51,12 @@ exports.createFundCentre = async (fundCentreData) => {
       throw new Error('Fund centre code already exists');
     }
 
+    // Check if currency already exists for another fund centre
+    const existingCurrency = await fundCentreMasterModel.getFundCentreByCurrency(currency);
+    if (existingCurrency) {
+      throw new Error(`Currency ${currency} is already assigned to fund centre "${existingCurrency.name}" (${existingCurrency.fund_centre_code}). Each currency can only be assigned to one fund centre.`);
+    }
+
     const id = await fundCentreMasterModel.createFundCentre({
       name,
       fund_centre_code,
@@ -93,6 +99,12 @@ exports.updateFundCentre = async (id, fundCentreData) => {
     const codeFundCentre = await fundCentreMasterModel.getFundCentreByCode(fund_centre_code);
     if (codeFundCentre && codeFundCentre.id !== id) {
       throw new Error('Fund centre code already exists');
+    }
+
+    // Check if currency already exists for another fund centre (excluding current)
+    const existingCurrency = await fundCentreMasterModel.getFundCentreByCurrency(currency);
+    if (existingCurrency && existingCurrency.id !== id) {
+      throw new Error(`Currency ${currency} is already assigned to fund centre "${existingCurrency.name}" (${existingCurrency.fund_centre_code}). Each currency can only be assigned to one fund centre.`);
     }
 
     const success = await fundCentreMasterModel.updateFundCentre(id, {

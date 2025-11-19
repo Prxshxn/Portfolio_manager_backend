@@ -38,6 +38,19 @@ async function getFundCentreByCode(code) {
 }
 
 /**
+ * Get fund centre by currency
+ * @param {string} currency - Currency code
+ * @returns {Promise<Object|null>} Fund centre object if found, null otherwise
+ */
+async function getFundCentreByCurrency(currency) {
+  const [rows] = await db.query(
+    'SELECT * FROM fund_centre_master WHERE currency = ?',
+    [currency]
+  );
+  return rows[0];
+}
+
+/**
  * Create a new fund centre
  * @param {Object} fundCentre - Fund centre object with name, fund_centre_code, country, gmt_timezone, currency
  * @returns {Promise<number>} ID of the created fund centre
@@ -83,6 +96,7 @@ module.exports = {
   getAllFundCentres,
   getFundCentreById,
   getFundCentreByCode,
+  getFundCentreByCurrency,
   createFundCentre,
   updateFundCentre,
   deleteFundCentre
