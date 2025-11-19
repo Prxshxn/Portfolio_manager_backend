@@ -53,14 +53,14 @@ async function isHoliday(date) {
 
 /**
  * Create a new holiday
- * @param {Object} holiday - Holiday object with holiday_date and reason
+ * @param {Object} holiday - Holiday object with holiday_date, reason, and optional fund_centre_id
  * @returns {Promise<number>} Insert ID
  */
 async function createHoliday(holiday) {
-  const { holiday_date, reason } = holiday;
+  const { holiday_date, reason, fund_centre_id } = holiday;
   const [result] = await db.query(
-    'INSERT INTO holiday_calendar (holiday_date, reason, created_at, updated_at) VALUES (?, ?, NOW(), NOW())',
-    [holiday_date, reason]
+    'INSERT INTO holiday_calendar (holiday_date, reason, fund_centre_id, created_at, updated_at) VALUES (?, ?, ?, NOW(), NOW())',
+    [holiday_date, reason, fund_centre_id || null]
   );
   return result.insertId;
 }
@@ -68,14 +68,14 @@ async function createHoliday(holiday) {
 /**
  * Update a holiday
  * @param {number} id - Holiday ID
- * @param {Object} holiday - Holiday object with holiday_date and reason
+ * @param {Object} holiday - Holiday object with holiday_date, reason, and optional fund_centre_id
  * @returns {Promise<boolean>} Success status
  */
 async function updateHoliday(id, holiday) {
-  const { holiday_date, reason } = holiday;
+  const { holiday_date, reason, fund_centre_id } = holiday;
   const [result] = await db.query(
-    'UPDATE holiday_calendar SET holiday_date = ?, reason = ?, updated_at = NOW() WHERE id = ?',
-    [holiday_date, reason, id]
+    'UPDATE holiday_calendar SET holiday_date = ?, reason = ?, fund_centre_id = ?, updated_at = NOW() WHERE id = ?',
+    [holiday_date, reason, fund_centre_id || null, id]
   );
   return result.affectedRows > 0;
 }

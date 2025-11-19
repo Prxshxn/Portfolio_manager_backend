@@ -109,7 +109,8 @@ exports.createHoliday = async (req, res) => {
     
     const holiday = await holidayCalendarService.createHoliday({
       holiday_date,
-      reason
+      reason,
+      fund_centre_id: req.body.fund_centre_id || null
     });
     
     res.status(201).json({
@@ -144,7 +145,8 @@ exports.updateHoliday = async (req, res) => {
     
     const holiday = await holidayCalendarService.updateHoliday(id, {
       holiday_date,
-      reason
+      reason,
+      fund_centre_id: req.body.fund_centre_id || null
     });
     
     res.json({

@@ -75,7 +75,8 @@ exports.createHoliday = async (holidayData) => {
     
     const id = await holidayCalendarModel.createHoliday({
       holiday_date,
-      reason: reason.trim()
+      reason: reason.trim(),
+      fund_centre_id: holidayData.fund_centre_id || null
     });
     
     return await holidayCalendarModel.getHolidayById(id);
@@ -114,7 +115,8 @@ exports.updateHoliday = async (id, holidayData) => {
     
     const success = await holidayCalendarModel.updateHoliday(id, {
       holiday_date,
-      reason: reason.trim()
+      reason: reason.trim(),
+      fund_centre_id: holidayData.fund_centre_id || null
     });
     
     if (!success) {

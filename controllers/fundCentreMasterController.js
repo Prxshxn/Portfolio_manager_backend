@@ -138,3 +138,29 @@ exports.deleteFundCentre = async (req, res) => {
     });
   }
 };
+
+/**
+ * GET /api/fund-centre-master/dropdown/list
+ * Get fund centres for dropdown (id, name, fund_centre_code)
+ */
+exports.getFundCentresForDropdown = async (req, res) => {
+  try {
+    const fundCentres = await fundCentreMasterService.getAllFundCentres();
+    // Return only id, name, and fund_centre_code for dropdown
+    const dropdownData = fundCentres.map(fc => ({
+      id: fc.id,
+      name: fc.name,
+      fund_centre_code: fc.fund_centre_code
+    }));
+    res.json({
+      success: true,
+      data: dropdownData
+    });
+  } catch (error) {
+    console.error('Error fetching fund centres for dropdown:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to fetch fund centres'
+    });
+  }
+};

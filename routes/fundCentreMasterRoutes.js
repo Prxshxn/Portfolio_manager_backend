@@ -9,6 +9,9 @@ router.use(checkAuth);
 // GET /api/fund-centre-master - Get all fund centres
 router.get('/', fundCentreMasterController.getAllFundCentres);
 
+// GET /api/fund-centre-master/dropdown/list - Get fund centres for dropdown
+router.get('/dropdown/list', fundCentreMasterController.getFundCentresForDropdown);
+
 // GET /api/fund-centre-master/:id - Get fund centre by ID
 router.get('/:id', fundCentreMasterController.getFundCentreById);
 
