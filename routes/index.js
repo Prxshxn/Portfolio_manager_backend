@@ -72,4 +72,7 @@ router.use('/coupon-maturity-blotter', require('./couponMaturityBlotterRoutes'))
 // Mount Holiday Calendar API
 router.use('/holiday-calendar', require('./holidayCalendarRoutes'));
 
+// Mount Fund Centre Master API
+router.use('/fund-centre-master', require('./fundCentreMasterRoutes'));
+
 module.exports = router;
