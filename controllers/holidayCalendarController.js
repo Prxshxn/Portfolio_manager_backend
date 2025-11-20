@@ -1,4 +1,5 @@
 const holidayCalendarService = require('../services/holidayCalendarService');
+const holidayValidationService = require('../services/holidayValidationService');
 
 /**
  * GET /api/holiday-calendar
@@ -88,6 +89,34 @@ exports.checkHoliday = async (req, res) => {
     res.status(500).json({
       success: false,
       error: error.message || 'Failed to check holiday'
+    });
+  }
+};
+
+/**
+ * GET /api/holiday-calendar/check-currency/:date?currency=LKR
+ * Check if a date is a holiday for a specific currency (includes weekends)
+ */
+exports.checkHolidayForCurrency = async (req, res) => {
+  try {
+    const { date } = req.params;
+    const { currency = 'LKR' } = req.query;
+    
+    const holidayCheck = await holidayValidationService.isHolidayForCurrency(date, currency);
+    
+    res.json({
+      success: true,
+      isHoliday: holidayCheck.isHoliday,
+      data: holidayCheck.holiday,
+      message: holidayCheck.isHoliday 
+        ? `${date} is a holiday for currency ${currency}. Reason: ${holidayCheck.holiday.reason}`
+        : `${date} is not a holiday for currency ${currency}`
+    });
+  } catch (error) {
+    console.error('Error checking holiday for currency:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to check holiday for currency'
     });
   }
 };
