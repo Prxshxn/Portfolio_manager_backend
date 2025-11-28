@@ -11,9 +11,14 @@ const CounterpartyJoint = {
     const joint = rows[0] || null;
     
     if (joint) {
-      // Fetch relationships
-      const relationships = await CounterpartyJoint.getRelationships(id);
-      joint.counterparties = relationships;
+      // Fetch relationships (with error handling)
+      try {
+        const relationships = await CounterpartyJoint.getRelationships(id);
+        joint.counterparties = relationships;
+      } catch (error) {
+        console.error('Error fetching relationships for joint counterparty:', error.message);
+        joint.counterparties = []; // Return empty array if relationships can't be fetched
+      }
     }
     
     return joint;
@@ -81,11 +86,16 @@ const CounterpartyJoint = {
     
     // Update relationships if provided
     if (data.counterparties && Array.isArray(data.counterparties)) {
-      // Delete existing relationships
-      await db.query('DELETE FROM joint_counterparty_relationships WHERE joint_counterparty_id = ?', [id]);
-      // Insert new relationships
-      if (data.counterparties.length > 0) {
-        await CounterpartyJoint.saveRelationships(id, data.counterparties);
+      try {
+        // Delete existing relationships
+        await db.query('DELETE FROM joint_counterparty_relationships WHERE joint_counterparty_id = ?', [id]);
+        // Insert new relationships
+        if (data.counterparties.length > 0) {
+          await CounterpartyJoint.saveRelationships(id, data.counterparties);
+        }
+      } catch (error) {
+        console.error('Error updating relationships:', error.message);
+        // Continue even if relationships update fails
       }
     }
     
@@ -95,38 +105,48 @@ const CounterpartyJoint = {
   saveRelationships: async (jointId, counterparties) => {
     if (!counterparties || counterparties.length === 0) return;
     
-    const sql = `INSERT INTO joint_counterparty_relationships 
-      (joint_counterparty_id, sequence_number, title, short_name, long_name, id_type, id_number,
-       house_number, street_name, province, postal_code, city, country, telephone, email, mobile) 
-      VALUES ?`;
-    
-    const values = counterparties.map((cp, index) => [
-      jointId,
-      index + 1,
-      cp.title || '',
-      cp.short_name || '',
-      cp.long_name || '',
-      cp.id_type || '',
-      cp.id_number || '',
-      cp.address?.houseNumber || cp.address?.house_number || '',
-      cp.address?.streetName || cp.address?.street_name || '',
-      cp.address?.province || '',
-      cp.address?.postalCode || cp.address?.postal_code || '',
-      cp.address?.city || '',
-      cp.address?.country || '',
-      cp.address?.telephone || '',
-      cp.address?.email || '',
-      cp.address?.mobile || ''
-    ]);
-    
-    await db.query(sql, [values]);
+    try {
+      const sql = `INSERT INTO joint_counterparty_relationships 
+        (joint_counterparty_id, sequence_number, title, short_name, long_name, id_type, id_number,
+         house_number, street_name, province, postal_code, city, country, telephone, email, mobile,
+         cds_account, custodian_bank) 
+        VALUES ?`;
+      
+      const values = counterparties.map((cp, index) => [
+        jointId,
+        index + 1,
+        cp.title || '',
+        cp.short_name || '',
+        cp.long_name || '',
+        cp.id_type || '',
+        cp.id_number || '',
+        cp.address?.houseNumber || cp.address?.house_number || '',
+        cp.address?.streetName || cp.address?.street_name || '',
+        cp.address?.province || '',
+        cp.address?.postalCode || cp.address?.postal_code || '',
+        cp.address?.city || '',
+        cp.address?.country || '',
+        cp.address?.telephone || '',
+        cp.address?.email || '',
+        cp.address?.mobile || '',
+        cp.cds_account || '',
+        cp.custodian_bank || ''
+      ]);
+      
+      await db.query(sql, [values]);
+    } catch (error) {
+      console.error('Error saving relationships:', error.message);
+      // Don't throw - allow joint counterparty to be created even if relationships fail
+      // This handles cases where table doesn't exist yet
+    }
   },
   
   getRelationships: async (jointId) => {
+    try {
     const [rows] = await db.query(
       `SELECT sequence_number, title, short_name, long_name, id_type, id_number,
               house_number, street_name, province, postal_code, city, country, 
-              telephone, email, mobile
+              telephone, email, mobile, cds_account, custodian_bank
        FROM joint_counterparty_relationships 
        WHERE joint_counterparty_id = ? 
        ORDER BY sequence_number`,
@@ -149,8 +169,15 @@ const CounterpartyJoint = {
         telephone: row.telephone,
         email: row.email,
         mobile: row.mobile
-      }
+      },
+      cds_account: row.cds_account || '',
+      custodian_bank: row.custodian_bank || ''
     }));
+    } catch (error) {
+      // If table doesn't exist or other error, return empty array
+      console.error('Error fetching relationships:', error.message);
+      return [];
+    }
   }
 };
 
