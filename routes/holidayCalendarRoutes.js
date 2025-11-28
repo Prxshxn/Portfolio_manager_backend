@@ -15,6 +15,9 @@ router.get('/range', holidayCalendarController.getHolidaysByDateRange);
 // GET /api/holiday-calendar/check/:date - Check if a date is a holiday
 router.get('/check/:date', holidayCalendarController.checkHoliday);
 
+// GET /api/holiday-calendar/check-currency/:date?currency=LKR - Check if a date is a holiday for a currency (includes weekends)
+router.get('/check-currency/:date', holidayCalendarController.checkHolidayForCurrency);
+
 // GET /api/holiday-calendar/:id - Get holiday by ID
 router.get('/:id', holidayCalendarController.getHolidayById);
 
