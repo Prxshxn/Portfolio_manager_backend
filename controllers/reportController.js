@@ -191,6 +191,57 @@ exports.getCounterpartyReport = async (req, res) => {
   }
 };
 
+// GET /api/reports/counterparty-master
+exports.getCounterpartyMasterReport = async (req, res) => {
+  try {
+    console.log('=== COUNTERPARTY MASTER REPORT API CALLED ===');
+    console.log('Query params:', req.query);
+    
+    const {
+      type,
+      format,
+      page,
+      pageSize
+    } = req.query;
+
+    // Fetch report data
+    const reportParams = {
+      type: type || 'all'
+    };
+    
+    // Only add pagination if provided (for regular display)
+    if (page && pageSize) {
+      reportParams.page = Number(page);
+      reportParams.pageSize = Number(pageSize);
+    }
+    
+    const { data, total } = await counterpartyReportService.getAllCounterpartyMasterDetails(reportParams);
+
+    console.log('Counterparty Master Report Service returned:');
+    console.log('Data length:', data.length);
+    console.log('Total:', total);
+
+    // Handle export formats
+    if (format === 'csv' || format === 'excel' || format === 'pdf') {
+      const fileBuffer = await reportExporter.exportCounterpartyMaster(format, data);
+      res.setHeader('Content-Disposition', `attachment; filename=counterparty_master_report.${format === 'excel' ? 'xlsx' : format}`);
+      res.setHeader('Content-Type', reportExporter.getMimeType(format));
+      return res.send(fileBuffer);
+    }
+
+    // Default: return JSON (paginated if page/pageSize provided, otherwise all data)
+    const response = { data, total };
+    if (page && pageSize) {
+      response.page = Number(page);
+      response.pageSize = Number(pageSize);
+    }
+    res.json(response);
+  } catch (err) {
+    console.error('Counterparty Master Report Error:', err);
+    res.status(500).json({ error: 'Failed to generate Counterparty Master report', details: err.message });
+  }
+};
+
 // GET /api/reports/buyback
 exports.getBuybackReport = async (req, res) => {
   try {

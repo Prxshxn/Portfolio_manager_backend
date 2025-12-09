@@ -257,6 +257,152 @@ exports.export = async (format, data) => {
   throw new Error('Unsupported export format');
 };
 
+// Counterparty Master Report Export Columns
+const COUNTERPARTY_MASTER_COLUMNS = [
+  { key: 'counterparty_type', label: 'Counterparty Type' },
+  { key: 'cux_number', label: 'CUX Number' },
+  { key: 'title', label: 'Title' },
+  { key: 'short_name', label: 'Short Name' },
+  { key: 'long_name', label: 'Long Name' },
+  { key: 'company_name', label: 'Company Name' },
+  { key: 'id_type', label: 'ID Type' },
+  { key: 'nic_number', label: 'NIC Number' },
+  { key: 'registration_number', label: 'Registration Number' },
+  { key: 'tin_number', label: 'TIN Number' },
+  { key: 'vat_number', label: 'VAT Number' },
+  { key: 'address', label: 'Address' },
+  { key: 'telephone', label: 'Telephone' },
+  { key: 'email', label: 'Email' },
+  { key: 'mobile', label: 'Mobile' },
+  { key: 'custodian_bank', label: 'Custodian Bank' },
+  { key: 'cds_account', label: 'CDS Account' }
+];
+
+exports.exportCounterpartyMaster = async (format, data) => {
+  if (format === 'csv') {
+    const parser = new Parser({ 
+      fields: COUNTERPARTY_MASTER_COLUMNS.map(col => ({ label: col.label, value: col.key }))
+    });
+    return parser.parse(data);
+  }
+  
+  if (format === 'excel') {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Counterparty Master');
+    
+    // Set column headers
+    sheet.columns = COUNTERPARTY_MASTER_COLUMNS.map(col => ({ 
+      header: col.label, 
+      key: col.key,
+      width: 20
+    }));
+    
+    // Style header row
+    sheet.getRow(1).font = { bold: true };
+    sheet.getRow(1).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFE0E0E0' }
+    };
+    sheet.getRow(1).alignment = { vertical: 'middle', horizontal: 'center' };
+    
+    // Add data rows
+    sheet.addRows(data);
+    
+    // Auto-fit columns
+    sheet.columns.forEach(column => {
+      let maxLength = 0;
+      column.eachCell({ includeEmpty: true }, (cell) => {
+        const columnLength = cell.value ? cell.value.toString().length : 10;
+        if (columnLength > maxLength) {
+          maxLength = columnLength;
+        }
+      });
+      column.width = maxLength < 10 ? 10 : maxLength > 50 ? 50 : maxLength + 2;
+    });
+    
+    return workbook.xlsx.writeBuffer();
+  }
+  
+  if (format === 'pdf') {
+    const doc = new PDFDocument({ margin: 30, size: 'A4', layout: 'landscape' });
+    const buffers = [];
+    doc.on('data', buffers.push.bind(buffers));
+    doc.on('end', () => {});
+    
+    // Title
+    doc.fontSize(20).font('Helvetica-Bold').text('Counterparty Master Report', { align: 'center' });
+    doc.moveDown(1);
+    
+    // Table columns
+    const columns = [
+      { key: 'counterparty_type', label: 'Type', width: 50 },
+      { key: 'cux_number', label: 'CUX', width: 60 },
+      { key: 'short_name', label: 'Short Name', width: 80 },
+      { key: 'long_name', label: 'Long Name', width: 100 },
+      { key: 'nic_number', label: 'NIC', width: 70 },
+      { key: 'email', label: 'Email', width: 100 },
+      { key: 'telephone', label: 'Phone', width: 70 },
+      { key: 'address', label: 'Address', width: 120 }
+    ];
+    
+    // Draw header
+    let y = doc.y;
+    const rowHeight = 25;
+    const startX = doc.page.margins.left;
+    let x = startX;
+    
+    doc.rect(startX, y, columns.reduce((sum, col) => sum + col.width, 0), rowHeight)
+       .fillAndStroke('#f0f0f0', '#000000');
+    doc.fillColor('#000000').fontSize(9).font('Helvetica-Bold');
+    
+    columns.forEach(col => {
+      doc.text(col.label, x + 4, y + 6, { width: col.width - 8 });
+      x += col.width;
+    });
+    
+    y += rowHeight;
+    
+    // Draw rows
+    data.forEach((row, index) => {
+      if (y + rowHeight > doc.page.height - doc.page.margins.bottom) {
+        doc.addPage();
+        y = doc.page.margins.top + 20;
+        x = startX;
+        doc.rect(startX, y, columns.reduce((sum, col) => sum + col.width, 0), rowHeight)
+           .fillAndStroke('#f0f0f0', '#000000');
+        doc.fillColor('#000000').fontSize(9).font('Helvetica-Bold');
+        columns.forEach(col => {
+          doc.text(col.label, x + 4, y + 6, { width: col.width - 8 });
+          x += col.width;
+        });
+        y += rowHeight;
+        x = startX;
+      }
+      
+      doc.fontSize(8).font('Helvetica');
+      columns.forEach(col => {
+        const value = String(row[col.key] || '');
+        doc.text(value.substring(0, 30), x + 4, y + 6, { width: col.width - 8 });
+        x += col.width;
+      });
+      y += rowHeight;
+      x = startX;
+    });
+    
+    doc.end();
+    
+    return await new Promise(resolve => {
+      doc.on('end', () => {
+        const pdfData = Buffer.concat(buffers);
+        resolve(pdfData);
+      });
+    });
+  }
+  
+  throw new Error('Unsupported export format');
+};
+
 exports.getMimeType = (format) => {
   if (format === 'csv') return 'text/csv';
   if (format === 'excel') return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
