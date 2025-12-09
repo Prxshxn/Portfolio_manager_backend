@@ -208,6 +208,18 @@ module.exports = {
       res.status(500).json({ success: false, error: err.message || err });
     }
   },
+  updateIsin: async (req, res) => {
+    const id = req.params.id;
+    try {
+      const result = await IsinMaster.update(id, req.body);
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ success: false, error: 'ISIN not found' });
+      }
+      res.json({ success: true, message: 'ISIN updated successfully' });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message || err });
+    }
+  },
   /**
    * Save Gsec transaction to gsec table
    * POST /api/gsec
