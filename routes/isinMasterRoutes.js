@@ -7,6 +7,7 @@ router.get('/', isinMasterController.getAllIsins);
 router.get('/search', isinMasterController.searchIsins);
 
 router.get('/:id', isinMasterController.getIsinById);
+router.put('/:id', isinMasterController.updateIsin);
 
 // Get previous and next coupon dates for an ISIN
 router.get('/:isin/coupon-dates', isinMasterController.getCouponDates);
