@@ -10,7 +10,26 @@ const CounterpartyIndividual = {
     const [rows] = await db.query('SELECT * FROM counterparty_master_individual WHERE id = ?', [id]);
     return rows[0] || null;
   },
+  checkNicExists: async (nicNumber, excludeId = null) => {
+    if (!nicNumber) return false;
+    let sql = 'SELECT id FROM counterparty_master_individual WHERE id_number = ?';
+    const params = [nicNumber];
+    if (excludeId) {
+      sql += ' AND id != ?';
+      params.push(excludeId);
+    }
+    const [rows] = await db.query(sql, params);
+    return rows.length > 0;
+  },
   create: async (data) => {
+    // Check if NIC number already exists
+    if (data.id_number) {
+      const nicExists = await CounterpartyIndividual.checkNicExists(data.id_number);
+      if (nicExists) {
+        throw new Error('NIC number already exists. Please use a different NIC number.');
+      }
+    }
+    
     // Generate CUX number if not provided
     const cuxNumber = data.cux_number || await generateCuxNumber('individual');
     
@@ -40,6 +59,14 @@ const CounterpartyIndividual = {
     return { ...result, cux_number: cuxNumber };
   },
   update: async (id, data) => {
+    // Check if NIC number already exists (excluding current record)
+    if (data.id_number) {
+      const nicExists = await CounterpartyIndividual.checkNicExists(data.id_number, id);
+      if (nicExists) {
+        throw new Error('NIC number already exists. Please use a different NIC number.');
+      }
+    }
+    
     const sql = `UPDATE counterparty_master_individual SET
       title = ?, short_name = ?, long_name = ?, id_type = ?, id_number = ?,
       house_number = ?, street_name = ?, province = ?, postal_code = ?, city = ?,
