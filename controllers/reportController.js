@@ -52,7 +52,8 @@ exports.getGsecReport = async (req, res) => {
 
     // Handle export formats
     if (format === 'csv' || format === 'excel' || format === 'pdf') {
-      const fileBuffer = await reportExporter.export(format, data);
+      // Use portfolio-specific exporter so all portfolio fields are included
+      const fileBuffer = await reportExporter.exportPortfolio(format, data);
       res.setHeader('Content-Disposition', `attachment; filename=gsec_report.${format === 'excel' ? 'xlsx' : format}`);
       res.setHeader('Content-Type', reportExporter.getMimeType(format));
       return res.send(fileBuffer);
@@ -103,6 +104,19 @@ exports.getPortfolioReport = async (req, res) => {
       portfolio
     };
     
+    // Handle export formats - skip pagination to export all data
+    if (format === 'csv' || format === 'excel' || format === 'pdf') {
+      // Don't apply pagination for exports - get all data
+      const { data } = await portfolioReportService.getPortfolioReport(reportParams);
+      console.log('Portfolio Report Export - Data length:', data.length);
+      
+      // Use portfolio-specific exporter to include all portfolio fields
+      const fileBuffer = await reportExporter.exportPortfolio(format, data);
+      res.setHeader('Content-Disposition', `attachment; filename=portfolio_report.${format === 'excel' ? 'xlsx' : format}`);
+      res.setHeader('Content-Type', reportExporter.getMimeType(format));
+      return res.send(fileBuffer);
+    }
+    
     // Only add pagination if provided (for regular display)
     if (page && pageSize) {
       reportParams.page = Number(page);
@@ -114,14 +128,6 @@ exports.getPortfolioReport = async (req, res) => {
     console.log('Portfolio Report Service returned:');
     console.log('Data length:', data.length);
     console.log('Total:', total);
-
-    // Handle export formats
-    if (format === 'csv' || format === 'excel' || format === 'pdf') {
-      const fileBuffer = await reportExporter.export(format, data);
-      res.setHeader('Content-Disposition', `attachment; filename=portfolio_report.${format === 'excel' ? 'xlsx' : format}`);
-      res.setHeader('Content-Type', reportExporter.getMimeType(format));
-      return res.send(fileBuffer);
-    }
 
     // Default: return JSON (paginated if page/pageSize provided, otherwise all data)
     const response = { data, total };
