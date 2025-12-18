@@ -52,8 +52,8 @@ exports.getGsecReport = async (req, res) => {
 
     // Handle export formats
     if (format === 'csv' || format === 'excel' || format === 'pdf') {
-      // Use portfolio-specific exporter so all portfolio fields are included
-      const fileBuffer = await reportExporter.exportPortfolio(format, data);
+      // Use GSec exporter so all GSec report fields are included
+      const fileBuffer = await reportExporter.export(format, data);
       res.setHeader('Content-Disposition', `attachment; filename=gsec_report.${format === 'excel' ? 'xlsx' : format}`);
       res.setHeader('Content-Type', reportExporter.getMimeType(format));
       return res.send(fileBuffer);

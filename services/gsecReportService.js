@@ -374,6 +374,7 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
 
     return {
       id: row.id,
+      product_type: 'GSec',
       portfolio: row.portfolio,
       custodian: row.custodian || '',
       deal_number: row.deal_number || '',

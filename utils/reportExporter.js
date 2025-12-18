@@ -13,8 +13,8 @@ function formatDate(val) {
   }
 }
 
-// Columns for GSec-style reports (GSec, Buyback, etc.)
 const EXPORT_COLUMNS = [
+  { key: 'product_type', label: 'Product Type' },
   { key: 'portfolio', label: 'Portfolio' },
   { key: 'custodian', label: 'Custodian' },
   { key: 'deal_number', label: 'Deal Number' },
