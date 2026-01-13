@@ -14,6 +14,7 @@ function formatDate(val) {
 }
 
 const EXPORT_COLUMNS = [
+  { key: 'product_type', label: 'Product Type' },
   { key: 'portfolio', label: 'Portfolio' },
   { key: 'custodian', label: 'Custodian' },
   { key: 'deal_number', label: 'Deal Number' },
@@ -31,7 +32,29 @@ const EXPORT_COLUMNS = [
   { key: 'wap', label: 'WAP' },
   { key: 'repo_collateral', label: 'Repo Collateral' },
   { key: 'sell_back', label: 'Sell Back' },
-  { key: 'counterparty', label: 'Counterparty' }
+  { key: 'counterparty', label: 'Counterparty' },
+  { key: 'transaction_type', label: 'Transaction Type' }
+];
+
+// Columns for Portfolio report exports – mirror the on-screen Portfolio report
+const PORTFOLIO_EXPORT_COLUMNS = [
+  { key: 'product_type', label: 'Product Type' },
+  { key: 'deal_number', label: 'Deal Number' },
+  { key: 'value_date', label: 'Value Date' },
+  { key: 'trade_date', label: 'Trade Date' },
+  { key: 'isin', label: 'ISIN' },
+  { key: 'portfolio', label: 'Portfolio' },
+  { key: 'counterparty', label: 'Counterparty' },
+  { key: 'transaction_type', label: 'Transaction Type' },
+  { key: 'face_value', label: 'Face Value' },
+  { key: 'clean_price', label: 'Clean Price' },
+  { key: 'dirty_price', label: 'Dirty Price' },
+  { key: 'settlement_amount', label: 'Settlement Amount' },
+  { key: 'maturity_amount', label: 'Maturity Amount' },
+  { key: 'amount', label: 'Amount' },
+  { key: 'maturity_date', label: 'Maturity Date' },
+  { key: 'status', label: 'Status' },
+  { key: 'currency', label: 'Currency' }
 ];
 
 function formatNumber2(val) {
@@ -94,6 +117,43 @@ function preprocessExportData(data) {
       }
       mapped[col.key] = val !== undefined && val !== null ? val : '';
     });
+    return mapped;
+  });
+}
+
+// Pre-processing specifically for Portfolio report exports
+function preprocessPortfolioExportData(data) {
+  return data.map(row => {
+    const mapped = {};
+
+    PORTFOLIO_EXPORT_COLUMNS.forEach(col => {
+      let val = row[col.key];
+
+      // Date fields - check if already formatted (contains dashes in DD-MM-YYYY format)
+      if (['value_date', 'trade_date', 'maturity_date'].includes(col.key)) {
+        // If already formatted as string (DD-MM-YYYY), use as-is, otherwise format
+        if (val && typeof val === 'string' && val.match(/^\d{2}-\d{2}-\d{4}$/)) {
+          // Already formatted, use as-is
+        } else {
+          val = formatDate(val);
+        }
+      }
+
+      // Numeric fields - check if already formatted (contains commas)
+      if (
+        ['face_value', 'clean_price', 'dirty_price', 'settlement_amount', 'maturity_amount', 'amount'].includes(col.key)
+      ) {
+        // If already formatted with commas, use as-is, otherwise format
+        if (val && typeof val === 'string' && val.includes(',')) {
+          // Already formatted, use as-is
+        } else {
+          val = formatNumber2(val);
+        }
+      }
+
+      mapped[col.key] = val !== undefined && val !== null ? val : '';
+    });
+
     return mapped;
   });
 }
@@ -254,6 +314,273 @@ exports.export = async (format, data) => {
       });
     });
   }
+  throw new Error('Unsupported export format');
+};
+
+// Portfolio report export (Excel/CSV/PDF) – uses portfolio-specific columns
+exports.exportPortfolio = async (format, data) => {
+  // Debug: Log first row to see what fields are available
+  if (data && data.length > 0) {
+    console.log('Portfolio Export - First row fields:', Object.keys(data[0]));
+    console.log('Portfolio Export - First row sample:', JSON.stringify(data[0], null, 2));
+  }
+  
+  const processedData = preprocessPortfolioExportData(data);
+
+  if (format === 'csv') {
+    const parser = new Parser({
+      fields: PORTFOLIO_EXPORT_COLUMNS.map(col => ({ label: col.label, value: col.key }))
+    });
+    return parser.parse(processedData);
+  }
+
+  if (format === 'excel') {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Portfolio Report');
+    sheet.columns = PORTFOLIO_EXPORT_COLUMNS.map(col => ({
+      header: col.label,
+      key: col.key
+    }));
+    sheet.addRows(processedData);
+    return workbook.xlsx.writeBuffer();
+  }
+
+  if (format === 'pdf') {
+    const doc = new PDFDocument({ margin: 30, size: 'A4', layout: 'landscape' });
+    const buffers = [];
+    doc.on('data', buffers.push.bind(buffers));
+    doc.on('end', () => {});
+
+    // Title
+    doc.fontSize(20).font('Helvetica-Bold').text('Portfolio Report', { align: 'center' });
+    doc.moveDown(1);
+
+    // Simple table layout reusing the same columns
+    const columns = PORTFOLIO_EXPORT_COLUMNS.map(col => ({
+      key: col.key,
+      label: col.label,
+      width: 70,
+      align: ['face_value', 'clean_price', 'dirty_price', 'settlement_amount', 'maturity_amount', 'amount'].includes(col.key)
+        ? 'right'
+        : 'left'
+    }));
+
+    const maxWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+    const totalWidth = columns.reduce((sum, col) => sum + col.width, 0);
+    if (totalWidth > maxWidth) {
+      const scale = maxWidth / totalWidth;
+      columns.forEach(col => {
+        col.width = Math.floor(col.width * scale);
+      });
+    }
+
+    const rowHeight = 20;
+    const cellPadding = 4;
+    const startX = doc.page.margins.left;
+
+    function drawHeader(y) {
+      const headerWidth = columns.reduce((sum, col) => sum + col.width, 0);
+      doc.rect(startX, y, headerWidth, rowHeight).fillAndStroke('#f0f0f0', '#000000');
+      doc.fillColor('#000000').fontSize(9).font('Helvetica-Bold');
+
+      let x = startX;
+      columns.forEach(col => {
+        doc.text(col.label, x + cellPadding, y + 5, {
+          width: col.width - 2 * cellPadding,
+          align: col.align
+        });
+        x += col.width;
+      });
+      return y + rowHeight;
+    }
+
+    function drawRows(startY) {
+      let y = startY;
+      processedData.forEach((row, index) => {
+        if (y + rowHeight > doc.page.height - doc.page.margins.bottom) {
+          doc.addPage();
+          y = drawHeader(doc.page.margins.top);
+        }
+
+        const rowWidth = columns.reduce((sum, col) => sum + col.width, 0);
+        if (index % 2 === 1) {
+          doc.rect(startX, y, rowWidth, rowHeight).fill('#f8f8f8');
+        }
+
+        doc.font('Helvetica').fontSize(8).fillColor('#000000');
+        let x = startX;
+        columns.forEach(col => {
+          const text = row[col.key] !== undefined ? String(row[col.key]) : '';
+          doc.text(text, x + cellPadding, y + 5, {
+            width: col.width - 2 * cellPadding,
+            align: col.align
+          });
+          x += col.width;
+        });
+
+        doc.rect(startX, y, rowWidth, rowHeight).stroke('#cccccc');
+        y += rowHeight;
+      });
+    }
+
+    const headerY = drawHeader(doc.page.margins.top);
+    drawRows(headerY);
+
+    doc.end();
+    return await new Promise(resolve => {
+      doc.on('end', () => {
+        const pdfData = Buffer.concat(buffers);
+        resolve(pdfData);
+      });
+    });
+  }
+
+  throw new Error('Unsupported export format');
+};
+
+// Counterparty Master Report Export Columns
+const COUNTERPARTY_MASTER_COLUMNS = [
+  { key: 'counterparty_type', label: 'Counterparty Type' },
+  { key: 'cux_number', label: 'CUX Number' },
+  { key: 'title', label: 'Title' },
+  { key: 'short_name', label: 'Short Name' },
+  { key: 'long_name', label: 'Long Name' },
+  { key: 'company_name', label: 'Company Name' },
+  { key: 'id_type', label: 'ID Type' },
+  { key: 'nic_number', label: 'NIC Number' },
+  { key: 'registration_number', label: 'Registration Number' },
+  { key: 'tin_number', label: 'TIN Number' },
+  { key: 'vat_number', label: 'VAT Number' },
+  { key: 'address', label: 'Address' },
+  { key: 'telephone', label: 'Telephone' },
+  { key: 'email', label: 'Email' },
+  { key: 'mobile', label: 'Mobile' },
+  { key: 'custodian_bank', label: 'Custodian Bank' },
+  { key: 'cds_account', label: 'CDS Account' }
+];
+
+exports.exportCounterpartyMaster = async (format, data) => {
+  if (format === 'csv') {
+    const parser = new Parser({ 
+      fields: COUNTERPARTY_MASTER_COLUMNS.map(col => ({ label: col.label, value: col.key }))
+    });
+    return parser.parse(data);
+  }
+  
+  if (format === 'excel') {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Counterparty Master');
+    
+    // Set column headers
+    sheet.columns = COUNTERPARTY_MASTER_COLUMNS.map(col => ({ 
+      header: col.label, 
+      key: col.key,
+      width: 20
+    }));
+    
+    // Style header row
+    sheet.getRow(1).font = { bold: true };
+    sheet.getRow(1).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFE0E0E0' }
+    };
+    sheet.getRow(1).alignment = { vertical: 'middle', horizontal: 'center' };
+    
+    // Add data rows
+    sheet.addRows(data);
+    
+    // Auto-fit columns
+    sheet.columns.forEach(column => {
+      let maxLength = 0;
+      column.eachCell({ includeEmpty: true }, (cell) => {
+        const columnLength = cell.value ? cell.value.toString().length : 10;
+        if (columnLength > maxLength) {
+          maxLength = columnLength;
+        }
+      });
+      column.width = maxLength < 10 ? 10 : maxLength > 50 ? 50 : maxLength + 2;
+    });
+    
+    return workbook.xlsx.writeBuffer();
+  }
+  
+  if (format === 'pdf') {
+    const doc = new PDFDocument({ margin: 30, size: 'A4', layout: 'landscape' });
+    const buffers = [];
+    doc.on('data', buffers.push.bind(buffers));
+    doc.on('end', () => {});
+    
+    // Title
+    doc.fontSize(20).font('Helvetica-Bold').text('Counterparty Master Report', { align: 'center' });
+    doc.moveDown(1);
+    
+    // Table columns
+    const columns = [
+      { key: 'counterparty_type', label: 'Type', width: 50 },
+      { key: 'cux_number', label: 'CUX', width: 60 },
+      { key: 'short_name', label: 'Short Name', width: 80 },
+      { key: 'long_name', label: 'Long Name', width: 100 },
+      { key: 'nic_number', label: 'NIC', width: 70 },
+      { key: 'email', label: 'Email', width: 100 },
+      { key: 'telephone', label: 'Phone', width: 70 },
+      { key: 'address', label: 'Address', width: 120 }
+    ];
+    
+    // Draw header
+    let y = doc.y;
+    const rowHeight = 25;
+    const startX = doc.page.margins.left;
+    let x = startX;
+    
+    doc.rect(startX, y, columns.reduce((sum, col) => sum + col.width, 0), rowHeight)
+       .fillAndStroke('#f0f0f0', '#000000');
+    doc.fillColor('#000000').fontSize(9).font('Helvetica-Bold');
+    
+    columns.forEach(col => {
+      doc.text(col.label, x + 4, y + 6, { width: col.width - 8 });
+      x += col.width;
+    });
+    
+    y += rowHeight;
+    
+    // Draw rows
+    data.forEach((row, index) => {
+      if (y + rowHeight > doc.page.height - doc.page.margins.bottom) {
+        doc.addPage();
+        y = doc.page.margins.top + 20;
+        x = startX;
+        doc.rect(startX, y, columns.reduce((sum, col) => sum + col.width, 0), rowHeight)
+           .fillAndStroke('#f0f0f0', '#000000');
+        doc.fillColor('#000000').fontSize(9).font('Helvetica-Bold');
+        columns.forEach(col => {
+          doc.text(col.label, x + 4, y + 6, { width: col.width - 8 });
+          x += col.width;
+        });
+        y += rowHeight;
+        x = startX;
+      }
+      
+      doc.fontSize(8).font('Helvetica');
+      columns.forEach(col => {
+        const value = String(row[col.key] || '');
+        doc.text(value.substring(0, 30), x + 4, y + 6, { width: col.width - 8 });
+        x += col.width;
+      });
+      y += rowHeight;
+      x = startX;
+    });
+    
+    doc.end();
+    
+    return await new Promise(resolve => {
+      doc.on('end', () => {
+        const pdfData = Buffer.concat(buffers);
+        resolve(pdfData);
+      });
+    });
+  }
+  
   throw new Error('Unsupported export format');
 };
 

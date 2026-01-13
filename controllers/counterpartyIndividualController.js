@@ -9,7 +9,21 @@ exports.createCounterpartyIndividual = async (req, res) => {
       ...req.body 
     });
   } catch (err) {
-    res.status(500).json({ error: err.message || err });
+    // Check if error is about duplicate NIC
+    if (err.message && err.message.includes('NIC number already exists')) {
+      return res.status(400).json({ 
+        error: err.message,
+        success: false 
+      });
+    }
+    // Check for MySQL duplicate entry error
+    if (err.code === 'ER_DUP_ENTRY' || err.errno === 1062) {
+      return res.status(400).json({ 
+        error: 'NIC number already exists. Please use a different NIC number.',
+        success: false 
+      });
+    }
+    res.status(500).json({ error: err.message || err, success: false });
   }
 };
 
@@ -41,6 +55,20 @@ exports.updateCounterpartyIndividual = async (req, res) => {
     const result = await CounterpartyIndividual.update(id, req.body);
     res.json({ success: true, message: 'Counterparty updated successfully', ...result });
   } catch (err) {
-    res.status(500).json({ error: err.message || err });
+    // Check if error is about duplicate NIC
+    if (err.message && err.message.includes('NIC number already exists')) {
+      return res.status(400).json({ 
+        error: err.message,
+        success: false 
+      });
+    }
+    // Check for MySQL duplicate entry error
+    if (err.code === 'ER_DUP_ENTRY' || err.errno === 1062) {
+      return res.status(400).json({ 
+        error: 'NIC number already exists. Please use a different NIC number.',
+        success: false 
+      });
+    }
+    res.status(500).json({ error: err.message || err, success: false });
   }
 };

@@ -521,5 +521,37 @@ module.exports = {
       console.error('Error in updateGsecTransactionStatus:', err);
       res.status(500).json({ success: false, error: err.message || 'Internal server error' });
     }
+  },
+  
+  /**
+   * Backfill ledger entries for final_approved GSEC transactions
+   * POST /api/isin-master/gsec/backfill-ledger-entries
+   * Optional body: { transactionId: <id> } to backfill specific transaction
+   */
+  backfillGsecLedgerEntries: async (req, res) => {
+    try {
+      const { transactionId } = req.body;
+      const Gsec = require('../models/gsec');
+      
+      const result = await Gsec.backfillLedgerEntries(transactionId);
+      
+      if (result.success) {
+        res.json({
+          success: true,
+          message: result.message,
+          processed: result.processed,
+          total: result.total,
+          errors: result.errors
+        });
+      } else {
+        res.status(500).json({
+          success: false,
+          error: result.error
+        });
+      }
+    } catch (err) {
+      console.error('Error in backfillGsecLedgerEntries:', err);
+      res.status(500).json({ success: false, error: err.message || 'Internal server error' });
+    }
   }
 };

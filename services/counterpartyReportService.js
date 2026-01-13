@@ -711,3 +711,170 @@ exports.getCounterpartyReport = async ({ counterparty, nicNumber, name, page, pa
     throw error;
   }
 };
+
+// Get all counterparty master details for comprehensive report
+exports.getAllCounterpartyMasterDetails = async ({ type, page, pageSize }) => {
+  try {
+    console.log(`[Counterparty Master Report] Fetching all counterparty details, type: ${type || 'all'}`);
+    
+    const queries = [];
+    const params = [];
+    
+    // Build queries for each type
+    if (!type || type === 'all' || type === 'individual') {
+      queries.push(`
+        SELECT 
+          CONCAT('i', id) AS unique_id,
+          'Individual' AS counterparty_type,
+          id AS cp_id,
+          cux_number,
+          title,
+          short_name,
+          long_name,
+          id_type,
+          id_number AS nic_number,
+          house_number,
+          street_name,
+          city,
+          province,
+          postal_code,
+          country,
+          telephone,
+          email,
+          mobile,
+          custodian_bank,
+          cds_account,
+          NULL AS company_name,
+          NULL AS registration_number,
+          NULL AS tin_number,
+          NULL AS vat_number
+        FROM counterparty_master_individual
+      `);
+    }
+    
+    if (!type || type === 'all' || type === 'joint') {
+      queries.push(`
+        SELECT 
+          CONCAT('j', id) AS unique_id,
+          'Joint' AS counterparty_type,
+          id AS cp_id,
+          cux_number,
+          title,
+          short_name,
+          long_name,
+          id_type,
+          NULL AS nic_number,
+          NULL AS house_number,
+          NULL AS street_name,
+          NULL AS city,
+          NULL AS province,
+          NULL AS postal_code,
+          NULL AS country,
+          NULL AS telephone,
+          NULL AS email,
+          NULL AS mobile,
+          custodian_bank,
+          cds_account,
+          NULL AS company_name,
+          NULL AS registration_number,
+          NULL AS tin_number,
+          NULL AS vat_number
+        FROM counterparty_master_joint
+      `);
+    }
+    
+    if (!type || type === 'all' || type === 'corporate') {
+      queries.push(`
+        SELECT 
+          CONCAT('c', id) AS unique_id,
+          'Corporate' AS counterparty_type,
+          id AS cp_id,
+          cux_number,
+          NULL AS title,
+          short_name,
+          long_name,
+          NULL AS id_type,
+          NULL AS nic_number,
+          NULL AS house_number,
+          NULL AS street_name,
+          city,
+          state AS province,
+          postal_code,
+          country,
+          phone_number AS telephone,
+          email,
+          NULL AS mobile,
+          custodian_bank,
+          cds_account,
+          company_name,
+          registration_number,
+          tin_number,
+          vat_number
+        FROM counterparty_master_corporate
+      `);
+    }
+    
+    if (queries.length === 0) {
+      return { data: [], total: 0 };
+    }
+    
+    const combinedQuery = queries.join(' UNION ALL ');
+    
+    // Get total count
+    const countQuery = `SELECT COUNT(*) as total FROM (${combinedQuery}) AS all_counterparties`;
+    const [countResult] = await db.query(countQuery);
+    const total = countResult[0]?.total || 0;
+    
+    // Apply pagination if provided
+    let dataQuery = combinedQuery;
+    let finalParams = [];
+    if (page && pageSize) {
+      const offset = (page - 1) * pageSize;
+      dataQuery = `${combinedQuery} ORDER BY counterparty_type, short_name LIMIT ? OFFSET ?`;
+      finalParams = [parseInt(pageSize), offset];
+    } else {
+      dataQuery = `${combinedQuery} ORDER BY counterparty_type, short_name`;
+    }
+    
+    const [rows] = await db.query(dataQuery, finalParams);
+    
+    // Format the results
+    const formattedResults = rows.map(row => ({
+      unique_id: row.unique_id || '',
+      counterparty_type: row.counterparty_type || '',
+      cux_number: row.cux_number || '',
+      title: row.title || '',
+      short_name: row.short_name || '',
+      long_name: row.long_name || '',
+      company_name: row.company_name || '',
+      id_type: row.id_type || '',
+      nic_number: row.nic_number || '',
+      registration_number: row.registration_number || '',
+      tin_number: row.tin_number || '',
+      vat_number: row.vat_number || '',
+      address: [
+        row.house_number,
+        row.street_name,
+        row.city,
+        row.province,
+        row.postal_code,
+        row.country
+      ].filter(Boolean).join(', ') || '',
+      telephone: row.telephone || '',
+      email: row.email || '',
+      mobile: row.mobile || '',
+      custodian_bank: row.custodian_bank || '',
+      cds_account: row.cds_account || ''
+    }));
+    
+    console.log(`[Counterparty Master Report] Returning ${formattedResults.length} results (total: ${total})`);
+    
+    return {
+      data: formattedResults,
+      total
+    };
+  } catch (error) {
+    console.error('[Counterparty Master Report] Error:', error);
+    throw error;
+  }
+};

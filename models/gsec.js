@@ -820,6 +820,7 @@ const Gsec = {
     const currentApprovalLevel = currentTx[0].current_approval_level || 1;
     let newApprovalLevel = currentApprovalLevel;
     let newStatus = data.status;
+    let finalApproval = false;
     
     if (data.status === 'approved') {
       // Advance to next approval level based on CURRENT approval level
@@ -835,6 +836,7 @@ const Gsec = {
         // Back office final approved -> mark as final_approved
         newApprovalLevel = 3; // Stay at final
         newStatus = 'final_approved';
+        finalApproval = true;
       }
     } else if (data.status === 'rejected') {
       // Reset to front office on rejection
@@ -864,6 +866,111 @@ const Gsec = {
     
     try {
       const [result] = await db.query(sql, values);
+      
+      // If finally approved, create ledger entries
+      if (finalApproval) {
+        try {
+          // Fetch the full transaction details
+          const [updatedTx] = await db.query('SELECT * FROM gsec WHERE id = ?', [id]);
+          if (updatedTx && updatedTx.length > 0) {
+            const transaction = updatedTx[0];
+            
+            // Check if ledger entries already exist for this deal
+            const [existingEntries] = await db.query(
+              'SELECT COUNT(*) as cnt FROM ledger_entries WHERE deal_number = ?',
+              [transaction.deal_number]
+            );
+            
+            if (existingEntries[0].cnt === 0) {
+              // No existing entries, create them
+              const ledgerController = require('../controllers/ledgerController');
+              
+              // Determine the amount to use
+              // For Buy transactions, use settlement_amount; for Sell, also use settlement_amount
+              const amount = Number(transaction.settlement_amount || transaction.face_value || 0);
+              
+              // Determine account codes based on transaction type using account mapping service
+              const accountMapping = require('../services/accountMappingService');
+              let drAccount, crAccount, description;
+              
+              if (transaction.transaction_type === 'Buy') {
+                // Buy: Debit Investment Asset (TBonds), Credit Cash/Bank
+                drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_ASSET_TBONDS);
+                // Try to get settlement account from settlement_mode, otherwise use default
+                if (transaction.settlement_mode) {
+                  try {
+                    const [settlementAccount] = await db.query(
+                      'SELECT ledger_account_code FROM settlement_accounts WHERE bank_payment_code = ? LIMIT 1',
+                      [transaction.settlement_mode]
+                    );
+                    if (settlementAccount && settlementAccount.length > 0 && settlementAccount[0].ledger_account_code) {
+                      crAccount = settlementAccount[0].ledger_account_code;
+                    } else {
+                      crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_DEFAULT_SETTLEMENT);
+                    }
+                  } catch (settlementError) {
+                    console.error('Error fetching settlement account:', settlementError);
+                    crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_DEFAULT_SETTLEMENT);
+                  }
+                } else {
+                  crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_DEFAULT_SETTLEMENT);
+                }
+                description = `GSec Purchase - Final Approval - ${transaction.deal_number}`;
+              } else if (transaction.transaction_type === 'Sell') {
+                // Sell: Debit Cash/Bank, Credit Investment Asset (TBonds)
+                // Try to get settlement account from settlement_mode, otherwise use default
+                if (transaction.settlement_mode) {
+                  try {
+                    const [settlementAccount] = await db.query(
+                      'SELECT ledger_account_code FROM settlement_accounts WHERE bank_payment_code = ? LIMIT 1',
+                      [transaction.settlement_mode]
+                    );
+                    if (settlementAccount && settlementAccount.length > 0 && settlementAccount[0].ledger_account_code) {
+                      drAccount = settlementAccount[0].ledger_account_code;
+                    } else {
+                      drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_DEFAULT_SETTLEMENT);
+                    }
+                  } catch (settlementError) {
+                    console.error('Error fetching settlement account:', settlementError);
+                    drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_DEFAULT_SETTLEMENT);
+                  }
+                } else {
+                  drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_DEFAULT_SETTLEMENT);
+                }
+                crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_ASSET_TBONDS);
+                description = `GSec Sale - Final Approval - ${transaction.deal_number}`;
+              } else {
+                // Unknown transaction type, skip ledger entry
+                console.warn(`Unknown transaction type: ${transaction.transaction_type}, skipping ledger entry`);
+                return result;
+              }
+              
+              // Post ledger entry
+              const ledgerResult = await ledgerController.postLedgerEntry({
+                date: transaction.value_date ? new Date(transaction.value_date).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10),
+                dr_account: drAccount,
+                cr_account: crAccount,
+                amount: amount,
+                deal_id: transaction.deal_number,
+                description: description
+              });
+              
+              if (!ledgerResult.success) {
+                console.error('Failed to post GSec ledger entry:', ledgerResult.error);
+                // Don't throw error, just log it so the status update still succeeds
+              } else {
+                console.log(`Successfully created ledger entries for GSEC transaction ${transaction.deal_number}`);
+              }
+            } else {
+              console.log(`Ledger entries already exist for deal ${transaction.deal_number}, skipping creation`);
+            }
+          }
+        } catch (err) {
+          console.error('Failed to post GSec ledger entry:', err);
+          // Don't throw error, just log it so the status update still succeeds
+        }
+      }
+      
       return result;
     } catch (error) {
       console.error('Error in updateStatus:', error);
@@ -968,10 +1075,14 @@ Gsec.advanceApprovalLevel = async (id) => {
   if (finalApproval) {
     try {
       const ledgerController = require('../controllers/ledgerController');
+      const accountMapping = require('../services/accountMappingService');
+      const drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_ASSET_TBONDS);
+      const crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_DEFAULT_SETTLEMENT);
+      
       await ledgerController.postLedgerEntry({
         date: new Date().toISOString().slice(0, 10),
-        dr_account: '1-034-01-01-01', // Asset TBonds
-        cr_account: '1-666-01-01-01', // Asset Seylan Bank 123 A/C
+        dr_account: drAccount,
+        cr_account: crAccount,
         amount: Number(updated[0].face_value),
         deal_id: updated[0].deal_number,
         description: 'GSec Purchase - Final Approval'
@@ -988,6 +1099,151 @@ Gsec.getTransactionsByPortfolio = async (portfolioId) => {
   const sql = "SELECT * FROM gsec WHERE portfolio = ? AND transaction_type = 'Buy' AND status = 'final_approved'";
   const [rows] = await db.query(sql, [portfolioId]);
   return rows;
+};
+
+/**
+ * Backfill ledger entries for final_approved GSEC transactions that don't have ledger entries
+ * This function can be called to fix missing ledger entries for existing transactions
+ */
+Gsec.backfillLedgerEntries = async (transactionId = null) => {
+  try {
+    const ledgerController = require('../controllers/ledgerController');
+    
+    // Build query to find final_approved transactions without ledger entries
+    let query = `
+      SELECT g.* 
+      FROM gsec g
+      WHERE g.status = 'final_approved'
+        AND NOT EXISTS (
+          SELECT 1 FROM ledger_entries le 
+          WHERE le.deal_number = g.deal_number
+        )
+    `;
+    let params = [];
+    
+    // If specific transaction ID provided, filter by it
+    if (transactionId) {
+      query += ' AND g.id = ?';
+      params.push(transactionId);
+    }
+    
+    const [transactions] = await db.query(query, params);
+    
+    if (transactions.length === 0) {
+      return {
+        success: true,
+        message: transactionId 
+          ? 'Transaction already has ledger entries or is not final_approved'
+          : 'No transactions found that need ledger entries',
+        processed: 0
+      };
+    }
+    
+    let processed = 0;
+    let errors = [];
+    
+    for (const transaction of transactions) {
+      try {
+        // Determine the amount to use
+        const amount = Number(transaction.settlement_amount || transaction.face_value || 0);
+        
+        if (amount === 0) {
+          errors.push(`Transaction ${transaction.deal_number}: Amount is zero, skipping`);
+          continue;
+        }
+        
+        // Determine account codes based on transaction type using account mapping service
+        const accountMapping = require('../services/accountMappingService');
+        let drAccount, crAccount, description;
+        
+        if (transaction.transaction_type === 'Buy') {
+          // Buy: Debit Investment Asset (TBonds), Credit Cash/Bank
+          drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_ASSET_TBONDS);
+          // Try to get settlement account from settlement_mode, otherwise use default
+          if (transaction.settlement_mode) {
+            try {
+              const [settlementAccount] = await db.query(
+                'SELECT ledger_account_code FROM settlement_accounts WHERE bank_payment_code = ? LIMIT 1',
+                [transaction.settlement_mode]
+              );
+              if (settlementAccount && settlementAccount.length > 0 && settlementAccount[0].ledger_account_code) {
+                crAccount = settlementAccount[0].ledger_account_code;
+              } else {
+                crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_DEFAULT_SETTLEMENT);
+              }
+            } catch (settlementError) {
+              console.error('Error fetching settlement account:', settlementError);
+              crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_DEFAULT_SETTLEMENT);
+            }
+          } else {
+            crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_DEFAULT_SETTLEMENT);
+          }
+          description = `GSec Purchase - Final Approval - ${transaction.deal_number}`;
+        } else if (transaction.transaction_type === 'Sell') {
+          // Sell: Debit Cash/Bank, Credit Investment Asset (TBonds)
+          // Try to get settlement account from settlement_mode, otherwise use default
+          if (transaction.settlement_mode) {
+            try {
+              const [settlementAccount] = await db.query(
+                'SELECT ledger_account_code FROM settlement_accounts WHERE bank_payment_code = ? LIMIT 1',
+                [transaction.settlement_mode]
+              );
+              if (settlementAccount && settlementAccount.length > 0 && settlementAccount[0].ledger_account_code) {
+                drAccount = settlementAccount[0].ledger_account_code;
+              } else {
+                drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_DEFAULT_SETTLEMENT);
+              }
+            } catch (settlementError) {
+              console.error('Error fetching settlement account:', settlementError);
+              drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_DEFAULT_SETTLEMENT);
+            }
+          } else {
+            drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_DEFAULT_SETTLEMENT);
+          }
+          crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_ASSET_TBONDS);
+          description = `GSec Sale - Final Approval - ${transaction.deal_number}`;
+        } else {
+          errors.push(`Transaction ${transaction.deal_number}: Unknown transaction type ${transaction.transaction_type}, skipping`);
+          continue;
+        }
+        
+        // Post ledger entry
+        const ledgerResult = await ledgerController.postLedgerEntry({
+          date: transaction.value_date ? new Date(transaction.value_date).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10),
+          dr_account: drAccount,
+          cr_account: crAccount,
+          amount: amount,
+          deal_id: transaction.deal_number,
+          description: description
+        });
+        
+        if (!ledgerResult.success) {
+          errors.push(`Transaction ${transaction.deal_number}: ${ledgerResult.error}`);
+        } else {
+          processed++;
+          console.log(`Successfully created ledger entries for GSEC transaction ${transaction.deal_number}`);
+        }
+      } catch (err) {
+        errors.push(`Transaction ${transaction.deal_number}: ${err.message}`);
+        console.error(`Error processing transaction ${transaction.deal_number}:`, err);
+      }
+    }
+    
+    return {
+      success: true,
+      message: `Processed ${processed} transaction(s)`,
+      processed,
+      total: transactions.length,
+      errors: errors.length > 0 ? errors : undefined
+    };
+  } catch (error) {
+    console.error('Error in backfillLedgerEntries:', error);
+    return {
+      success: false,
+      error: error.message,
+      processed: 0
+    };
+  }
 };
 
 // Get maturities by date (without deal status filtering as requested)

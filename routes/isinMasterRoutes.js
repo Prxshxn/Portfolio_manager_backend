@@ -235,4 +235,28 @@ router.put('/gsec/:id', isinMasterController.updateGsecTransaction);
 // Update Gsec transaction status (approve/reject)
 router.put('/gsec/:id/status', isinMasterController.updateGsecTransactionStatus);
 
+/**
+ * @swagger
+ * /api/isin-master/gsec/backfill-ledger-entries:
+ *   post:
+ *     summary: Backfill ledger entries for final_approved GSEC transactions
+ *     tags: [ISIN Master]
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               transactionId:
+ *                 type: integer
+ *                 description: Optional - specific transaction ID to backfill. If not provided, all final_approved transactions without ledger entries will be processed.
+ *     responses:
+ *       200:
+ *         description: Ledger entries backfilled successfully
+ *       500:
+ *         description: Internal server error
+ */
+router.post('/gsec/backfill-ledger-entries', isinMasterController.backfillGsecLedgerEntries);
+
 module.exports = router;

@@ -10,6 +10,7 @@ router.get('/portfolio', reportController.getPortfolioReport);
 
 // Counterparty report endpoint
 router.get('/counterparty', reportController.getCounterpartyReport);
+router.get('/counterparty-master', reportController.getCounterpartyMasterReport);
 
 // Buyback report endpoint
 router.get('/buyback', reportController.getBuybackReport);
