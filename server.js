@@ -68,6 +68,8 @@ const userRoutes = require('./routes/userRoutes');
 const authRoutes = require('./routes/authRoutes');
 const transactionRoutes = require('./routes/transactions');
 const accountingRoutes = require('./routes/accounting');
+const accountMappingRoutes = require('./routes/accountMappingRoutes');
+const chartOfAccountsRoutes = require('./routes/chartOfAccountsRoutes');
 const isinMasterRoutes = require('./routes/isinMasterRoutes');
 const markToMarketRoutes = require('./routes/markToMarketRoutes'); // FIXED: Correct path
 
@@ -93,6 +95,8 @@ app.use('/api/money-market-deals', moneyMarketDealsRoutes);
 app.use('/api/maturity', maturityRoutes);
 app.use('/api/repo-deals', repoRoutes);
 app.use('/api/mark-to-market', markToMarketRoutes); // FIXED: Mark-to-Market routes mounted
+app.use('/api/account-mappings', accountMappingRoutes);
+app.use('/api/chart-of-accounts', chartOfAccountsRoutes);
 
 // Add a direct register endpoint that will definitely work
 app.post('/api/auth/register', async (req, res) => {

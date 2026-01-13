@@ -415,9 +415,14 @@ router.put('/:deal_number', async (req, res) => {
           coaAccount = coaRows[0];
         }
           
-        const [lendingControlAccounts] = await pool.query("SELECT * FROM chart_of_accounts WHERE account_code = '1-315-01-01-01'");
+        // Get account codes from mapping service
+        const accountMapping = require('../services/accountMappingService');
+        const lendingControlCode = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.MM_LENDING_CONTROL);
+        const loanLiabilityCode = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.MM_LOAN_LIABILITY);
+        
+        const [lendingControlAccounts] = await pool.query("SELECT * FROM chart_of_accounts WHERE account_code = ?", [lendingControlCode]);
         const lendingControl = lendingControlAccounts[0];
-        const [loanLiabilityAccounts] = await pool.query("SELECT * FROM chart_of_accounts WHERE account_code = '2-708-01-01-01'");
+        const [loanLiabilityAccounts] = await pool.query("SELECT * FROM chart_of_accounts WHERE account_code = ?", [loanLiabilityCode]);
         const loanLiability = loanLiabilityAccounts[0];
           
           if (!lendingControl || !loanLiability) {

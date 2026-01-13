@@ -3,6 +3,7 @@ const router = express.Router();
 const { getAllDeals } = require('../models/moneyMarketDealModel');
 const { getSystemDay, setSystemDay } = require('../models/systemDayModel');
 const { checkAuth, checkAdmin } = require('../middleware/auth');
+const accountMapping = require('../services/accountMappingService');
 // You may need to adjust this path to your ledger posting API
 const postLedgerEntry = require('../controllers/ledgerController').postLedgerEntry;
 console.log ("started eod page");
@@ -30,19 +31,23 @@ router.post('/ledger-post', checkAuth, checkAdmin, async (req, res) => {
       }
       const dealTypeLower = deal.deal_type.toLowerCase();
       if (dealTypeLower === 'lending') {
+        const drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.MM_LENDING_INTEREST_ASSET);
+        const crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.MM_LENDING_INTEREST_INCOME);
         await postLedgerEntry({
           date: systemDay,
-          dr_account: '1-201-01-01-01',
-          cr_account: '4-015-01-01-01',
+          dr_account: drAccount,
+          cr_account: crAccount,
           amount,
           deal_id: deal.id,
           description: 'Daily lending interest EOD',
         });
       } else if (deal.deal_type === 'borrowing') {
+        const drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.MM_BORROWING_INTEREST_EXPENSE);
+        const crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.MM_BORROWING_INTEREST_LIABILITY);
         await postLedgerEntry({
           date: systemDay,
-          dr_account: '6-288-01-01-01',
-          cr_account: '2-304-01-01-01',
+          dr_account: drAccount,
+          cr_account: crAccount,
           amount,
           deal_id: deal.id,
           description: 'Daily borrowing interest EOD',
@@ -85,19 +90,23 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
       }
       const dealTypeLower = deal.deal_type.toLowerCase();
       if (dealTypeLower === 'lending') {
+        const drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.MM_LENDING_INTEREST_ASSET);
+        const crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.MM_LENDING_INTEREST_INCOME);
         await postLedgerEntry({
           date: systemDay,
-          dr_account: '1-201-01-01-01',
-          cr_account: '4-015-01-01-01',
+          dr_account: drAccount,
+          cr_account: crAccount,
           amount,
           deal_id: deal.id,
           description: 'Daily lending interest EOD',
         });
       } else if (deal.deal_type === 'borrowing') {
+        const drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.MM_BORROWING_INTEREST_EXPENSE);
+        const crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.MM_BORROWING_INTEREST_LIABILITY);
         await postLedgerEntry({
           date: systemDay,
-          dr_account: '6-288-01-01-01',
-          cr_account: '2-304-01-01-01',
+          dr_account: drAccount,
+          cr_account: crAccount,
           amount,
           deal_id: deal.id,
           description: 'Daily borrowing interest EOD',
@@ -123,10 +132,13 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
           continue;
         }
         console.log('Posting GSec ledger for deal:', deal.deal_number, amount);
+        const accountMapping = require('../services/accountMappingService');
+        const drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_ACCRUAL_ASSET);
+        const crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_ACCRUAL_INCOME);
         await postLedgerEntry({
           date: systemDay,
-          dr_account: '1-212-01-01-01',
-          cr_account: '3-004-01-01-01',
+          dr_account: drAccount,
+          cr_account: crAccount,
           amount,
           deal_id: deal.deal_number,
           description: `GSec Daily Accrual for Deal ${deal.deal_number}`
