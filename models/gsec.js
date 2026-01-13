@@ -894,9 +894,27 @@ const Gsec = {
               let drAccount, crAccount, description;
               
               if (transaction.transaction_type === 'Buy') {
-                // Buy: Debit Investment Asset (TBonds), Credit Cash/Bank
-                drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_ASSET_TBONDS);
-                // Try to get settlement account from settlement_mode, otherwise use default
+                // Buy: Compound entry with Treasury Bonds (net) and Accrued Interest
+                const settlementAmount = Number(transaction.settlement_amount || transaction.face_value || 0);
+                const accruedInterest = Number(transaction.accrued_interest || 0);
+                const netAmount = settlementAmount - accruedInterest;
+                
+                // Get account codes using mapping service (with fallback to new chart of accounts codes)
+                let treasuryBondsAccount, accruedInterestAccount;
+                try {
+                  treasuryBondsAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_TRADING_ACCOUNT);
+                } catch (err) {
+                  treasuryBondsAccount = '131-101-350-098-44'; // Fallback: Treasury Bonds - Trading A/c
+                }
+                
+                try {
+                  accruedInterestAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_ACCRUED_INTEREST_PAID);
+                } catch (err) {
+                  accruedInterestAccount = '131-101-350-128-44'; // Fallback: Accrued Coupon Interest Paid at Purchase
+                }
+                
+                // Try to get settlement account from settlement_mode, otherwise use default Seylan Bank
+                let bankAccount = '131-101-410-164-44'; // Default: Seylan Bank A/C - 0860-13374197-001
                 if (transaction.settlement_mode) {
                   try {
                     const [settlementAccount] = await db.query(
@@ -904,18 +922,43 @@ const Gsec = {
                       [transaction.settlement_mode]
                     );
                     if (settlementAccount && settlementAccount.length > 0 && settlementAccount[0].ledger_account_code) {
-                      crAccount = settlementAccount[0].ledger_account_code;
-                    } else {
-                      crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_DEFAULT_SETTLEMENT);
+                      bankAccount = settlementAccount[0].ledger_account_code;
                     }
                   } catch (settlementError) {
                     console.error('Error fetching settlement account:', settlementError);
-                    crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_DEFAULT_SETTLEMENT);
+                    // Use default bank account
                   }
-                } else {
-                  crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_DEFAULT_SETTLEMENT);
                 }
-                description = `GSec Purchase - Final Approval - ${transaction.deal_number}`;
+                
+                // Create compound entry: Dr Treasury Bonds (net), Dr Accrued Interest, Cr Bank (full)
+                const ledgerResult = await ledgerController.postCompoundLedgerEntry({
+                  date: transaction.value_date ? new Date(transaction.value_date).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10),
+                  dr_accounts: [
+                    {
+                      account_code: treasuryBondsAccount,
+                      amount: netAmount,
+                      description: `GSec Purchase - Treasury Bonds - ${transaction.deal_number}`
+                    },
+                    {
+                      account_code: accruedInterestAccount,
+                      amount: accruedInterest,
+                      description: `GSec Purchase - Accrued Interest - ${transaction.deal_number}`
+                    }
+                  ],
+                  cr_account: bankAccount,
+                  deal_id: transaction.deal_number,
+                  description: `GSec Purchase - Final Approval - ${transaction.deal_number}`
+                });
+                
+                if (!ledgerResult.success) {
+                  console.error('Failed to post GSec compound ledger entry:', ledgerResult.error);
+                } else {
+                  console.log(`Successfully created compound ledger entries for GSEC Buy transaction ${transaction.deal_number}`);
+                  console.log(`  Treasury Bonds (net): ${netAmount}, Accrued Interest: ${accruedInterest}, Total: ${settlementAmount}`);
+                }
+                
+                // Skip the old single entry logic for Buy transactions
+                return result;
               } else if (transaction.transaction_type === 'Sell') {
                 // Sell: Debit Cash/Bank, Credit Investment Asset (TBonds)
                 // Try to get settlement account from settlement_mode, otherwise use default
@@ -1157,9 +1200,27 @@ Gsec.backfillLedgerEntries = async (transactionId = null) => {
         let drAccount, crAccount, description;
         
         if (transaction.transaction_type === 'Buy') {
-          // Buy: Debit Investment Asset (TBonds), Credit Cash/Bank
-          drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_ASSET_TBONDS);
-          // Try to get settlement account from settlement_mode, otherwise use default
+          // Buy: Compound entry with Treasury Bonds (net) and Accrued Interest
+          const settlementAmount = Number(transaction.settlement_amount || transaction.face_value || 0);
+          const accruedInterest = Number(transaction.accrued_interest || 0);
+          const netAmount = settlementAmount - accruedInterest;
+          
+          // Get account codes using mapping service (with fallback to new chart of accounts codes)
+          let treasuryBondsAccount, accruedInterestAccount;
+          try {
+            treasuryBondsAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_TRADING_ACCOUNT);
+          } catch (err) {
+            treasuryBondsAccount = '131-101-350-098-44'; // Fallback: Treasury Bonds - Trading A/c
+          }
+          
+          try {
+            accruedInterestAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_ACCRUED_INTEREST_PAID);
+          } catch (err) {
+            accruedInterestAccount = '131-101-350-128-44'; // Fallback: Accrued Coupon Interest Paid at Purchase
+          }
+          
+          // Try to get settlement account from settlement_mode, otherwise use default Seylan Bank
+          let bankAccount = '131-101-410-164-44'; // Default: Seylan Bank A/C - 0860-13374197-001
           if (transaction.settlement_mode) {
             try {
               const [settlementAccount] = await db.query(
@@ -1167,18 +1228,42 @@ Gsec.backfillLedgerEntries = async (transactionId = null) => {
                 [transaction.settlement_mode]
               );
               if (settlementAccount && settlementAccount.length > 0 && settlementAccount[0].ledger_account_code) {
-                crAccount = settlementAccount[0].ledger_account_code;
-              } else {
-                crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_DEFAULT_SETTLEMENT);
+                bankAccount = settlementAccount[0].ledger_account_code;
               }
             } catch (settlementError) {
               console.error('Error fetching settlement account:', settlementError);
-              crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_DEFAULT_SETTLEMENT);
+              // Use default bank account
             }
-          } else {
-            crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_DEFAULT_SETTLEMENT);
           }
-          description = `GSec Purchase - Final Approval - ${transaction.deal_number}`;
+          
+          // Create compound entry: Dr Treasury Bonds (net), Dr Accrued Interest, Cr Bank (full)
+          const ledgerResult = await ledgerController.postCompoundLedgerEntry({
+            date: transaction.value_date ? new Date(transaction.value_date).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10),
+            dr_accounts: [
+              {
+                account_code: treasuryBondsAccount,
+                amount: netAmount,
+                description: `GSec Purchase - Treasury Bonds - ${transaction.deal_number}`
+              },
+              {
+                account_code: accruedInterestAccount,
+                amount: accruedInterest,
+                description: `GSec Purchase - Accrued Interest - ${transaction.deal_number}`
+              }
+            ],
+            cr_account: bankAccount,
+            deal_id: transaction.deal_number,
+            description: `GSec Purchase - Final Approval - ${transaction.deal_number}`
+          });
+          
+          if (!ledgerResult.success) {
+            errors.push(`Transaction ${transaction.deal_number}: Failed to post compound ledger entry - ${ledgerResult.error}`);
+          } else {
+            processed++;
+            console.log(`Backfilled compound ledger entries for GSEC Buy transaction ${transaction.deal_number}`);
+            console.log(`  Treasury Bonds (net): ${netAmount}, Accrued Interest: ${accruedInterest}, Total: ${settlementAmount}`);
+          }
+          continue; // Skip the old single entry logic
         } else if (transaction.transaction_type === 'Sell') {
           // Sell: Debit Cash/Bank, Credit Investment Asset (TBonds)
           // Try to get settlement account from settlement_mode, otherwise use default
