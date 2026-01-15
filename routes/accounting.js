@@ -193,8 +193,8 @@ router.get('/general-ledger', auth, async (req, res) => {
              at.category as account_category,
              t.transaction_code, t.description as transaction_description
       FROM ledger_entries le
-      JOIN chart_of_accounts coa ON le.account_id = coa.id
-      JOIN account_types at ON coa.account_type_id = at.id
+      LEFT JOIN chart_of_accounts coa ON le.account_id = coa.id
+      LEFT JOIN account_types at ON coa.account_type_id = at.id
       LEFT JOIN transactions t ON le.deal_number = t.deal_number
       WHERE 1=1
     `;
@@ -205,8 +205,8 @@ router.get('/general-ledger', auth, async (req, res) => {
     const countQuery = `
       SELECT COUNT(*) as total 
       FROM ledger_entries le
-      JOIN chart_of_accounts coa ON le.account_id = coa.id
-      JOIN account_types at ON coa.account_type_id = at.id
+      LEFT JOIN chart_of_accounts coa ON le.account_id = coa.id
+      LEFT JOIN account_types at ON coa.account_type_id = at.id
       LEFT JOIN transactions t ON le.deal_number = t.deal_number
       WHERE 1=1
     `;
