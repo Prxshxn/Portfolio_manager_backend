@@ -45,21 +45,6 @@ const MAPPING_KEYS = {
   EXPENSE_ACCOUNT: 'EXPENSE_ACCOUNT'
 };
 
-// Default account codes (fallback if mapping not found in database)
-const DEFAULT_ACCOUNT_CODES = {
-  GSEC_ASSET_TBONDS: '1-034-01-01-01',
-  GSEC_DEFAULT_SETTLEMENT: '1-666-01-01-01',
-  GSEC_ACCRUAL_ASSET: '1-212-01-01-01',
-  GSEC_TRADING_ACCOUNT: '131-101-350-098-44', // Treasury Bonds - Trading A/c
-  GSEC_ACCRUED_INTEREST_PAID: '131-101-350-128-44', // Accrued Coupon Interest Paid at Purchase
-  GSEC_ACCRUAL_INCOME: '3-004-01-01-01',
-  MM_LENDING_CONTROL: '1-315-01-01-01',
-  MM_LOAN_LIABILITY: '2-708-01-01-01',
-  MM_LENDING_INTEREST_ASSET: '1-201-01-01-01',
-  MM_LENDING_INTEREST_INCOME: '4-015-01-01-01',
-  MM_BORROWING_INTEREST_EXPENSE: '6-288-01-01-01',
-  MM_BORROWING_INTEREST_LIABILITY: '2-304-01-01-01'
-};
 
 /**
  * Get account code by mapping key
@@ -68,7 +53,7 @@ const DEFAULT_ACCOUNT_CODES = {
  */
 async function getAccountCode(mappingKey) {
   try {
-    // First, try to get from account_mappings table
+    // Get from account_mappings table
     const [mappings] = await db.query(
       `SELECT account_code FROM account_mappings 
        WHERE mapping_key = ? AND is_active = TRUE 
@@ -80,19 +65,9 @@ async function getAccountCode(mappingKey) {
       return mappings[0].account_code;
     }
     
-    // Fallback to default account codes
-    if (DEFAULT_ACCOUNT_CODES[mappingKey]) {
-      console.warn(`Using default account code for ${mappingKey}: ${DEFAULT_ACCOUNT_CODES[mappingKey]}`);
-      return DEFAULT_ACCOUNT_CODES[mappingKey];
-    }
-    
-    throw new Error(`Account mapping not found for key: ${mappingKey}`);
+    throw new Error(`Account mapping not found for key: ${mappingKey}. Please configure the mapping in the account_mappings table.`);
   } catch (error) {
     console.error(`Error getting account code for ${mappingKey}:`, error);
-    // Final fallback to default
-    if (DEFAULT_ACCOUNT_CODES[mappingKey]) {
-      return DEFAULT_ACCOUNT_CODES[mappingKey];
-    }
     throw error;
   }
 }
