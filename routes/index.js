@@ -78,4 +78,7 @@ router.use('/fund-centre-master', require('./fundCentreMasterRoutes'));
 // Mount Issuer Master API
 router.use('/issuer-master', require('./issuerMasterRoutes'));
 
+// Mount Investment Approver Master API
+router.use('/investment-approver-master', require('./investmentApproverMasterRoutes'));
+
 module.exports = router;
