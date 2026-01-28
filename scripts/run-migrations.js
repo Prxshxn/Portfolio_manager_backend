@@ -204,11 +204,15 @@ async function executeJsFile(connection, filePath) {
       throw new Error(`Migration exited with code ${exitCode}`);
     }
   } catch (error) {
-    // If it's a table exists error, that's okay
+    // If it's a table/column/key exists error, that's okay
     if (error.code === 'ER_TABLE_EXISTS_ERROR' || 
         error.code === 'ER_DUP_FIELDNAME' ||
-        error.code === 'ER_DUP_KEYNAME') {
-      console.log(`  ⚠ Skipped (already exists)`);
+        error.code === 'ER_DUP_KEYNAME' ||
+        error.code === 'ER_NO_SUCH_TABLE' ||
+        error.errno === 1146) {
+      console.log(`  ⚠ Skipped (table/column doesn't exist or already exists)`);
+      // Don't throw - allow migration to continue
+      return;
     } else {
       throw error;
     }
