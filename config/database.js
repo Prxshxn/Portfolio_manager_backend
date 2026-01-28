@@ -26,19 +26,11 @@ const initDatabase = async () => {
     // Test connection
     const connection = await pool.getConnection();
     console.log('Database connection established successfully');
-    
-    // Create tables if they don't exist
-    await connection.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        username VARCHAR(255) UNIQUE NOT NULL,
-        password VARCHAR(255) NOT NULL,
-        role ENUM('user', 'authorizer', 'admin') NOT NULL DEFAULT 'user',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-    console.log('Users table verified/created');
-    
+
+    // IMPORTANT:
+    // Do not auto-create tables here. Schema must be managed via migrations (`npm run migrate`),
+    // otherwise environments can end up with partial / inconsistent schemas.
+
     connection.release();
   } catch (err) {
     console.error('Database initialization error:', err.message);

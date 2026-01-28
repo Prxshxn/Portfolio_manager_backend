@@ -9,6 +9,14 @@ class User {
       );
       return { id: result.insertId, username, role, allowed_tabs };
     } catch (error) {
+      // Backward compatibility: older DBs might not have allowed_tabs yet
+      if (error?.code === 'ER_BAD_FIELD_ERROR' && String(error?.sqlMessage || '').includes('allowed_tabs')) {
+        const [result] = await db.query(
+          'INSERT INTO users (username, password, role) VALUES (?, ?, ?)',
+          [username, password, role]
+        );
+        return { id: result.insertId, username, role, allowed_tabs: [] };
+      }
       console.error('Error creating user:', error);
       throw error;
     }
@@ -22,6 +30,10 @@ class User {
       );
       return true;
     } catch (error) {
+      // Backward compatibility: older DBs might not have allowed_tabs yet
+      if (error?.code === 'ER_BAD_FIELD_ERROR' && String(error?.sqlMessage || '').includes('allowed_tabs')) {
+        return false;
+      }
       console.error('Error updating allowed_tabs:', error);
       throw error;
     }
@@ -52,6 +64,11 @@ class User {
         allowed_tabs: row.allowed_tabs ? JSON.parse(row.allowed_tabs) : []
       }));
     } catch (error) {
+      // Backward compatibility: older DBs might not have allowed_tabs yet
+      if (error?.code === 'ER_BAD_FIELD_ERROR' && String(error?.sqlMessage || '').includes('allowed_tabs')) {
+        const [rows] = await db.query('SELECT id, username, role, created_at FROM users');
+        return rows.map(row => ({ ...row, allowed_tabs: [] }));
+      }
       console.error('Error getting all users:', error);
       throw error;
     }

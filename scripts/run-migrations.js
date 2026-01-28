@@ -106,7 +106,9 @@ async function runDeferredStatements(connection, deferredStatements) {
           error.code === 'ER_KEY_COLUMN_DOES_NOT_EXITS' ||
           error.code === 'ER_CANT_DROP_FIELD_OR_KEY' ||
           error.code === 'ER_FK_CANNOT_OPEN_PARENT' ||
-          error.errno === 1824
+          error.code === 'ER_NO_REFERENCED_ROW_2' || // Foreign key constraint fails - referenced rows don't exist
+          error.errno === 1824 || // ER_FK_CANNOT_OPEN_PARENT
+          error.errno === 1452 // ER_NO_REFERENCED_ROW_2
         ) {
           continue;
         }
@@ -134,7 +136,7 @@ async function runDeferredStatements(connection, deferredStatements) {
 }
 
 // Execute JS migration file
-async function executeJsFile(connection, filePath) {
+async function executeJsFile(connection, filePath, deferredStatements = []) {
   // Create a mock db object that uses our connection
   const mockDb = {
     query: async (sql, params) => {
@@ -147,6 +149,22 @@ async function executeJsFile(connection, filePath) {
             error.code === 'ER_DUP_FIELDNAME' ||
             error.code === 'ER_DUP_KEYNAME') {
           console.log(`  ⚠ Skipped (already exists)`);
+          return [[], []];
+        }
+        // Defer statements that depend on tables/columns created later
+        if (
+          error.code === 'ER_NO_SUCH_TABLE' ||
+          error.code === 'ER_BAD_FIELD_ERROR' ||
+          error.code === 'ER_KEY_COLUMN_DOES_NOT_EXITS' ||
+          error.code === 'ER_CANT_DROP_FIELD_OR_KEY' ||
+          error.code === 'ER_FK_CANNOT_OPEN_PARENT' ||
+          error.errno === 1824
+        ) {
+          // Extract SQL statement (handle both string and parameterized queries)
+          const sqlStatement = typeof sql === 'string' ? sql : sql.toString();
+          deferredStatements.push(sqlStatement);
+          console.log(`  ⏳ Deferred (dependency missing): ${error.message.substring(0, 80)}...`);
+          // Return empty result to allow migration to continue
           return [[], []];
         }
         throw error;
@@ -466,7 +484,7 @@ async function runMigrations() {
         if (file.ext === '.sql') {
           await executeSqlFile(connection, file.path, deferredStatements);
         } else if (file.ext === '.js') {
-          await executeJsFile(connection, file.path);
+          await executeJsFile(connection, file.path, deferredStatements);
         }
         
         await markMigrationRun(connection, file.name);

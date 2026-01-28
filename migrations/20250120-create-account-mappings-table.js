@@ -4,7 +4,7 @@ async function createAccountMappingsTable() {
   try {
     console.log('Creating account_mappings table...');
 
-    // Create account_mappings table
+    // Create account_mappings table WITHOUT foreign key first
     // Note: Using utf8mb4_0900_ai_ci collation to match chart_of_accounts table
     await db.query(`
       CREATE TABLE IF NOT EXISTS account_mappings (
@@ -15,7 +15,6 @@ async function createAccountMappingsTable() {
         is_active BOOLEAN DEFAULT TRUE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        FOREIGN KEY (account_code) REFERENCES chart_of_accounts(account_code) ON DELETE RESTRICT ON UPDATE CASCADE,
         INDEX idx_mapping_key (mapping_key),
         INDEX idx_account_code (account_code),
         INDEX idx_is_active (is_active)
@@ -23,40 +22,55 @@ async function createAccountMappingsTable() {
     `);
     console.log('Account mappings table created successfully');
 
-    // Insert default mappings (these will use the old account codes as defaults)
-    // Users can update these via API or admin interface
-    const defaultMappings = [
-      { key: 'GSEC_ASSET_TBONDS', code: '1-034-01-01-01', desc: 'GSEC Asset - Treasury Bonds' },
-      { key: 'GSEC_DEFAULT_SETTLEMENT', code: '1-666-01-01-01', desc: 'GSEC Default Settlement Account - Seylan Bank' },
-      { key: 'GSEC_ACCRUAL_ASSET', code: '1-212-01-01-01', desc: 'GSEC Daily Accrual Asset' },
-      { key: 'GSEC_ACCRUAL_INCOME', code: '3-004-01-01-01', desc: 'GSEC Daily Accrual Income' },
-      { key: 'MM_LENDING_CONTROL', code: '1-315-01-01-01', desc: 'Money Market Lending Control Account' },
-      { key: 'MM_LOAN_LIABILITY', code: '2-708-01-01-01', desc: 'Money Market Loan Liability Account' },
-      { key: 'MM_LENDING_INTEREST_ASSET', code: '1-201-01-01-01', desc: 'Money Market Lending Interest Asset' },
-      { key: 'MM_LENDING_INTEREST_INCOME', code: '4-015-01-01-01', desc: 'Money Market Lending Interest Income' },
-      { key: 'MM_BORROWING_INTEREST_EXPENSE', code: '6-288-01-01-01', desc: 'Money Market Borrowing Interest Expense' },
-      { key: 'MM_BORROWING_INTEREST_LIABILITY', code: '2-304-01-01-01', desc: 'Money Market Borrowing Interest Liability' }
-    ];
-
-    for (const mapping of defaultMappings) {
-      try {
-        await db.query(
-          `INSERT INTO account_mappings (mapping_key, account_code, description, is_active)
-           VALUES (?, ?, ?, TRUE)
-           ON DUPLICATE KEY UPDATE 
-             account_code = VALUES(account_code),
-             description = VALUES(description),
-             updated_at = NOW()`,
-          [mapping.key, mapping.code, mapping.desc]
-        );
-      } catch (err) {
-        // Ignore if account code doesn't exist yet (will be set up later)
-        console.log(`Skipping mapping ${mapping.key} - account code may not exist yet`);
+    // Note: We do NOT insert default mappings here because:
+    // 1. The account codes may not exist in chart_of_accounts yet
+    // 2. This would cause FK constraint errors when the constraint is added
+    // Default mappings should be added later via API or a separate script after chart_of_accounts is populated
+    
+    // Before adding FK constraint, check if chart_of_accounts exists and clean up invalid rows
+    try {
+      const [tables] = await db.query(`
+        SELECT TABLE_NAME 
+        FROM INFORMATION_SCHEMA.TABLES 
+        WHERE TABLE_SCHEMA = DATABASE() 
+        AND TABLE_NAME = 'chart_of_accounts'
+      `);
+      
+      if (tables.length > 0) {
+        // Table exists, remove any rows with invalid account_code references
+        const [invalidRows] = await db.query(`
+          SELECT am.id 
+          FROM account_mappings am
+          LEFT JOIN chart_of_accounts coa ON am.account_code = coa.account_code
+          WHERE coa.account_code IS NULL
+        `);
+        
+        if (invalidRows.length > 0) {
+          console.log(`Removing ${invalidRows.length} rows with invalid account_code references...`);
+          await db.query(`
+            DELETE am FROM account_mappings am
+            LEFT JOIN chart_of_accounts coa ON am.account_code = coa.account_code
+            WHERE coa.account_code IS NULL
+          `);
+        }
       }
+    } catch (err) {
+      // If chart_of_accounts doesn't exist, that's okay - FK will be deferred
+      console.log('Note: chart_of_accounts may not exist yet, FK constraint will be deferred');
     }
-
-    console.log('Default account mappings initialized');
-    console.log('Note: You can update these mappings via the API or admin interface after setting up your new chart of accounts');
+    
+    // Add foreign key constraint separately (will be deferred if chart_of_accounts doesn't exist)
+    // The migration runner will automatically defer this if chart_of_accounts doesn't exist yet
+    // OR if there are existing rows with invalid account_code references
+    await db.query(`
+      ALTER TABLE account_mappings
+      ADD CONSTRAINT fk_account_mappings_account_code
+      FOREIGN KEY (account_code) REFERENCES chart_of_accounts(account_code) 
+      ON DELETE RESTRICT ON UPDATE CASCADE
+    `);
+    console.log('Foreign key constraint added successfully');
+    
+    console.log('Note: Default account mappings should be added via API or admin interface after chart_of_accounts is populated');
 
   } catch (error) {
     console.error('Error creating account_mappings table:', error);
