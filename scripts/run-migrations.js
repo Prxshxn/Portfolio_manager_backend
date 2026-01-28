@@ -153,6 +153,109 @@ async function executeJsFile(connection, filePath) {
     pool: connection
   };
   
+  // Create a mock Sequelize queryInterface for migrations that use Sequelize
+  const mockQueryInterface = {
+    sequelize: {
+      query: async (sql, options) => {
+        try {
+          return await connection.query(sql);
+        } catch (error) {
+          if (error.code === 'ER_TABLE_EXISTS_ERROR' || 
+              error.code === 'ER_DUP_FIELDNAME' ||
+              error.code === 'ER_DUP_KEYNAME' ||
+              error.code === 'ER_NO_SUCH_TABLE') {
+            return [[], []];
+          }
+          throw error;
+        }
+      }
+    },
+    addColumn: async (tableName, columnName, options) => {
+      // Check if table exists first
+      const [tables] = await connection.query(`
+        SELECT TABLE_NAME 
+        FROM INFORMATION_SCHEMA.TABLES 
+        WHERE TABLE_SCHEMA = DATABASE() 
+        AND TABLE_NAME = ?
+      `, [tableName]);
+      
+      if (tables.length === 0) {
+        console.log(`  ⚠ Table ${tableName} does not exist, skipping column addition`);
+        return;
+      }
+      
+      // Check if column already exists
+      const [columns] = await connection.query(`
+        SELECT COLUMN_NAME 
+        FROM INFORMATION_SCHEMA.COLUMNS 
+        WHERE TABLE_SCHEMA = DATABASE() 
+        AND TABLE_NAME = ? 
+        AND COLUMN_NAME = ?
+      `, [tableName, columnName]);
+      
+      if (columns.length > 0) {
+        console.log(`  ⚠ Column ${columnName} already exists in ${tableName}`);
+        return;
+      }
+      
+      // Build ALTER TABLE statement
+      let type = options.type;
+      if (type && typeof type === 'object' && type.constructor && type.constructor.name) {
+        // Handle Sequelize types
+        const typeName = type.constructor.name;
+        if (typeName.includes('STRING')) {
+          type = `VARCHAR(${type.options?.length || 255})`;
+        } else if (typeName.includes('TEXT')) {
+          type = 'TEXT';
+        } else if (typeName.includes('INTEGER') || typeName.includes('INT')) {
+          type = 'INT';
+        } else if (typeName.includes('DECIMAL')) {
+          const precision = type.options?.precision || 10;
+          const scale = type.options?.scale || 2;
+          type = `DECIMAL(${precision},${scale})`;
+        } else if (typeName.includes('DATE')) {
+          type = 'DATE';
+        } else if (typeName.includes('DATETIME')) {
+          type = 'DATETIME';
+        } else if (typeName.includes('TIMESTAMP')) {
+          type = 'TIMESTAMP';
+        } else if (typeName.includes('JSON')) {
+          type = 'JSON';
+        } else {
+          type = 'VARCHAR(255)';
+        }
+      }
+      
+      let sql = `ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${type}`;
+      if (options.allowNull === false) sql += ' NOT NULL';
+      if (options.defaultValue !== undefined && options.defaultValue !== null) {
+        const defaultValue = typeof options.defaultValue === 'string' 
+          ? `'${options.defaultValue.replace(/'/g, "''")}'` 
+          : options.defaultValue;
+        sql += ` DEFAULT ${defaultValue}`;
+      }
+      if (options.after) sql += ` AFTER ${options.after}`;
+      
+      await connection.query(sql);
+    },
+    removeColumn: async (tableName, columnName) => {
+      // Check if table exists
+      const [tables] = await connection.query(`
+        SELECT TABLE_NAME 
+        FROM INFORMATION_SCHEMA.TABLES 
+        WHERE TABLE_SCHEMA = DATABASE() 
+        AND TABLE_NAME = ?
+      `, [tableName]);
+      
+      if (tables.length === 0) {
+        console.log(`  ⚠ Table ${tableName} does not exist, skipping column removal`);
+        return;
+      }
+      
+      await connection.query(`ALTER TABLE ${tableName} DROP COLUMN ${columnName}`);
+    }
+  };
+  
   // Store original modules
   const dbPath = path.resolve(__dirname, '../config/db.js');
   const databasePath = path.resolve(__dirname, '../config/database.js');
@@ -189,10 +292,27 @@ async function executeJsFile(connection, filePath) {
     // Execute the migration file
     const migrationModule = require(filePath);
     
-    // If migration exports a function, call it
-    if (typeof migrationModule === 'function') {
+    // Handle Sequelize-style migrations (exports { up, down })
+    if (migrationModule.up && typeof migrationModule.up === 'function') {
+      const Sequelize = {
+        STRING: (length) => ({ constructor: { name: 'STRING' }, options: { length: length || 255 } }),
+        TEXT: () => ({ constructor: { name: 'TEXT' } }),
+        INTEGER: () => ({ constructor: { name: 'INTEGER' } }),
+        INT: () => ({ constructor: { name: 'INT' } }),
+        DECIMAL: (precision, scale) => ({ constructor: { name: 'DECIMAL' }, options: { precision, scale } }),
+        DATE: () => ({ constructor: { name: 'DATE' } }),
+        DATETIME: () => ({ constructor: { name: 'DATETIME' } }),
+        TIMESTAMP: () => ({ constructor: { name: 'TIMESTAMP' } }),
+        JSON: () => ({ constructor: { name: 'JSON' } })
+      };
+      await migrationModule.up(mockQueryInterface, Sequelize);
+    }
+    // Handle direct function exports
+    else if (typeof migrationModule === 'function') {
       await migrationModule();
-    } else if (migrationModule.default && typeof migrationModule.default === 'function') {
+    } 
+    // Handle default exports
+    else if (migrationModule.default && typeof migrationModule.default === 'function') {
       await migrationModule.default();
     }
     
