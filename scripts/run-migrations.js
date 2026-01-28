@@ -46,7 +46,7 @@ async function markMigrationRun(connection, filename) {
 }
 
 // Execute SQL file
-async function executeSqlFile(connection, filePath) {
+async function executeSqlFile(connection, filePath, deferredStatements = []) {
   const sql = fs.readFileSync(filePath, 'utf8');
   const statements = sql
     .split(';')
@@ -61,11 +61,71 @@ async function executeSqlFile(connection, filePath) {
         // Ignore "table already exists" errors
         if (error.code === 'ER_TABLE_EXISTS_ERROR' || error.code === 'ER_DUP_FIELDNAME') {
           console.log(`  ⚠ Skipped (already exists): ${error.message.substring(0, 60)}...`);
+        } else if (
+          // Defer statements that depend on tables/columns created later
+          error.code === 'ER_NO_SUCH_TABLE' ||
+          error.code === 'ER_BAD_FIELD_ERROR' ||
+          error.code === 'ER_KEY_COLUMN_DOES_NOT_EXITS' || // mysql2's code for missing column in index
+          error.code === 'ER_CANT_DROP_FIELD_OR_KEY'
+        ) {
+          deferredStatements.push(statement);
+          console.log(`  ⏳ Deferred (dependency missing): ${error.message.substring(0, 80)}...`);
         } else {
           throw error;
         }
       }
     }
+  }
+}
+
+// Retry deferred statements (e.g., statements referencing tables/columns created later)
+async function runDeferredStatements(connection, deferredStatements) {
+  if (!deferredStatements.length) return;
+
+  console.log(`\n🧩 Retrying deferred statements: ${deferredStatements.length}`);
+  const maxPasses = 6;
+
+  for (let pass = 1; pass <= maxPasses && deferredStatements.length; pass++) {
+    let progress = 0;
+    console.log(`\n🔁 Deferred pass ${pass}/${maxPasses}...`);
+
+    // Iterate backwards so we can splice safely
+    for (let i = deferredStatements.length - 1; i >= 0; i--) {
+      const stmt = deferredStatements[i];
+      try {
+        await connection.query(stmt);
+        deferredStatements.splice(i, 1);
+        progress++;
+      } catch (error) {
+        // Keep deferring on dependency issues
+        if (
+          error.code === 'ER_NO_SUCH_TABLE' ||
+          error.code === 'ER_BAD_FIELD_ERROR' ||
+          error.code === 'ER_KEY_COLUMN_DOES_NOT_EXITS' ||
+          error.code === 'ER_CANT_DROP_FIELD_OR_KEY'
+        ) {
+          continue;
+        }
+        // For harmless duplicates, drop the statement
+        if (error.code === 'ER_TABLE_EXISTS_ERROR' || error.code === 'ER_DUP_FIELDNAME' || error.code === 'ER_DUP_KEYNAME') {
+          deferredStatements.splice(i, 1);
+          progress++;
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    console.log(`✓ Deferred progress this pass: ${progress}`);
+    if (progress === 0) break;
+  }
+
+  if (deferredStatements.length) {
+    console.log(`\n⚠ Unable to apply ${deferredStatements.length} deferred statements (dependencies still missing).`);
+    // Surface the first statement for debugging
+    console.log(`First remaining deferred statement:\n${deferredStatements[0]}`);
+  } else {
+    console.log('\n✅ All deferred statements applied.');
   }
 }
 
@@ -237,6 +297,7 @@ function extractDate(filename) {
 // Main migration runner
 async function runMigrations() {
   let connection;
+  const deferredStatements = [];
   
   try {
     console.log('🚀 Starting database migrations...\n');
@@ -275,7 +336,7 @@ async function runMigrations() {
         console.log(`▶  Running: ${file.name}`);
         
         if (file.ext === '.sql') {
-          await executeSqlFile(connection, file.path);
+          await executeSqlFile(connection, file.path, deferredStatements);
         } else if (file.ext === '.js') {
           await executeJsFile(connection, file.path);
         }
@@ -297,6 +358,9 @@ async function runMigrations() {
         }
       }
     }
+
+    // Retry deferred statements after all migrations
+    await runDeferredStatements(connection, deferredStatements);
     
     console.log('\n' + '='.repeat(50));
     console.log(`✅ Migration Summary:`);
