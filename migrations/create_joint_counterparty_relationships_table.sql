@@ -1,3 +1,4 @@
+-- Create table without foreign key first (FK will be added later if parent table exists)
 CREATE TABLE IF NOT EXISTS joint_counterparty_relationships (
   id INT AUTO_INCREMENT PRIMARY KEY,
   joint_counterparty_id INT NOT NULL,
@@ -17,8 +18,11 @@ CREATE TABLE IF NOT EXISTS joint_counterparty_relationships (
   email VARCHAR(255),
   mobile VARCHAR(50),
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (joint_counterparty_id) REFERENCES counterparty_master_joint(id) ON DELETE CASCADE,
   UNIQUE KEY unique_joint_counterparty_sequence (joint_counterparty_id, sequence_number),
   INDEX idx_joint_counterparty (joint_counterparty_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Add foreign key constraint separately (will be deferred if parent table doesn't exist)
+ALTER TABLE joint_counterparty_relationships 
+ADD CONSTRAINT fk_joint_counterparty_relationships_joint_id 
+FOREIGN KEY (joint_counterparty_id) REFERENCES counterparty_master_joint(id) ON DELETE CASCADE;

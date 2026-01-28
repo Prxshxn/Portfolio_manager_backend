@@ -66,7 +66,9 @@ async function executeSqlFile(connection, filePath, deferredStatements = []) {
           error.code === 'ER_NO_SUCH_TABLE' ||
           error.code === 'ER_BAD_FIELD_ERROR' ||
           error.code === 'ER_KEY_COLUMN_DOES_NOT_EXITS' || // mysql2's code for missing column in index
-          error.code === 'ER_CANT_DROP_FIELD_OR_KEY'
+          error.code === 'ER_CANT_DROP_FIELD_OR_KEY' ||
+          error.code === 'ER_FK_CANNOT_OPEN_PARENT' || // Foreign key parent table doesn't exist
+          error.errno === 1824 // ER_FK_CANNOT_OPEN_PARENT
         ) {
           deferredStatements.push(statement);
           console.log(`  ⏳ Deferred (dependency missing): ${error.message.substring(0, 80)}...`);
@@ -102,7 +104,9 @@ async function runDeferredStatements(connection, deferredStatements) {
           error.code === 'ER_NO_SUCH_TABLE' ||
           error.code === 'ER_BAD_FIELD_ERROR' ||
           error.code === 'ER_KEY_COLUMN_DOES_NOT_EXITS' ||
-          error.code === 'ER_CANT_DROP_FIELD_OR_KEY'
+          error.code === 'ER_CANT_DROP_FIELD_OR_KEY' ||
+          error.code === 'ER_FK_CANNOT_OPEN_PARENT' ||
+          error.errno === 1824
         ) {
           continue;
         }
