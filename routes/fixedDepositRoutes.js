@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const db = require('../config/database');
+const db = require('../config/db');
 const { checkAuth } = require('../middleware/auth');
 
 /**
@@ -8,6 +8,9 @@ const { checkAuth } = require('../middleware/auth');
  * GET /api/fixed-deposit/requests?status=Pending
  */
 router.get('/requests', checkAuth, async (req, res) => {
+  // #region agent log
+  fetch('http://127.0.0.1:7242/ingest/29dc6e6a-2fb8-4497-a57e-c480a1e8f80b',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'fixedDepositRoutes.js:10',message:'GET /requests entry',data:{status:req.query.status,queryParams:req.query},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B'})}).catch(()=>{});
+  // #endregion
   try {
     const { status } = req.query;
     
@@ -16,11 +19,11 @@ router.get('/requests', checkAuth, async (req, res) => {
         fd.*,
         cp.short_name as counterparty_name,
         cp.long_name as counterparty_long_name,
-        p.name as portfolio_name,
+        p.portfolio_name as portfolio_name,
         u.username as submitted_by_name
       FROM fixed_deposit_requests fd
       LEFT JOIN counterparty_master_corporate cp ON fd.counterparty_id = cp.id
-      LEFT JOIN portfolio_master p ON fd.portfolio_id = p.portfolio_id
+      LEFT JOIN portfolio_master p ON CAST(fd.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci = CAST(p.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci
       LEFT JOIN users u ON fd.submitted_by = u.id
       WHERE 1=1
     `;
@@ -28,18 +31,32 @@ router.get('/requests', checkAuth, async (req, res) => {
     const params = [];
     
     if (status && status !== 'All') {
-      query += ` AND fd.status = ?`;
+      // Handle case-insensitive status matching - use the table's collation
+      query += ` AND fd.status COLLATE utf8mb4_0900_ai_ci = ? COLLATE utf8mb4_0900_ai_ci`;
       params.push(status);
     }
     
     query += ` ORDER BY fd.created_at DESC`;
     
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/29dc6e6a-2fb8-4497-a57e-c480a1e8f80b',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'fixedDepositRoutes.js:35',message:'before db.query',data:{query:query,params:params},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B'})}).catch(()=>{});
+    // #endregion
+    
     const [requests] = await db.query(query, params);
     
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/29dc6e6a-2fb8-4497-a57e-c480a1e8f80b',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'fixedDepositRoutes.js:37',message:'after db.query',data:{requestsCount:requests.length,firstRequest:requests[0]||null,allRequestIds:requests.map(r=>r.id),allStatuses:requests.map(r=>r.status)},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B'})}).catch(()=>{});
+    // #endregion
+    
+    console.log(`Fetched ${requests.length} fixed deposit requests for status: ${status || 'All'}`);
     res.json(requests);
   } catch (error) {
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/29dc6e6a-2fb8-4497-a57e-c480a1e8f80b',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'fixedDepositRoutes.js:42',message:'GET /requests error',data:{error:error.message,stack:error.stack},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B'})}).catch(()=>{});
+    // #endregion
     console.error('Error fetching fixed deposit requests:', error);
-    res.status(500).json({ error: 'Failed to fetch fixed deposit requests' });
+    console.error('Error details:', error.message, error.stack);
+    res.status(500).json({ error: 'Failed to fetch fixed deposit requests', details: error.message });
   }
 });
 
@@ -56,7 +73,7 @@ router.get('/requests/:id', checkAuth, async (req, res) => {
         fd.*,
         cp.short_name as counterparty_name,
         cp.long_name as counterparty_long_name,
-        p.name as portfolio_name,
+        p.portfolio_name as portfolio_name,
         u.username as submitted_by_name
       FROM fixed_deposit_requests fd
       LEFT JOIN counterparty_master_corporate cp ON fd.counterparty_id = cp.id
@@ -142,9 +159,10 @@ router.post('/requests', checkAuth, async (req, res) => {
         counterparty_type, counterparty_id, contact_person, request_remarks,
         instrument_type, isin, currency, requested_amount, target_yield,
         value_date, maturity_date,
-        approval_category, approval_limit_required, approver_notes,
+        approver_id, approver_name, approver_designation, approval_category,
+        approval_limit_required, approver_notes,
         submitted_by, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
       [
         portfolio || null,
         book || null,
@@ -162,6 +180,9 @@ router.post('/requests', checkAuth, async (req, res) => {
         targetYield ? parseFloat(targetYield) : null,
         valueDate,
         maturityDate,
+        approverId || null,
+        approverName || null,
+        approverDesignation || null,
         approvalCategoryValue,
         approvalLimitRequired || null,
         approverNotes || null,

@@ -1,4 +1,4 @@
-const db = require('../config/database');
+const db = require('../config/db');
 
 async function createFixedDepositRequestsTable() {
   try {
@@ -24,10 +24,12 @@ async function createFixedDepositRequestsTable() {
         value_date DATE,
         maturity_date DATE,
         
+        approver_id INT,
+        approver_name VARCHAR(255),
+        approver_designation VARCHAR(255),
         approval_category VARCHAR(100),
         approval_limit_required VARCHAR(255),
         approver_notes TEXT,
-        approval_history TEXT,
         
         submitted_by INT,
         approved_by INT,
@@ -44,6 +46,7 @@ async function createFixedDepositRequestsTable() {
         INDEX idx_counterparty_id (counterparty_id),
         INDEX idx_portfolio_id (portfolio_id),
         INDEX idx_submitted_by (submitted_by),
+        INDEX idx_approver_id (approver_id),
         INDEX idx_created_at (created_at)
         
         -- Foreign keys removed to avoid type mismatch issues
