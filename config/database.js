@@ -26,11 +26,11 @@ const initDatabase = async () => {
     // Test connection
     const connection = await pool.getConnection();
     console.log('Database connection established successfully');
-
+    
     // IMPORTANT:
     // Do not auto-create tables here. Schema must be managed via migrations (`npm run migrate`),
     // otherwise environments can end up with partial / inconsistent schemas.
-
+    
     connection.release();
   } catch (err) {
     console.error('Database initialization error:', err.message);

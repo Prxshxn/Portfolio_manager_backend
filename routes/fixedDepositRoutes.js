@@ -104,21 +104,37 @@ router.post('/requests', checkAuth, async (req, res) => {
       valueDate,
       maturityDate,
       approvalCategory,
+      approverId,
+      approverName,
+      approverDesignation,
       approvalLimitRequired,
       approverNotes
     } = req.body;
     
-    // Find counterparty ID from counterparty name/unique_id
+    // Find counterparty ID from issuer_id (from Issuer Master)
     let counterpartyId = null;
     if (counterpartyName) {
-      const [cpRows] = await db.query(
-        `SELECT id FROM counterparty_master_corporate WHERE unique_id = ? OR short_name = ? LIMIT 1`,
-        [counterpartyName, counterpartyName]
+      // First try to find in issuer_master by issuer_id
+      const [issuerRows] = await db.query(
+        `SELECT id FROM issuer_master WHERE issuer_id = ? LIMIT 1`,
+        [counterpartyName]
       );
-      if (cpRows.length > 0) {
-        counterpartyId = cpRows[0].id;
+      if (issuerRows.length > 0) {
+        counterpartyId = issuerRows[0].id;
+      } else {
+        // Fallback to counterparty_master_corporate
+        const [cpRows] = await db.query(
+          `SELECT id FROM counterparty_master_corporate WHERE issuer_id = ? OR id = ? LIMIT 1`,
+          [counterpartyName, counterpartyName]
+        );
+        if (cpRows.length > 0) {
+          counterpartyId = cpRows[0].id;
+        }
       }
     }
+    
+    // Use approverName if provided, otherwise fall back to approvalCategory
+    const approvalCategoryValue = approverName || approvalCategory || null;
     
     const [result] = await db.query(
       `INSERT INTO fixed_deposit_requests (
@@ -146,7 +162,7 @@ router.post('/requests', checkAuth, async (req, res) => {
         targetYield ? parseFloat(targetYield) : null,
         valueDate,
         maturityDate,
-        approvalCategory || null,
+        approvalCategoryValue,
         approvalLimitRequired || null,
         approverNotes || null,
         userId
