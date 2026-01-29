@@ -32,7 +32,10 @@ async function createCorporateCounterpartyTable() {
         treasury_contact_phone VARCHAR(50),
         custodian_bank VARCHAR(200),
         cds_account VARCHAR(100),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        cux_number VARCHAR(50),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_corporate_cux (cux_number),
+        INDEX idx_corporate_short_name (short_name)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `;
     

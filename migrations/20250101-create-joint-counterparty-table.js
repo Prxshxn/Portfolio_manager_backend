@@ -20,8 +20,10 @@ async function createJointCounterpartyTable() {
         mobile VARCHAR(30),
         custodian_bank VARCHAR(200),
         cds_account VARCHAR(100),
+        cux_number VARCHAR(50),
         created_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_joint_cux (cux_number),
         INDEX idx_short_name (short_name)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `;
