@@ -478,8 +478,7 @@ const Gsec = {
    */
   getRecent: async () => {
     // Query with JOIN to get counterparty short names
-    // Counterparty IDs are stored with prefixes: c1, i1, j2, etc.
-    // Extract numeric part to match with counterparty table IDs
+    // Use counterparty_id to match with counterparty table IDs
     const sql = `
       SELECT 
         g.*,
@@ -487,15 +486,12 @@ const Gsec = {
           corp.short_name,
           ind.short_name,
           joint.short_name,
-          g.counterparty
+          CONCAT('ID:', g.counterparty_id)
         ) as counterparty_name
       FROM gsec g
-      LEFT JOIN counterparty_master_corporate corp ON 
-        (g.counterparty LIKE 'c%' AND SUBSTRING(g.counterparty, 2) = corp.id)
-      LEFT JOIN counterparty_master_individual ind ON 
-        (g.counterparty LIKE 'i%' AND SUBSTRING(g.counterparty, 2) = ind.id)
-      LEFT JOIN counterparty_master_joint joint ON 
-        (g.counterparty LIKE 'j%' AND SUBSTRING(g.counterparty, 2) = joint.id)
+      LEFT JOIN counterparty_master_corporate corp ON g.counterparty_id = corp.id
+      LEFT JOIN counterparty_master_individual ind ON g.counterparty_id = ind.id
+      LEFT JOIN counterparty_master_joint joint ON g.counterparty_id = joint.id
       ORDER BY g.id DESC 
       LIMIT 150
     `;
