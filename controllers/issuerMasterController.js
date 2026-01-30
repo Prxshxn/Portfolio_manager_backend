@@ -42,7 +42,15 @@ exports.updateIssuer = async (req, res) => {
     console.log('Updating issuer with ID:', id);
     console.log('Update data:', req.body);
     
-    await IssuerMaster.update(id, req.body);
+    // Validate request body
+    if (!req.body || Object.keys(req.body).length === 0) {
+      return res.status(400).json({ error: 'Request body is required' });
+    }
+    
+    const updateResult = await IssuerMaster.update(id, req.body);
+    console.log('Update result:', updateResult);
+    
+    // Fetch the updated issuer
     const updatedIssuer = await IssuerMaster.getById(id);
     
     if (!updatedIssuer) {
@@ -56,9 +64,16 @@ exports.updateIssuer = async (req, res) => {
       message: error.message,
       code: error.code,
       sqlState: error.sqlState,
-      sqlMessage: error.sqlMessage
+      sqlMessage: error.sqlMessage,
+      stack: error.stack
     });
-    res.status(500).json({ 
+    
+    // Return appropriate status code based on error type
+    const statusCode = error.message.includes('required') || error.message.includes('not found') 
+      ? 400 
+      : 500;
+    
+    res.status(statusCode).json({ 
       error: 'Failed to update issuer',
       details: error.message 
     });
