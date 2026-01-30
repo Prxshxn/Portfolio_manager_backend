@@ -1,4 +1,3 @@
--- Create holiday_calendar table
 CREATE TABLE IF NOT EXISTS `holiday_calendar` (
   `id` INT(11) NOT NULL AUTO_INCREMENT,
   `holiday_date` DATE NOT NULL,
@@ -9,4 +8,3 @@ CREATE TABLE IF NOT EXISTS `holiday_calendar` (
   UNIQUE KEY `unique_holiday_date` (`holiday_date`),
   KEY `idx_holiday_date` (`holiday_date`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-

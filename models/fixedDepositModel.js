@@ -80,20 +80,21 @@ const FixedDepositRequest = {
   create: async (data) => {
     try {
       const sql = `INSERT INTO fixed_deposit_requests (
-        portfolio_id, book, module, request_no, status,
+        portfolio_id, book, module, request_no, file_number, status,
         counterparty_type, counterparty_id, contact_person, request_remarks,
         instrument_type, isin, currency, requested_amount, target_yield,
         value_date, maturity_date,
         approver_id, approver_name, approver_designation, approval_category,
         approval_limit_required, approver_notes,
         submitted_by, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`;
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`;
 
       const values = [
         data.portfolio_id || null,
         data.book || null,
         data.module || 'Pre approval',
         data.request_no,
+        data.file_number || null,
         data.status || 'Draft',
         data.counterparty_type || 'Bank',
         data.counterparty_id || null,
@@ -136,7 +137,7 @@ const FixedDepositRequest = {
 
       // Build dynamic update query
       const fields = [
-        'portfolio_id', 'book', 'module', 'request_no', 'status',
+        'portfolio_id', 'book', 'module', 'request_no', 'file_number', 'status',
         'counterparty_type', 'counterparty_id', 'contact_person', 'request_remarks',
         'instrument_type', 'isin', 'currency', 'requested_amount', 'target_yield',
         'value_date', 'maturity_date',

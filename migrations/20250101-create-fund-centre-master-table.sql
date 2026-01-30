@@ -1,4 +1,3 @@
--- Create fund_centre_master table
 CREATE TABLE IF NOT EXISTS `fund_centre_master` (
   `id` INT NOT NULL AUTO_INCREMENT,
   `name` VARCHAR(255) NOT NULL,

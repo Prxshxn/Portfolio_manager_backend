@@ -108,6 +108,7 @@ router.post('/requests', checkAuth, async (req, res) => {
       book,
       module,
       requestNo,
+      fileNumber,
       status,
       counterpartyType,
       counterpartyName,
@@ -155,19 +156,20 @@ router.post('/requests', checkAuth, async (req, res) => {
     
     const [result] = await db.query(
       `INSERT INTO fixed_deposit_requests (
-        portfolio_id, book, module, request_no, status,
+        portfolio_id, book, module, request_no, file_number, status,
         counterparty_type, counterparty_id, contact_person, request_remarks,
         instrument_type, isin, currency, requested_amount, target_yield,
         value_date, maturity_date,
         approver_id, approver_name, approver_designation, approval_category,
         approval_limit_required, approver_notes,
         submitted_by, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
       [
         portfolio || null,
         book || null,
         module || 'Pre approval',
         requestNo,
+        fileNumber || null,
         status || 'Draft',
         counterpartyType || 'Bank',
         counterpartyId,
@@ -211,6 +213,7 @@ router.put('/requests/:id', checkAuth, async (req, res) => {
     const {
       portfolio,
       book,
+      fileNumber,
       status,
       counterpartyName,
       contactPerson,
@@ -244,6 +247,7 @@ router.put('/requests/:id', checkAuth, async (req, res) => {
     
     if (portfolio !== undefined) { updateFields.push('portfolio_id = ?'); updateValues.push(portfolio); }
     if (book !== undefined) { updateFields.push('book = ?'); updateValues.push(book); }
+    if (fileNumber !== undefined) { updateFields.push('file_number = ?'); updateValues.push(fileNumber); }
     if (status !== undefined) { updateFields.push('status = ?'); updateValues.push(status); }
     if (counterpartyId !== null) { updateFields.push('counterparty_id = ?'); updateValues.push(counterpartyId); }
     if (contactPerson !== undefined) { updateFields.push('contact_person = ?'); updateValues.push(contactPerson); }
