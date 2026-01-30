@@ -38,12 +38,30 @@ exports.createIssuer = async (req, res) => {
 
 exports.updateIssuer = async (req, res) => {
   try {
-    await IssuerMaster.update(req.params.id, req.body);
-    const updatedIssuer = await IssuerMaster.getById(req.params.id);
+    const id = req.params.id;
+    console.log('Updating issuer with ID:', id);
+    console.log('Update data:', req.body);
+    
+    await IssuerMaster.update(id, req.body);
+    const updatedIssuer = await IssuerMaster.getById(id);
+    
+    if (!updatedIssuer) {
+      return res.status(404).json({ error: 'Issuer not found after update' });
+    }
+    
     res.json(updatedIssuer);
   } catch (error) {
     console.error('Error updating issuer:', error);
-    res.status(500).json({ error: 'Failed to update issuer' });
+    console.error('Error details:', {
+      message: error.message,
+      code: error.code,
+      sqlState: error.sqlState,
+      sqlMessage: error.sqlMessage
+    });
+    res.status(500).json({ 
+      error: 'Failed to update issuer',
+      details: error.message 
+    });
   }
 };
 
