@@ -47,12 +47,12 @@ exports.getFundCentreById = async (req, res) => {
  */
 exports.createFundCentre = async (req, res) => {
   try {
-    const { name, fund_centre_code, country, gmt_timezone, currency } = req.body;
+    const { name, fund_centre_code, country, gmt_timezone, currency, city, iana_timezone, latitude, longitude, dst_observed } = req.body;
 
     if (!name || !fund_centre_code || !country || !gmt_timezone || !currency) {
       return res.status(400).json({
         success: false,
-        error: 'All fields are required'
+        error: 'All required fields are missing'
       });
     }
 
@@ -61,7 +61,12 @@ exports.createFundCentre = async (req, res) => {
       fund_centre_code,
       country,
       gmt_timezone,
-      currency
+      currency,
+      city,
+      iana_timezone,
+      latitude,
+      longitude,
+      dst_observed
     });
 
     res.status(201).json({
@@ -85,12 +90,12 @@ exports.createFundCentre = async (req, res) => {
 exports.updateFundCentre = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, fund_centre_code, country, gmt_timezone, currency } = req.body;
+    const { name, fund_centre_code, country, gmt_timezone, currency, city, iana_timezone, latitude, longitude, dst_observed } = req.body;
 
     if (!name || !fund_centre_code || !country || !gmt_timezone || !currency) {
       return res.status(400).json({
         success: false,
-        error: 'All fields are required'
+        error: 'All required fields are missing'
       });
     }
 
@@ -99,7 +104,12 @@ exports.updateFundCentre = async (req, res) => {
       fund_centre_code,
       country,
       gmt_timezone,
-      currency
+      currency,
+      city,
+      iana_timezone,
+      latitude,
+      longitude,
+      dst_observed
     });
 
     res.json({
