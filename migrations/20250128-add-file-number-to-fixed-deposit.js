@@ -7,23 +7,23 @@ async function addFileNumberToFixedDeposit() {
     const tableName = 'fixed_deposit_requests';
     const columnName = 'file_number';
 
-    // Check if column already exists
+    // Check if column already exists in itms database
     const [columns] = await db.query(`
       SELECT COLUMN_NAME
       FROM INFORMATION_SCHEMA.COLUMNS
-      WHERE TABLE_SCHEMA = DATABASE()
+      WHERE TABLE_SCHEMA = 'itms'
       AND TABLE_NAME = ?
       AND COLUMN_NAME = ?
     `, [tableName, columnName]);
 
     if (columns.length === 0) {
       await db.query(`
-        ALTER TABLE ??
+        ALTER TABLE itms.??
         ADD COLUMN ?? VARCHAR(100) NULL AFTER request_no
       `, [tableName, columnName]);
-      console.log(`✓ Added ${columnName} column to ${tableName}`);
+      console.log(`✓ Added ${columnName} column to itms.${tableName}`);
     } else {
-      console.log(`⏭ ${columnName} column already exists in ${tableName}`);
+      console.log(`⏭ ${columnName} column already exists in itms.${tableName}`);
     }
 
     console.log('✅ File number migration completed successfully');
