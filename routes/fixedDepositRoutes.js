@@ -164,6 +164,9 @@ router.post('/requests', checkAuth, async (req, res) => {
     // Use approverName if provided, otherwise fall back to approvalCategory
     const approvalCategoryValue = approverName || approvalCategory || null;
     
+    // Parse approverId as integer if provided
+    const approverIdParsed = approverId ? parseInt(approverId, 10) : null;
+    
     const [result] = await db.query(
       `INSERT INTO itms.fixed_deposit_requests (
         portfolio_id, book, module, request_no, file_number, status,
@@ -172,8 +175,8 @@ router.post('/requests', checkAuth, async (req, res) => {
         value_date, maturity_date,
         approver_id, approver_name, approver_designation, approval_category,
         approval_limit_required, approver_notes,
-        submitted_by, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+        submitted_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         portfolio || null,
         book || null,
@@ -192,7 +195,7 @@ router.post('/requests', checkAuth, async (req, res) => {
         targetYield ? parseFloat(targetYield) : null,
         valueDate,
         maturityDate,
-        approverId || null,
+        approverIdParsed,
         approverName || null,
         approverDesignation || null,
         approvalCategoryValue,
