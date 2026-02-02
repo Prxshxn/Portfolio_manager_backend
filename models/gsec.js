@@ -64,67 +64,107 @@ const Gsec = {
       }
       data.per_day_accrual = perDayAccrual;
 
-      const sql = `INSERT INTO gsec (
-        trade_type, transaction_type, counterparty, deal_number, isin, face_value, trade_date, value_date, next_coupon_date, 
+      // Parse counterparty string (e.g., 'i1', 'j1', 'c1') to extract the numeric ID
+      let counterpartyId = null;
+      if (data.counterparty) {
+        const counterpartyStr = String(data.counterparty).trim();
+        // Extract numeric part after the prefix (i, j, or c)
+        if (counterpartyStr.match(/^[ijc]\d+$/)) {
+          // Format: i1, j1, c1, etc.
+          counterpartyId = parseInt(counterpartyStr.substring(1), 10);
+        } else if (!isNaN(parseInt(counterpartyStr, 10))) {
+          // Already a number
+          counterpartyId = parseInt(counterpartyStr, 10);
+        } else {
+          // Try to extract any number from the string
+          const match = counterpartyStr.match(/\d+/);
+          if (match) {
+            counterpartyId = parseInt(match[0], 10);
+          }
+        }
+        
+        if (isNaN(counterpartyId) || counterpartyId === null) {
+          console.warn(`Warning: Could not parse counterparty ID from: ${data.counterparty}`);
+          counterpartyId = null;
+        }
+      }
+
+      const sql = `INSERT INTO itms.gsec (
+        transaction_type, counterparty_id, deal_number, isin_number, face_value, trade_date, value_date, next_coupon_date, 
         last_coupon_date, number_of_days_interest_accrued, number_of_days_for_coupon_period, accrued_interest, 
         coupon_interest, clean_price, dirty_price, accrued_interest_calculation, accrued_interest_six_decimals, 
         accrued_interest_for_100, settlement_amount, settlement_mode, issue_date, maturity_date, coupon_dates, 
         yield, brokerage, currency, portfolio, strategy, broker, accrued_interest_adjustment, clean_price_adjustment, 
-        per_day_accrual, status, created_by, created_at, current_approval_level, custodian, buy_deal_number
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+        buy_deal_number, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
       
+      // Helper function to convert empty strings to null for numeric fields
+      const cleanNumericValue = (value) => {
+        if (value === '' || value === null || value === undefined) {
+          return null;
+        }
+        // If it's already a number, return it
+        if (typeof value === 'number') {
+          return isNaN(value) ? null : value;
+        }
+        // If it's a string, try to parse it
+        if (typeof value === 'string') {
+          const trimmed = value.trim();
+          if (trimmed === '' || trimmed === 'null' || trimmed === 'undefined') {
+            return null;
+          }
+          const parsed = parseFloat(trimmed);
+          return isNaN(parsed) ? null : parsed;
+        }
+        return value;
+      };
+
       const values = [
-        data.tradeType,
         data.transactionType,
-        data.counterparty,
+        counterpartyId, // Use parsed integer ID instead of string
         data.dealNumber,
         data.isin,
-        data.faceValue,
+        cleanNumericValue(data.faceValue),
         data.tradeDate || data.valueDate, // Use tradeDate if provided, otherwise fallback to valueDate
         data.valueDate,
         data.nextCouponDate,
         data.lastCouponDate,
-        data.numberOfDaysInterestAccrued,
-        data.numberOfDaysForCouponPeriod,
-        data.accruedInterest,
-        data.couponInterest,
-        data.cleanPrice,
-        data.dirtyPrice,
+        cleanNumericValue(data.numberOfDaysInterestAccrued),
+        cleanNumericValue(data.numberOfDaysForCouponPeriod),
+        cleanNumericValue(data.accruedInterest),
+        cleanNumericValue(data.couponInterest),
+        cleanNumericValue(data.cleanPrice),
+        cleanNumericValue(data.dirtyPrice),
         data.accruedInterestCalculation,
-        data.accruedInterestSixDecimals,
-        data.accruedInterestFor100,
-        data.settlementAmount,
+        cleanNumericValue(data.accruedInterestSixDecimals),
+        cleanNumericValue(data.accruedInterestFor100),
+        cleanNumericValue(data.settlementAmount),
         data.settlementMode,
         data.issueDate,
         data.maturityDate,
         data.couponDates,
-        data.yield,
-        data.brokerage,
+        cleanNumericValue(data.yield),
+        cleanNumericValue(data.brokerage),
         data.currency || 'LKR',
         data.portfolio,
         data.strategy,
         data.broker,
-        data.accruedInterestAdjustment,
-        data.cleanPriceAdjustment,
-        data.per_day_accrual,
-        data.status || 'pending', // Use provided status or default to pending
-        data.userId || null, // Creator's user ID
-        currentDate, // Creation timestamp
-        data.current_approval_level !== undefined ? data.current_approval_level : 1, // Use frontend value or default to 1
-        data.custodian || null,
-        data.buyDealNumber || null
+        cleanNumericValue(data.accruedInterestAdjustment),
+        cleanNumericValue(data.cleanPriceAdjustment),
+        data.buyDealNumber || null,
+        currentDate // Creation timestamp
       ];
       try {
         // Backend-side validation: prevent overselling from a Buy deal
         if (data.transactionType === 'Sell' && data.buyDealNumber) {
           // Find the referenced Buy deal
-          const [buyRows] = await db.query('SELECT * FROM gsec WHERE deal_number = ? AND transaction_type = "Buy"', [data.buyDealNumber]);
+          const [buyRows] = await db.query('SELECT * FROM itms.gsec WHERE deal_number = ? AND transaction_type = "Buy"', [data.buyDealNumber]);
           if (!buyRows.length) {
             throw { status: 400, message: 'Referenced Buy deal not found for Sell transaction.' };
           }
           const buyDeal = buyRows[0];
           // Sum all previous sells for this buy_deal_number
-          const [sellAgg] = await db.query('SELECT SUM(face_value) AS total_sold FROM gsec WHERE transaction_type = "Sell" AND buy_deal_number = ?', [data.buyDealNumber]);
+          const [sellAgg] = await db.query('SELECT SUM(face_value) AS total_sold FROM itms.gsec WHERE transaction_type = "Sell" AND buy_deal_number = ?', [data.buyDealNumber]);
           const totalSold = parseFloat(sellAgg[0].total_sold || 0);
           const originalFace = parseFloat(buyDeal.face_value || 0);
           const remaining = Math.max(0, originalFace - totalSold);
@@ -482,16 +522,17 @@ const Gsec = {
     const sql = `
       SELECT 
         g.*,
+        g.isin_number as isin,
         COALESCE(
           corp.short_name,
           ind.short_name,
           joint.short_name,
           CONCAT('ID:', g.counterparty_id)
         ) as counterparty_name
-      FROM gsec g
-      LEFT JOIN counterparty_master_corporate corp ON g.counterparty_id = corp.id
-      LEFT JOIN counterparty_master_individual ind ON g.counterparty_id = ind.id
-      LEFT JOIN counterparty_master_joint joint ON g.counterparty_id = joint.id
+      FROM itms.gsec g
+      LEFT JOIN itms.counterparty_master_corporate corp ON g.counterparty_id = corp.id
+      LEFT JOIN itms.counterparty_master_individual ind ON g.counterparty_id = ind.id
+      LEFT JOIN itms.counterparty_master_joint joint ON g.counterparty_id = joint.id
       ORDER BY g.id DESC 
       LIMIT 150
     `;
