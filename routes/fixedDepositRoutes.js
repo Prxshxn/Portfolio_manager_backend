@@ -12,7 +12,7 @@ router.get('/requests', checkAuth, async (req, res) => {
   fetch('http://127.0.0.1:7242/ingest/29dc6e6a-2fb8-4497-a57e-c480a1e8f80b',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'fixedDepositRoutes.js:10',message:'GET /requests entry',data:{status:req.query.status,queryParams:req.query},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A,B'})}).catch(()=>{});
   // #endregion
   try {
-    const { status } = req.query;
+    const { status, file_number, file_number_like } = req.query;
     
     let query = `
       SELECT 
@@ -34,6 +34,16 @@ router.get('/requests', checkAuth, async (req, res) => {
       // Handle case-insensitive status matching - use the table's collation
       query += ` AND fd.status COLLATE utf8mb4_0900_ai_ci = ? COLLATE utf8mb4_0900_ai_ci`;
       params.push(status);
+    }
+    
+    if (file_number) {
+      query += ` AND fd.file_number = ?`;
+      params.push(file_number);
+    }
+    
+    if (file_number_like) {
+      query += ` AND fd.file_number LIKE ?`;
+      params.push(`%${file_number_like}%`);
     }
     
     query += ` ORDER BY fd.created_at DESC`;
@@ -335,6 +345,72 @@ router.put('/requests/:id/reject', checkAuth, async (req, res) => {
   } catch (error) {
     console.error('Error rejecting request:', error);
     res.status(500).json({ error: 'Failed to reject request', details: error.message });
+  }
+});
+
+/**
+ * Get Fixed Deposit requests by file number
+ * GET /api/fixed-deposit/requests/file-number/:fileNumber
+ */
+router.get('/requests/file-number/:fileNumber', checkAuth, async (req, res) => {
+  try {
+    const { fileNumber } = req.params;
+    
+    const [requests] = await db.query(
+      `SELECT 
+        fd.*,
+        cp.short_name as counterparty_name,
+        cp.long_name as counterparty_long_name,
+        p.portfolio_name as portfolio_name,
+        u.username as submitted_by_name
+      FROM fixed_deposit_requests fd
+      LEFT JOIN counterparty_master_corporate cp ON fd.counterparty_id = cp.id
+      LEFT JOIN portfolio_master p ON CAST(fd.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci = CAST(p.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci
+      LEFT JOIN users u ON fd.submitted_by = u.id
+      WHERE fd.file_number = ?
+      ORDER BY fd.created_at DESC`,
+      [fileNumber]
+    );
+    
+    res.json(requests);
+  } catch (error) {
+    console.error('Error fetching fixed deposit requests by file number:', error);
+    res.status(500).json({ error: 'Failed to fetch fixed deposit requests by file number', details: error.message });
+  }
+});
+
+/**
+ * Search Fixed Deposit requests by file number (partial match)
+ * GET /api/fixed-deposit/requests/search/file-number?q=searchTerm
+ */
+router.get('/requests/search/file-number', checkAuth, async (req, res) => {
+  try {
+    const { q } = req.query;
+    
+    if (!q) {
+      return res.status(400).json({ error: 'Search query parameter "q" is required' });
+    }
+    
+    const [requests] = await db.query(
+      `SELECT 
+        fd.*,
+        cp.short_name as counterparty_name,
+        cp.long_name as counterparty_long_name,
+        p.portfolio_name as portfolio_name,
+        u.username as submitted_by_name
+      FROM fixed_deposit_requests fd
+      LEFT JOIN counterparty_master_corporate cp ON fd.counterparty_id = cp.id
+      LEFT JOIN portfolio_master p ON CAST(fd.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci = CAST(p.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci
+      LEFT JOIN users u ON fd.submitted_by = u.id
+      WHERE fd.file_number LIKE ?
+      ORDER BY fd.created_at DESC`,
+      [`%${q}%`]
+    );
+    
+    res.json(requests);
+  } catch (error) {
+    console.error('Error searching fixed deposit requests by file number:', error);
+    res.status(500).json({ error: 'Failed to search fixed deposit requests by file number', details: error.message });
   }
 });
 

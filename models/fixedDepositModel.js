@@ -26,6 +26,16 @@ const FixedDepositRequest = {
         params.push(filters.request_no);
       }
 
+      if (filters.file_number) {
+        sql += ' AND file_number = ?';
+        params.push(filters.file_number);
+      }
+
+      if (filters.file_number_like) {
+        sql += ' AND file_number LIKE ?';
+        params.push(`%${filters.file_number_like}%`);
+      }
+
       sql += ' ORDER BY created_at DESC';
 
       const [rows] = await db.query(sql, params);
@@ -68,6 +78,42 @@ const FixedDepositRequest = {
       return rows[0] || null;
     } catch (error) {
       console.error('Error getting fixed deposit request by request number:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Get fixed deposit requests by file number
+   * @param {string} fileNumber - File number
+   * @returns {Promise<Array>} Array of fixed deposit requests with matching file number
+   */
+  getByFileNumber: async (fileNumber) => {
+    try {
+      const [rows] = await db.query(
+        'SELECT * FROM fixed_deposit_requests WHERE file_number = ? ORDER BY created_at DESC',
+        [fileNumber]
+      );
+      return rows;
+    } catch (error) {
+      console.error('Error getting fixed deposit requests by file number:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Search fixed deposit requests by file number (partial match)
+   * @param {string} fileNumberPattern - File number pattern (will be used with LIKE)
+   * @returns {Promise<Array>} Array of fixed deposit requests matching the pattern
+   */
+  searchByFileNumber: async (fileNumberPattern) => {
+    try {
+      const [rows] = await db.query(
+        'SELECT * FROM fixed_deposit_requests WHERE file_number LIKE ? ORDER BY created_at DESC',
+        [`%${fileNumberPattern}%`]
+      );
+      return rows;
+    } catch (error) {
+      console.error('Error searching fixed deposit requests by file number:', error);
       throw error;
     }
   },
