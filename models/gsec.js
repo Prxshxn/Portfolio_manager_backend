@@ -95,8 +95,8 @@ const Gsec = {
         coupon_interest, clean_price, dirty_price, accrued_interest_calculation, accrued_interest_six_decimals, 
         accrued_interest_for_100, settlement_amount, settlement_mode, issue_date, maturity_date, coupon_dates, 
         yield, brokerage, currency, portfolio, strategy, broker, accrued_interest_adjustment, clean_price_adjustment, 
-        buy_deal_number, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+        buy_deal_number, status, current_approval_level
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
       
       // Helper function to convert empty strings to null for numeric fields
       const cleanNumericValue = (value) => {
@@ -152,7 +152,9 @@ const Gsec = {
         cleanNumericValue(data.accruedInterestAdjustment),
         cleanNumericValue(data.cleanPriceAdjustment),
         data.buyDealNumber || null,
-        currentDate // Creation timestamp
+        data.status || 'pending', // Status: pending by default, ready for back office final approval
+        data.current_approval_level || 'back_office_final' // Set to back_office_final for single approval level
+        // created_at has DEFAULT CURRENT_TIMESTAMP, so we don't need to include it
       ];
       try {
         // Backend-side validation: prevent overselling from a Buy deal
@@ -370,7 +372,7 @@ const Gsec = {
       
       // Get current GSec exposure for this counterparty
       const [gsecRows] = await queryFn(
-        `SELECT SUM(face_value) AS total FROM gsec 
+        `SELECT SUM(face_value) AS total FROM itms.gsec 
          WHERE counterparty = ? AND currency = ?`,
         [counterpartyId, currency]
       );
@@ -476,7 +478,7 @@ const Gsec = {
           
           // Get current GSec exposure for this counterparty
           db.query(
-            `SELECT SUM(face_value) AS total FROM gsec 
+            `SELECT SUM(face_value) AS total FROM itms.gsec 
              WHERE counterparty = ? AND currency = ?`,
             [counterpartyId, currency],
             (err, gsecRows) => {
@@ -716,9 +718,9 @@ const Gsec = {
    */
   getBuyDealsWithBalance: async () => {
     // Get all Buy deals - only finally approved
-    const buySql = `SELECT * FROM gsec WHERE transaction_type = 'Buy' AND status = 'final_approved' ORDER BY id DESC`;
+    const buySql = `SELECT * FROM itms.gsec WHERE transaction_type = 'Buy' AND status = 'final_approved' ORDER BY id DESC`;
     // Get total sold per buy_deal_number (Sell transactions reference Buy deals)
-    const sellSql = `SELECT buy_deal_number, SUM(face_value) AS total_sold FROM gsec WHERE transaction_type = 'Sell' GROUP BY buy_deal_number`;
+    const sellSql = `SELECT buy_deal_number, SUM(face_value) AS total_sold FROM itms.gsec WHERE transaction_type = 'Sell' GROUP BY buy_deal_number`;
     try {
       const [buyDeals] = await db.query(buySql);
       const [sellAgg] = await db.query(sellSql);
@@ -752,7 +754,7 @@ const Gsec = {
    * Get only GSec deals with transaction_type = 'Buy'
    */
   getBuyDeals: async () => {
-    const sql = `SELECT * FROM gsec WHERE transaction_type = 'Buy' AND status = 'final_approved' ORDER BY id DESC`;
+    const sql = `SELECT * FROM itms.gsec WHERE transaction_type = 'Buy' AND status = 'final_approved' ORDER BY id DESC`;
     try {
       const [results] = await db.query(sql);
       // Format results for frontend (truncate/format decimals as in getRecent)
@@ -805,9 +807,9 @@ const Gsec = {
       'dirty_price', 'per_day_accrual', 'accrued_interest_calculation', 'accrued_interest_six_decimals',
       'accrued_interest_for_100', 'settlement_amount', 'settlement_mode', 'issue_date',
       'maturity_date', 'coupon_dates', 'yield', 'portfolio', 'clean_price_adjustment',
-      'accrued_interest_adjustment', 'broker', 'strategy', 'stratergy', 'status', 'comment', 'created_by',
-      'created_at', 'updated_by', 'updated_at', 'authorized_by', 'authorized_at',
-      'current_approval_level', 'brokerage', 'currency', 'custodian',
+      'accrued_interest_adjustment', 'broker', 'strategy', 'stratergy', 'status', 'created_by',
+      'created_at', 'updated_by', 'updated_at',
+      'current_approval_level', 'brokerage', 'currency',
       'remaining_face_value', 'matured', 'sell_back_amount'
     ];
     
@@ -833,7 +835,7 @@ const Gsec = {
     // Add ID to values array for WHERE clause
     values.push(id);
     
-    const sql = `UPDATE gsec SET ${setClauses.join(', ')} WHERE id = ?`;
+      const sql = `UPDATE itms.gsec SET ${setClauses.join(', ')} WHERE id = ?`;
     
     try {
       const [result] = await db.query(sql, values);
@@ -849,55 +851,39 @@ const Gsec = {
    */
   updateStatus: async (id, data) => {
     // First, fetch the current transaction to get the actual current_approval_level
-    const [currentTx] = await db.query('SELECT current_approval_level, status FROM gsec WHERE id = ?', [id]);
+    const [currentTx] = await db.query('SELECT current_approval_level, status FROM itms.gsec WHERE id = ?', [id]);
     if (!currentTx || currentTx.length === 0) {
       throw new Error('Transaction not found');
     }
     
-    const currentApprovalLevel = currentTx[0].current_approval_level || 1;
-    let newApprovalLevel = currentApprovalLevel;
     let newStatus = data.status;
     let finalApproval = false;
     
     if (data.status === 'approved') {
-      // Advance to next approval level based on CURRENT approval level
-      if (currentApprovalLevel === 1) {
-        // Front office approved -> move to back office verifier (level 2)
-        newApprovalLevel = 2;
-        newStatus = 'pending';
-      } else if (currentApprovalLevel === 2) {
-        // Back office verifier approved -> move to back office final (level 3)
-        newApprovalLevel = 3;
-        newStatus = 'pending';
-      } else if (currentApprovalLevel === 3) {
-        // Back office final approved -> mark as final_approved
-        newApprovalLevel = 3; // Stay at final
-        newStatus = 'final_approved';
-        finalApproval = true;
-      }
+      // Single approval level - directly mark as final_approved
+      newStatus = 'final_approved';
+      finalApproval = true;
     } else if (data.status === 'rejected') {
-      // Reset to front office on rejection
-      newApprovalLevel = 1;
       newStatus = 'rejected';
     }
     
+    // Single approval level - only update status and current_approval_level
     const sql = `
-      UPDATE gsec 
+      UPDATE itms.gsec 
       SET 
         status = ?,
-        comment = ?,
-        authorized_by = ?,
-        authorized_at = ?,
         current_approval_level = ?
       WHERE id = ?
     `;
     
+    // Set current_approval_level based on status
+    const approvalLevel = newStatus === 'final_approved' ? 'final_approved' : 
+                         newStatus === 'rejected' ? 'rejected' : 
+                         'back_office_final';
+    
     const values = [
       newStatus,
-      data.comment,
-      data.authorized_by,
-      data.authorized_at,
-      newApprovalLevel,
+      approvalLevel,
       id
     ];
     
@@ -908,7 +894,7 @@ const Gsec = {
       if (finalApproval) {
         try {
           // Fetch the full transaction details
-          const [updatedTx] = await db.query('SELECT * FROM gsec WHERE id = ?', [id]);
+          const [updatedTx] = await db.query('SELECT * FROM itms.gsec WHERE id = ?', [id]);
           if (updatedTx && updatedTx.length > 0) {
             const transaction = updatedTx[0];
             
@@ -1062,7 +1048,7 @@ const Gsec = {
 Gsec.getLatestDealNumber = async (date) => {
   // date should be in YYYYMMDD format for the new pattern
   const [results] = await db.query(
-    'SELECT deal_number FROM gsec WHERE deal_number LIKE ? ORDER BY deal_number DESC LIMIT 1',
+    'SELECT deal_number FROM itms.gsec WHERE deal_number LIKE ? ORDER BY deal_number DESC LIMIT 1',
     [`${date}/GSEC/%`]
   );
   const latest = results[0] ? results[0].deal_number : null;
@@ -1107,7 +1093,7 @@ Gsec.generateNextDealNumber = async (date) => {
  * Get all GSec transactions at a specific approval level
  */
 Gsec.getTransactionsByApprovalLevel = async (approvalLevel) => {
-  const sql = `SELECT * FROM gsec WHERE current_approval_level = ? ORDER BY id DESC`;
+  const sql = `SELECT * FROM itms.gsec WHERE current_approval_level = ? ORDER BY id DESC`;
   try {
     const [results] = await db.query(sql, [approvalLevel]);
     // Format results for frontend display (truncate/format decimals)
@@ -1133,23 +1119,18 @@ Gsec.getTransactionsByApprovalLevel = async (approvalLevel) => {
  */
 Gsec.advanceApprovalLevel = async (id) => {
   // Fetch the transaction
-  const [results] = await db.query('SELECT * FROM gsec WHERE id = ?', [id]);
+  const [results] = await db.query('SELECT * FROM itms.gsec WHERE id = ?', [id]);
   if (!results.length) return null;
   const tx = results[0];
-  let newLevel = tx.current_approval_level;
-  let updateFields = '';
   let finalApproval = false;
-  if (tx.current_approval_level < 3) {
-    newLevel = tx.current_approval_level + 1;
-    updateFields = ', current_approval_level = ' + newLevel;
-  } else {
-    // Set status to final_approved on last approval
-    updateFields = ", status = 'final_approved'";
-    finalApproval = true;
-  }
-  await db.query(`UPDATE gsec SET updated_at = NOW()${updateFields} WHERE id = ?`, [id]);
+  
+  // Single approval level - directly mark as final_approved
+  const updateFields = ", status = 'final_approved', current_approval_level = 'final_approved'";
+  finalApproval = true;
+  
+  await db.query(`UPDATE itms.gsec SET updated_at = NOW()${updateFields} WHERE id = ?`, [id]);
   // Return updated transaction
-  const [updated] = await db.query('SELECT * FROM gsec WHERE id = ?', [id]);
+  const [updated] = await db.query('SELECT * FROM itms.gsec WHERE id = ?', [id]);
 
   // If finally approved, post ledger entry
   if (finalApproval) {
@@ -1176,7 +1157,7 @@ Gsec.advanceApprovalLevel = async (id) => {
 };
 
 Gsec.getTransactionsByPortfolio = async (portfolioId) => {
-  const sql = "SELECT * FROM gsec WHERE portfolio = ? AND transaction_type = 'Buy' AND status = 'final_approved'";
+  const sql = "SELECT * FROM itms.gsec WHERE portfolio = ? AND transaction_type = 'Buy' AND status = 'final_approved'";
   const [rows] = await db.query(sql, [portfolioId]);
   return rows;
 };

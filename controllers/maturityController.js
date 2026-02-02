@@ -587,10 +587,8 @@ async function getMaturitiesWithApprovalLevel(db, productType, date) {
       ${productType === 'money_market' ? 'mmd.status' : productType === 'gsec' ? 'g.status' : 'rd.status'} as deal_status,
       COALESCE(mpl.authorization_level, 'not_initiated') as approval_level,
       CASE 
-        WHEN mpl.authorization_level = 'front_office' THEN 'Front Office'
-        WHEN mpl.authorization_level = 'back_office_verifier' THEN 'Back Office Verifier'
         WHEN mpl.authorization_level = 'back_office_final' THEN 'Back Office Final'
-        ELSE 'Not Initiated'
+        ELSE 'Pending Final Approval'
       END as approval_level_display,
       CASE 
         WHEN mpl.authorization_level = 'back_office_final' THEN 1
@@ -617,7 +615,7 @@ async function getMaturitiesWithApprovalLevel(db, productType, date) {
       )
     WHERE ${productType === 'money_market' ? 'mmd.maturity_date' : productType === 'gsec' ? 'g.maturity_date' : 'rd.maturity_date'} <= ?
       AND COALESCE(${productType === 'money_market' ? 'mmd.matured' : productType === 'gsec' ? 'g.matured' : 'rd.matured'}, 0) = 0
-      AND (mpl.id IS NULL OR mpl.authorization_level != 'back_office_final')
+      AND (mpl.id IS NULL OR mpl.authorization_level = 'back_office_final')
     ORDER BY ${productType === 'money_market' ? 'mmd.maturity_date' : productType === 'gsec' ? 'g.maturity_date' : 'rd.maturity_date'} ASC
   `;
 
@@ -785,7 +783,7 @@ MaturityController.processMaturities = async (req, res) => {
           INSERT INTO maturity_processing_log
           (deal_id, deal_number, maturity_action, principal_amount, interest_amount, total_amount,
            processed_date, processed_by, authorization_level, bank_account_id)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'front_office', ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'back_office_final', ?)
         `, [
           dealId,
           deal.deal_number,
@@ -1711,17 +1709,13 @@ MaturityController.getMaturityBlotter = async (req, res) => {
 
     // Role-based filtering for the 3-tier approval flow
     let filterSql = '';
-    if (role === 'front_office') {
-      // Front office sees deals they initiated (authorization_level = 'front_office')
-      filterSql = `mpl.authorization_level = 'front_office'`;
-    } else if (role === 'back_office_verifier') {
-      // Verifier sees deals that Front Office has approved (authorization_level = 'back_office_verifier')
-      // These are ready for verifier approval
-      filterSql = `mpl.authorization_level = 'back_office_verifier'`;
+    // Only back_office_final role can see and authorize deals
+    if (role === 'back_office_final' || role === 'admin') {
+      // back_office_final or admin: sees all pending deals ready for final approval
+      filterSql = `(mpl.authorization_level = 'back_office_final' OR mpl.authorization_level IS NULL)`;
     } else {
-      // back_office_final or admin: sees deals that Verifier has approved (authorization_level = 'back_office_final')
-      // These are ready for final approval
-      filterSql = `mpl.authorization_level = 'back_office_final'`;
+      // Other roles see nothing
+      filterSql = `1=0`;
     }
 
     const [rows] = await db.query(`
@@ -1731,9 +1725,7 @@ MaturityController.getMaturityBlotter = async (req, res) => {
         mpl.maturity_action,
         mpl.processed_date AS first_logged_date,
         CASE mpl.authorization_level 
-          WHEN 'front_office' THEN 1 
-          WHEN 'back_office_verifier' THEN 2 
-          WHEN 'back_office_final' THEN 3 
+          WHEN 'back_office_final' THEN 1 
           ELSE 0 END AS current_stage,
         -- Get product type and maturity amount
         CASE 
@@ -1815,45 +1807,7 @@ MaturityController.approveMaturities = async (req, res) => {
       return res.status(401).json({ success: false, error: 'Unauthorized' });
     }
 
-    // Non-final roles update the existing log record with new authorization level
-    if (role === 'front_office' || role === 'back_office_verifier') {
-      const db = require('../config/database');
-      const today = processDate || new Date().toISOString().slice(0, 10);
-      
-      for (const id of dealIds) {
-        // Check if record exists for this deal and maturity action
-        const [existing] = await db.query(`
-          SELECT id FROM maturity_processing_log 
-          WHERE deal_id = ? AND maturity_action = ?
-          ORDER BY created_at DESC LIMIT 1
-        `, [id, maturityAction]);
-        
-        if (existing.length > 0) {
-          // Update existing record with next authorization level
-          let nextLevel = '';
-          if (role === 'front_office') {
-            nextLevel = 'back_office_verifier'; // Front Office approval moves to Verifier
-          } else if (role === 'back_office_verifier') {
-            nextLevel = 'back_office_final'; // Verifier approval moves to Final
-          }
-          
-          await db.query(`
-            UPDATE maturity_processing_log 
-            SET authorization_level = ?, processed_by = ?, processed_date = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-          `, [nextLevel, user.id, today, existing[0].id]);
-        } else {
-          // Create new record if none exists (shouldn't happen in normal flow)
-          await db.query(`
-            INSERT INTO maturity_processing_log
-            (deal_id, deal_number, maturity_action, principal_amount, interest_amount, total_amount,
-             processed_date, processed_by, authorization_level, bank_account_id)
-            VALUES (?, ?, ?, 0, 0, 0, ?, ?, ?, NULL)
-          `, [id, String(id), maturityAction, today, user.id, role]);
-        }
-      }
-      return res.json({ success: true, message: `Updated ${role} authorization for ${dealIds.length} deals` });
-    }
+    // Only back_office_final role can authorize - removed front_office and back_office_verifier logic
 
     // Final role triggers posting using existing handler
     if (role === 'back_office_final' || role === 'admin') {

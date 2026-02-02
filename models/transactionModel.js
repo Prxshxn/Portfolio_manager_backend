@@ -7,7 +7,7 @@ class Transaction {
   static getDefaultApprovalFields(userId) {
     return {
       approval_status: 'pending',
-      current_approval_level: 'front_office',
+      current_approval_level: 'back_office_final',
       approval_chain: JSON.stringify([]),
       submitted_by: userId || 0
     };

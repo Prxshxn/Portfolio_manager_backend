@@ -141,11 +141,11 @@ exports.updateTransaction = async (req, res) => {
     // Always allow reversal to front office on rejection, regardless of user role
     if (data.status === 'rejected') {
       // FORCE reversal to front office on any back office rejection (regardless of user role or creator)
-      console.log('Back office rejection: Forcing current_approval_level=front_office, status=pending, approval_status=pending');
+      console.log('Back office rejection: Forcing current_approval_level=back_office_final, status=pending, approval_status=pending');
       const updatePayload = {};
       updatePayload.status = 'pending';
       updatePayload.approval_status = 'pending';
-      updatePayload.current_approval_level = 'front_office';
+      updatePayload.current_approval_level = 'back_office_final';
       if (data.comment !== undefined) updatePayload.comment = data.comment;
       updatePayload.rejected_by_back_office = true;
       const updatedTransaction = await Transaction.update(deal_number, updatePayload);
