@@ -1,4 +1,4 @@
-const db = require('../db'); // adjust if you use a different db import
+const db = require('../config/db');
 const { differenceInDays, parseISO } = require('date-fns');
 const { calculateNVP } = require('../utils/bondPricingNVP');
 
@@ -39,51 +39,67 @@ function formatPercentage(value, decimals = 4) {
 }
 
 exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityDate, page, pageSize }) => {
-  // Debug: Log the asAtDate parameter
-  console.log(`[GSEC Report] Called with asAtDate: ${asAtDate}, portfolio: ${portfolio}, isin: ${isin}`);
-  
-  // Build query with filters - only include Buy transactions from GSEC deals
-  let sql = `SELECT g.id, g.portfolio, g.custodian, g.deal_number, g.face_value, g.remaining_face_value, g.value_date, g.maturity_date, g.isin, g.coupon_interest, g.clean_price, g.yield, g.counterparty, g.transaction_type, 
-             im.coupon_rate, im.issue_date, im.coupon_date_1, im.coupon_date_2
-    FROM gsec g 
-    LEFT JOIN isin_master im ON g.isin = im.isin_number 
-    WHERE g.transaction_type = 'Buy'`;
-  const params = [];
-  
-  // Add GSEC filters
-  if (portfolio) {
-    sql += ' AND g.portfolio = ?';
-    params.push(portfolio);
-  }
-  if (isin) {
-    sql += ' AND g.isin = ?';
-    params.push(isin);
-  }
-  if (valueDate) {
-    sql += ' AND g.value_date = ?';
-    params.push(valueDate);
-  }
-  if (maturityDate) {
-    sql += ' AND g.maturity_date = ?';
-    params.push(maturityDate);
-  }
-  if (asAtDate) {
-    sql += ' AND g.value_date <= ?';
-    params.push(asAtDate);
-  }
-  
-  // Add ordering
-  sql += ` ORDER BY g.isin, g.maturity_date, g.id`;
+  try {
+    // Debug: Log the asAtDate parameter
+    console.log(`[GSEC Report] Called with asAtDate: ${asAtDate}, portfolio: ${portfolio}, isin: ${isin}`);
+    
+    // Build query with filters - only include Buy transactions from GSEC deals
+    // Note: remaining_face_value is computed, not a column, so we calculate it later
+    let sql = `SELECT g.id, g.portfolio, g.deal_number, g.face_value, g.value_date, g.maturity_date, g.isin_number as isin, g.coupon_interest, g.clean_price, g.yield, g.counterparty_id, g.transaction_type, 
+               im.coupon_rate, im.issue_date, im.coupon_date_1, im.coupon_date_2
+      FROM gsec g 
+      LEFT JOIN isin_master im ON g.isin_number COLLATE utf8mb4_unicode_ci = im.isin_number COLLATE utf8mb4_unicode_ci
+      WHERE g.transaction_type = 'Buy'`;
+    const params = [];
+    
+    // Add GSEC filters
+    if (portfolio) {
+      sql += ' AND g.portfolio = ?';
+      params.push(portfolio);
+    }
+    if (isin) {
+      sql += ' AND g.isin_number = ?';
+      params.push(isin);
+    }
+    if (valueDate) {
+      sql += ' AND g.value_date = ?';
+      params.push(valueDate);
+    }
+    if (maturityDate) {
+      sql += ' AND g.maturity_date = ?';
+      params.push(maturityDate);
+    }
+    if (asAtDate) {
+      sql += ' AND g.value_date <= ?';
+      params.push(asAtDate);
+    }
+    
+    // Add ordering
+    sql += ` ORDER BY g.isin_number, g.maturity_date, g.id`;
 
-  // Pagination - only apply if page and pageSize are provided
-  if (page && pageSize) {
-    const offset = (page - 1) * pageSize;
-    sql += ' LIMIT ? OFFSET ?';
-    params.push(pageSize, offset);
-  }
+    // Pagination - only apply if page and pageSize are provided
+    if (page && pageSize) {
+      const pageSizeNum = parseInt(pageSize, 10);
+      const pageNum = parseInt(page, 10);
+      const offset = (pageNum - 1) * pageSizeNum;
+      sql += ' LIMIT ? OFFSET ?';
+      params.push(pageSizeNum, offset);
+    }
 
-  // Query DB
-  const [rows] = await db.query(sql, params);
+    console.log(`[GSEC Report] SQL Query: ${sql}`);
+    console.log(`[GSEC Report] Params:`, params);
+
+    // Query DB
+    let rows;
+    try {
+      [rows] = await db.query(sql, params);
+      console.log(`[GSEC Report] Query returned ${rows.length} rows`);
+    } catch (queryError) {
+      console.error('[GSEC Report] Database query error:', queryError);
+      console.error('[GSEC Report] SQL:', sql);
+      console.error('[GSEC Report] Params:', params);
+      throw new Error(`Database query failed: ${queryError.message}`);
+    }
 
   // Build a map of total sold per buy deal_number to compute remaining face value per row
   const dealNumbers = rows.map(r => (r.deal_number || '').trim()).filter(Boolean);
@@ -159,23 +175,66 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     const normalizedDealNumber = (row.deal_number || '').trim();
     const soldAgainstThisDeal = Number(soldByDeal[normalizedDealNumber] || 0);
     const originalFace = Number(row.face_value) || 0;
-    const dbRemainingFaceValue = Number(row.remaining_face_value) || 0;
+    // remaining_face_value is computed, not a column, so always use 0
+    const dbRemainingFaceValue = 0;
     
     console.log(`Deal ${row.deal_number}: originalFace=${originalFace}, dbRemainingFaceValue=${dbRemainingFaceValue}, soldAgainstThisDeal=${soldAgainstThisDeal}`);
     
     // Calculate buyback deductions with backdating support
     let buybackDeduction = 0;
     if (asAtDate) {
-      // Query buyback deals that were approved on or before asAtDate
-      const [buybackRows] = await db.query(`
+      // Check if leg1_portfolio column exists in buyback_deals table
+      let hasPortfolioColumn = false;
+      try {
+        const [schemaCheck] = await db.query(`
+          SELECT COLUMN_NAME 
+          FROM INFORMATION_SCHEMA.COLUMNS 
+          WHERE TABLE_SCHEMA = DATABASE() 
+          AND TABLE_NAME = 'buyback_deals' 
+          AND COLUMN_NAME = 'leg1_portfolio'
+        `);
+        hasPortfolioColumn = schemaCheck.length > 0;
+      } catch (schemaError) {
+        console.warn('[GSEC Report] Could not check schema, assuming leg1_portfolio does not exist');
+      }
+      
+      // Build query conditionally based on whether portfolio column exists
+      let buybackSql = `
         SELECT leg1_face_value, source_buy_deal_number
         FROM buyback_deals 
-        WHERE leg1_isin = ? AND leg1_portfolio = ? 
-        AND leg1_transaction_type = 'Sell' 
-        AND deal_status = 'Approved'
+        WHERE leg1_isin = ?`;
+      const buybackParams = [row.isin];
+      
+      if (hasPortfolioColumn && row.portfolio) {
+        buybackSql += ' AND leg1_portfolio = ?';
+        buybackParams.push(row.portfolio);
+      }
+      
+      // Check if leg1_transaction_type column exists
+      let hasTransactionTypeColumn = false;
+      try {
+        const [txTypeCheck] = await db.query(`
+          SELECT COLUMN_NAME 
+          FROM INFORMATION_SCHEMA.COLUMNS 
+          WHERE TABLE_SCHEMA = DATABASE() 
+          AND TABLE_NAME = 'buyback_deals' 
+          AND COLUMN_NAME = 'leg1_transaction_type'
+        `);
+        hasTransactionTypeColumn = txTypeCheck.length > 0;
+      } catch (schemaError) {
+        console.warn('[GSEC Report] Could not check leg1_transaction_type schema');
+      }
+      
+      if (hasTransactionTypeColumn) {
+        buybackSql += ` AND leg1_transaction_type = 'Sell'`;
+      }
+      
+      buybackSql += ` AND deal_status = 'Approved'
         AND DATE(approved_at) <= ?
-        AND (source_buy_deal_number = ? OR source_buy_deal_number IS NULL)
-      `, [row.isin, row.portfolio, asAtDate, row.deal_number]);
+        AND (source_buy_deal_number = ? OR source_buy_deal_number IS NULL)`;
+      buybackParams.push(asAtDate, row.deal_number);
+      
+      const [buybackRows] = await db.query(buybackSql, buybackParams);
       
       buybackRows.forEach(buybackRow => {
         // If source_buy_deal_number matches this deal, or if it's null (chronological deduction)
@@ -187,15 +246,57 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       console.log(`Deal ${row.deal_number}: buybackDeduction=${buybackDeduction} for asAtDate=${asAtDate}`);
     } else {
       // For no asAtDate, calculate buyback deductions dynamically to ensure accuracy
-      // Query all approved buyback deals for this ISIN and portfolio
-      const [buybackRows] = await db.query(`
+      // Check if leg1_portfolio column exists
+      let hasPortfolioColumn = false;
+      try {
+        const [schemaCheck] = await db.query(`
+          SELECT COLUMN_NAME 
+          FROM INFORMATION_SCHEMA.COLUMNS 
+          WHERE TABLE_SCHEMA = DATABASE() 
+          AND TABLE_NAME = 'buyback_deals' 
+          AND COLUMN_NAME = 'leg1_portfolio'
+        `);
+        hasPortfolioColumn = schemaCheck.length > 0;
+      } catch (schemaError) {
+        console.warn('[GSEC Report] Could not check schema, assuming leg1_portfolio does not exist');
+      }
+      
+      // Build query conditionally
+      let buybackSql = `
         SELECT leg1_face_value, source_buy_deal_number
         FROM buyback_deals 
-        WHERE leg1_isin = ? AND leg1_portfolio = ? 
-        AND leg1_transaction_type = 'Sell' 
-        AND deal_status = 'Approved'
-        AND (source_buy_deal_number = ? OR source_buy_deal_number IS NULL)
-      `, [row.isin, row.portfolio, row.deal_number]);
+        WHERE leg1_isin = ?`;
+      const buybackParams = [row.isin];
+      
+      if (hasPortfolioColumn && row.portfolio) {
+        buybackSql += ' AND leg1_portfolio = ?';
+        buybackParams.push(row.portfolio);
+      }
+      
+      // Check if leg1_transaction_type column exists
+      let hasTransactionTypeColumn = false;
+      try {
+        const [txTypeCheck] = await db.query(`
+          SELECT COLUMN_NAME 
+          FROM INFORMATION_SCHEMA.COLUMNS 
+          WHERE TABLE_SCHEMA = DATABASE() 
+          AND TABLE_NAME = 'buyback_deals' 
+          AND COLUMN_NAME = 'leg1_transaction_type'
+        `);
+        hasTransactionTypeColumn = txTypeCheck.length > 0;
+      } catch (schemaError) {
+        console.warn('[GSEC Report] Could not check leg1_transaction_type schema');
+      }
+      
+      if (hasTransactionTypeColumn) {
+        buybackSql += ` AND leg1_transaction_type = 'Sell'`;
+      }
+      
+      buybackSql += ` AND deal_status = 'Approved'
+        AND (source_buy_deal_number = ? OR source_buy_deal_number IS NULL)`;
+      buybackParams.push(row.deal_number);
+      
+      const [buybackRows] = await db.query(buybackSql, buybackParams);
       
       buybackRows.forEach(buybackRow => {
         // If source_buy_deal_number matches this deal, or if it's null (chronological deduction)
@@ -243,7 +344,7 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
   
   for (const isin of uniqueIsins) {
       // Query all Buy records for this ISIN to calculate correct balance
-      let balanceSql = `SELECT face_value, clean_price FROM gsec WHERE isin = ? AND transaction_type = 'Buy'`;
+      let balanceSql = `SELECT face_value, clean_price FROM gsec WHERE isin_number = ? AND transaction_type = 'Buy'`;
     const balanceParams = [isin];
     
     // Apply the same filters as the main query for GSEC deals
@@ -282,7 +383,7 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       });
 
       // Subtract normal Sell transactions for this ISIN from balance
-      let sellSql = `SELECT COALESCE(SUM(face_value), 0) AS sold FROM gsec WHERE isin = ? AND transaction_type = 'Sell'`;
+      let sellSql = `SELECT COALESCE(SUM(face_value), 0) AS sold FROM gsec WHERE isin_number = ? AND transaction_type = 'Sell'`;
       const sellParams = [isin];
       if (portfolio) {
         sellSql += ' AND portfolio = ?';
@@ -311,15 +412,50 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
 
       // Subtract buyback deductions for this ISIN with backdating support
       if (asAtDate) {
+        // Check if leg1_portfolio column exists
+        let hasPortfolioColumn = false;
+        try {
+          const [schemaCheck] = await db.query(`
+            SELECT COLUMN_NAME 
+            FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_SCHEMA = DATABASE() 
+            AND TABLE_NAME = 'buyback_deals' 
+            AND COLUMN_NAME = 'leg1_portfolio'
+          `);
+          hasPortfolioColumn = schemaCheck.length > 0;
+        } catch (schemaError) {
+          console.warn('[GSEC Report] Could not check schema for ISIN balance, assuming leg1_portfolio does not exist');
+        }
+        
+        // Check if leg1_transaction_type column exists
+        let hasTransactionTypeColumn = false;
+        try {
+          const [txTypeCheck] = await db.query(`
+            SELECT COLUMN_NAME 
+            FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_SCHEMA = DATABASE() 
+            AND TABLE_NAME = 'buyback_deals' 
+            AND COLUMN_NAME = 'leg1_transaction_type'
+          `);
+          hasTransactionTypeColumn = txTypeCheck.length > 0;
+        } catch (schemaError) {
+          console.warn('[GSEC Report] Could not check leg1_transaction_type schema for ISIN balance');
+        }
+        
         let buybackSql = `
           SELECT COALESCE(SUM(leg1_face_value), 0) AS buyback_deduction
           FROM buyback_deals 
-          WHERE leg1_isin = ? AND leg1_transaction_type = 'Sell' 
-          AND deal_status = 'Approved' AND approved_at <= ?
-        `;
-        const buybackParams = [isin, asAtDate];
+          WHERE leg1_isin = ?`;
+        const buybackParams = [isin];
         
-        if (portfolio) {
+        if (hasTransactionTypeColumn) {
+          buybackSql += ` AND leg1_transaction_type = 'Sell'`;
+        }
+        
+        buybackSql += ` AND deal_status = 'Approved' AND approved_at <= ?`;
+        buybackParams.push(asAtDate);
+        
+        if (hasPortfolioColumn && portfolio) {
           buybackSql += ' AND leg1_portfolio = ?';
           buybackParams.push(portfolio);
         }
@@ -376,7 +512,7 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       id: row.id,
       product_type: 'GSec',
       portfolio: row.portfolio,
-      custodian: row.custodian || '',
+      custodian: '', // custodian column doesn't exist in gsec table
       deal_number: row.deal_number || '',
       // Show remaining face value (after deducting sell deals and buyback deals) in the Face Value column
       // This reflects the actual available face value at the point of creation
@@ -402,7 +538,7 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       accrued_interest: nvpResult.accruedInterest ? formatPrice(nvpResult.accruedInterest, 4) : '',
       repo_collateral: row.repo_collateral ? formatPrice(row.repo_collateral, 4) : '0.0000',
       sell_back: row.sell_back ? formatCurrency(row.sell_back, 2) : '0.00',
-      counterparty: row.counterparty || '',
+      counterparty: row.counterparty_id ? String(row.counterparty_id) : '',
       transaction_type: row.transaction_type || ''
     };
   });
@@ -417,10 +553,10 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
   
   // Count query - only Buy transactions from GSEC
   let countSql = `SELECT COUNT(*) as count FROM gsec g 
-    LEFT JOIN isin_master im ON g.isin = im.isin_number 
+    LEFT JOIN isin_master im ON g.isin_number COLLATE utf8mb4_unicode_ci = im.isin_number COLLATE utf8mb4_unicode_ci
     WHERE g.transaction_type = 'Buy'` +
     (portfolio ? ' AND g.portfolio = ?' : '') +
-    (isin ? ' AND g.isin = ?' : '') +
+    (isin ? ' AND g.isin_number = ?' : '') +
     (valueDate ? ' AND g.value_date = ?' : '') +
     (maturityDate ? ' AND g.maturity_date = ?' : '') +
     (asAtDate ? ' AND g.value_date <= ?' : '');
@@ -431,9 +567,10 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
   let totalPortfolioBalance = null;
   if (portfolio) {
     // Calculate total balance using remaining face value (after deducting sells)
-    const balanceSql = `SELECT g.deal_number, g.face_value, g.remaining_face_value FROM gsec g WHERE g.transaction_type = 'Buy'` +
+    // Note: remaining_face_value is computed, not a column
+    const balanceSql = `SELECT g.deal_number, g.face_value FROM gsec g WHERE g.transaction_type = 'Buy'` +
       (portfolio ? ' AND g.portfolio = ?' : '') +
-      (isin ? ' AND g.isin = ?' : '') +
+      (isin ? ' AND g.isin_number = ?' : '') +
       (valueDate ? ' AND g.value_date = ?' : '') +
       (maturityDate ? ' AND g.maturity_date = ?' : '') +
       (asAtDate ? ' AND g.value_date <= ?' : '');
@@ -481,11 +618,31 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     const buybackByDeal = {};
     if (asAtDate && dealNumbers.length) {
       const placeholders = dealNumbers.map(() => '?').join(',');
-      const buybackSql = `
+      // Check if leg1_transaction_type column exists
+      let hasTransactionTypeColumn = false;
+      try {
+        const [txTypeCheck] = await db.query(`
+          SELECT COLUMN_NAME 
+          FROM INFORMATION_SCHEMA.COLUMNS 
+          WHERE TABLE_SCHEMA = DATABASE() 
+          AND TABLE_NAME = 'buyback_deals' 
+          AND COLUMN_NAME = 'leg1_transaction_type'
+        `);
+        hasTransactionTypeColumn = txTypeCheck.length > 0;
+      } catch (schemaError) {
+        console.warn('[GSEC Report] Could not check leg1_transaction_type schema for total balance');
+      }
+      
+      let buybackSql = `
         SELECT source_buy_deal_number, COALESCE(SUM(leg1_face_value), 0) AS total_buyback
         FROM buyback_deals
-        WHERE leg1_transaction_type = 'Sell'
-        AND deal_status = 'Approved'
+        WHERE`;
+      
+      if (hasTransactionTypeColumn) {
+        buybackSql += ` leg1_transaction_type = 'Sell' AND`;
+      }
+      
+      buybackSql += ` deal_status = 'Approved'
         AND DATE(approved_at) <= ?
         AND (source_buy_deal_number IN (${placeholders}) OR source_buy_deal_number IS NULL)
         GROUP BY source_buy_deal_number
@@ -502,7 +659,8 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     let totalBalance = 0;
     balanceRows.forEach(balanceRow => {
       const originalFace = Number(balanceRow.face_value) || 0;
-      const dbRemainingFaceValue = Number(balanceRow.remaining_face_value) || 0;
+      // remaining_face_value is computed, not a column, so always use 0
+      const dbRemainingFaceValue = 0;
       // Normalize deal_number by trimming for lookup
       const normalizedDealNumber = (balanceRow.deal_number || '').trim();
       const soldAgainstThisDeal = Number(soldByDeal[normalizedDealNumber] || 0);
@@ -532,4 +690,10 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
   }
 
   return { data, total: count, totalPortfolioBalance };
+  } catch (error) {
+    console.error('[GSEC Report Service] Error:', error);
+    console.error('[GSEC Report Service] Error message:', error.message);
+    console.error('[GSEC Report Service] Error stack:', error.stack);
+    throw error; // Re-throw to be caught by controller
+  }
 };

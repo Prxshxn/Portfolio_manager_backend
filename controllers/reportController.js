@@ -71,7 +71,17 @@ exports.getGsecReport = async (req, res) => {
     res.json(response);
   } catch (err) {
     console.error('GSec Report Error:', err);
-    res.status(500).json({ error: 'Failed to generate GSec report' });
+    console.error('Error stack:', err.stack);
+    console.error('Error message:', err.message);
+    console.error('Error code:', err.code);
+    console.error('Error sqlState:', err.sqlState);
+    console.error('Error sqlMessage:', err.sqlMessage);
+    res.status(500).json({ 
+      error: 'Failed to generate GSec report',
+      details: err.message || 'Unknown error',
+      sqlError: err.sqlMessage || err.code || undefined,
+      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
   }
 };
 
