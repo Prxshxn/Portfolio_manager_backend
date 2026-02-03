@@ -6,7 +6,7 @@ const db = require('../config/db');
  */
 async function getAllFundCentres() {
   const [rows] = await db.query(
-    'SELECT * FROM fund_centre_master ORDER BY fund_centre_code ASC'
+    'SELECT * FROM itms.fund_centre_master ORDER BY fund_centre_code ASC'
   );
   return rows;
 }
@@ -18,7 +18,7 @@ async function getAllFundCentres() {
  */
 async function getFundCentreById(id) {
   const [rows] = await db.query(
-    'SELECT * FROM fund_centre_master WHERE id = ?',
+    'SELECT * FROM itms.fund_centre_master WHERE id = ?',
     [id]
   );
   return rows[0];
@@ -31,7 +31,7 @@ async function getFundCentreById(id) {
  */
 async function getFundCentreByCode(code) {
   const [rows] = await db.query(
-    'SELECT * FROM fund_centre_master WHERE fund_centre_code = ?',
+    'SELECT * FROM itms.fund_centre_master WHERE fund_centre_code = ?',
     [code]
   );
   return rows[0];
@@ -44,7 +44,7 @@ async function getFundCentreByCode(code) {
  */
 async function getFundCentreByCurrency(currency) {
   const [rows] = await db.query(
-    'SELECT * FROM fund_centre_master WHERE currency = ?',
+    'SELECT * FROM itms.fund_centre_master WHERE currency = ?',
     [currency]
   );
   return rows[0];
@@ -70,7 +70,7 @@ async function createFundCentre(fundCentre) {
   } = fundCentre;
   
   const [result] = await db.query(
-    `INSERT INTO fund_centre_master 
+    `INSERT INTO itms.fund_centre_master 
      (name, fund_centre_code, country, gmt_timezone, currency, city, iana_timezone, latitude, longitude, dst_observed, created_at, updated_at) 
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
     [name, fund_centre_code, country, gmt_timezone, currency, city || null, iana_timezone || null, latitude || null, longitude || null, dst_observed || 'N']
@@ -99,7 +99,7 @@ async function updateFundCentre(id, fundCentre) {
   } = fundCentre;
   
   const [result] = await db.query(
-    `UPDATE fund_centre_master 
+    `UPDATE itms.fund_centre_master 
      SET name = ?, fund_centre_code = ?, country = ?, gmt_timezone = ?, currency = ?, 
          city = ?, iana_timezone = ?, latitude = ?, longitude = ?, dst_observed = ?, 
          updated_at = NOW() 
@@ -116,7 +116,7 @@ async function updateFundCentre(id, fundCentre) {
  */
 async function deleteFundCentre(id) {
   const [result] = await db.query(
-    'DELETE FROM fund_centre_master WHERE id = ?',
+    'DELETE FROM itms.fund_centre_master WHERE id = ?',
     [id]
   );
   return result.affectedRows > 0;
