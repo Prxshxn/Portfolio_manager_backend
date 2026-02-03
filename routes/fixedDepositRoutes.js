@@ -71,6 +71,36 @@ router.get('/requests', checkAuth, async (req, res) => {
 });
 
 /**
+ * Get pending fixed deposit requests for authorizer
+ * GET /api/fixed-deposit/requests/pending
+ * NOTE: This route must come before /requests/:id to avoid route conflicts
+ */
+router.get('/requests/pending', checkAuth, async (req, res) => {
+  try {
+    const [requests] = await db.query(
+      `SELECT 
+        fd.*,
+        cp.short_name as counterparty_name,
+        cp.long_name as counterparty_long_name,
+        p.portfolio_name as portfolio_name,
+        u.username as submitted_by_name
+      FROM itms.fixed_deposit_requests fd
+      LEFT JOIN itms.counterparty_master_corporate cp ON fd.counterparty_id = cp.id
+      LEFT JOIN itms.portfolio_master p ON CAST(fd.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci = CAST(p.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci
+      LEFT JOIN itms.users u ON fd.submitted_by = u.id
+      WHERE fd.current_approval_level = 'back_office_final' 
+        AND LOWER(TRIM(fd.status)) IN ('pending', 'draft')
+      ORDER BY fd.created_at DESC`
+    );
+    
+    res.json(requests);
+  } catch (error) {
+    console.error('Error fetching pending fixed deposit requests:', error);
+    res.status(500).json({ error: 'Failed to fetch pending requests', details: error.message });
+  }
+});
+
+/**
  * Get a single Fixed Deposit request by ID
  * GET /api/fixed-deposit/requests/:id
  */
@@ -167,23 +197,28 @@ router.post('/requests', checkAuth, async (req, res) => {
     // Parse approverId as integer if provided
     const approverIdParsed = approverId ? parseInt(approverId, 10) : null;
     
+    // Set status to 'pending' and current_approval_level to 'back_office_final' for authorization workflow
+    const requestStatus = status || 'pending';
+    const approvalLevel = 'back_office_final';
+    
     const [result] = await db.query(
       `INSERT INTO itms.fixed_deposit_requests (
-        portfolio_id, book, module, request_no, file_number, status,
+        portfolio_id, book, module, request_no, file_number, status, current_approval_level,
         counterparty_type, counterparty_id, contact_person, request_remarks,
         instrument_type, isin, currency, requested_amount, target_yield,
         value_date, maturity_date,
         approver_id, approver_name, approver_designation, approval_category,
         approval_limit_required, approver_notes,
         submitted_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         portfolio || null,
         book || null,
         module || 'Pre approval',
         requestNo,
         fileNumber || null,
-        status || 'Draft',
+        requestStatus,
+        approvalLevel,
         counterpartyType || 'Bank',
         counterpartyId,
         contactPerson || null,
@@ -308,6 +343,7 @@ router.put('/requests/:id/approve', checkAuth, async (req, res) => {
     await db.query(
       `UPDATE itms.fixed_deposit_requests 
        SET status = 'Approved', 
+           current_approval_level = 'final_approved',
            approver_notes = ?,
            approved_by = ?,
            approved_at = NOW(),
@@ -333,15 +369,20 @@ router.put('/requests/:id/reject', checkAuth, async (req, res) => {
     const user = req.user || JSON.parse(req.headers['x-user'] || '{}');
     const { approverNotes } = req.body;
     
+    if (!approverNotes || !approverNotes.trim()) {
+      return res.status(400).json({ error: 'Rejection comment is required' });
+    }
+    
     await db.query(
       `UPDATE itms.fixed_deposit_requests 
        SET status = 'Returned', 
+           current_approval_level = 'back_office_final',
            approver_notes = ?,
            rejected_by = ?,
            rejected_at = NOW(),
            updated_at = NOW()
        WHERE id = ?`,
-      [approverNotes || null, user.id || user.userId, id]
+      [approverNotes, user.id || user.userId, id]
     );
     
     res.json({ success: true, message: 'Request rejected successfully' });
