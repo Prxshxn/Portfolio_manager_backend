@@ -32,16 +32,32 @@ exports.checkAuth = (req, res, next) => {
     }
     
     // Verify token
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+    const jwtSecret = process.env.JWT_SECRET || 'your-secret-key';
+    const decoded = jwt.verify(token, jwtSecret);
     req.user = decoded;
     next();
   } catch (error) {
-    console.error('Auth middleware error:', error);
+    // Log the error but don't expose sensitive details
+    if (error.name === 'JsonWebTokenError' && error.message === 'invalid signature') {
+      console.error('Auth middleware error: JWT token signature invalid. User needs to log in again.');
+      console.error('This usually happens when JWT_SECRET changed or token was signed with different secret.');
+    } else {
+      console.error('Auth middleware error:', error.name, error.message);
+    }
     
     // For development/testing, allow requests even if token verification fails
     if (process.env.NODE_ENV === 'development' && process.env.SKIP_AUTH === 'true') {
       console.log('Continuing despite auth error in development mode');
       return next();
+    }
+    
+    // Provide helpful error message for invalid signature
+    if (error.name === 'JsonWebTokenError' && error.message === 'invalid signature') {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Your session has expired or is invalid. Please log in again.',
+        error: 'Token signature invalid - likely due to JWT_SECRET mismatch. Please log in again to get a new token.'
+      });
     }
     
     return res.status(401).json({ 

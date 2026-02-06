@@ -21,9 +21,9 @@ class Transaction {
           a.name as source_account,
           u.username as user_name,
           u.id as user_id
-        FROM itms.transactions t
-        LEFT JOIN itms.accounts a ON t.source_account_id = a.id
-        LEFT JOIN itms.users u ON COALESCE(t.submitted_by, t.user) = u.id
+        FROM transactions t
+        LEFT JOIN accounts a ON t.source_account_id = a.id
+        LEFT JOIN users u ON COALESCE(t.submitted_by, t.user) = u.id
         ORDER BY t.date DESC, t.deal_number DESC
       `);
       
@@ -105,9 +105,9 @@ class Transaction {
           a.name as source_account,
           u.username as user_name,
           u.id as user_id
-        FROM itms.transactions t
-        LEFT JOIN itms.accounts a ON t.source_account_id = a.id
-        LEFT JOIN itms.users u ON COALESCE(t.submitted_by, t.user) = u.id
+        FROM transactions t
+        LEFT JOIN accounts a ON t.source_account_id = a.id
+        LEFT JOIN users u ON COALESCE(t.submitted_by, t.user) = u.id
         WHERE t.deal_number = ?
       `, [deal_number]);
       
@@ -152,14 +152,14 @@ class Transaction {
         const randomSuffix = Math.floor(1000 + Math.random() * 9000); // 4-digit random
         dealNumber = `DEAL${dateStr}-${randomSuffix}`;
         // Check uniqueness
-        const [rows] = await connection.query('SELECT deal_number FROM itms.transactions WHERE deal_number = ?', [dealNumber]);
+        const [rows] = await connection.query('SELECT deal_number FROM transactions WHERE deal_number = ?', [dealNumber]);
         exists = rows.length > 0;
         tryCount++;
         if (tryCount > 10) throw new Error('Could not generate unique deal number');
       } while (exists);
       // Insert transaction with new fields
       const [result] = await connection.query(
-        `INSERT INTO itms.transactions (
+        `INSERT INTO transactions (
           deal_number,
           source_account_id, category, amount, date, description, 
           trade_date, value_date, security_id, interest_rate, 
@@ -233,7 +233,7 @@ class Transaction {
       
       // Get old transaction to calculate balance adjustment
       const [oldTransactionRows] = await connection.query(
-        'SELECT amount, source_account_id, status FROM itms.transactions WHERE deal_number = ?',
+        'SELECT amount, source_account_id, status FROM transactions WHERE deal_number = ?',
         [deal_number]
       );
       
@@ -267,7 +267,7 @@ class Transaction {
         }
         if (updateFields.length > 0) {
           await connection.query(
-            `UPDATE itms.transactions SET ${updateFields.join(', ')} WHERE deal_number = ?`,
+            `UPDATE transactions SET ${updateFields.join(', ')} WHERE deal_number = ?`,
             [...updateValues, deal_number]
           );
         }
@@ -442,7 +442,7 @@ class Transaction {
         // Execute update if there are fields to update
         if (updateFields.length > 0) {
           await connection.query(
-            `UPDATE itms.transactions SET ${updateFields.join(', ')} WHERE deal_number = ?`,
+            `UPDATE transactions SET ${updateFields.join(', ')} WHERE deal_number = ?`,
             updateValues
           );
         }
@@ -470,7 +470,7 @@ class Transaction {
       
       // Get transaction to adjust account balance
       const [transactionRows] = await connection.query(
-        'SELECT amount, source_account_id FROM itms.transactions WHERE deal_number = ?',
+        'SELECT amount, source_account_id FROM transactions WHERE deal_number = ?',
         [id]
       );
       
@@ -489,7 +489,7 @@ class Transaction {
       }
       
       // Delete the transaction
-      await connection.query('DELETE FROM itms.transactions WHERE deal_number = ?', [id]);
+      await connection.query('DELETE FROM transactions WHERE deal_number = ?', [id]);
       
       // Reverse the account balance adjustment
       await connection.query(
@@ -515,9 +515,9 @@ class Transaction {
         SELECT 
           t.*,
           a.name as source_account
-        FROM itms.transactions t
-        LEFT JOIN itms.accounts a ON t.source_account_id = a.id
-        LEFT JOIN itms.users u ON COALESCE(t.submitted_by, t.user) = u.id
+        FROM transactions t
+        LEFT JOIN accounts a ON t.source_account_id = a.id
+        LEFT JOIN users u ON COALESCE(t.submitted_by, t.user) = u.id
         ORDER BY t.date DESC, t.deal_number DESC
         LIMIT ?
       `, [limit]);

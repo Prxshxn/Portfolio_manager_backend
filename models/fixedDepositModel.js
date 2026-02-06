@@ -8,7 +8,7 @@ const FixedDepositRequest = {
    */
   getAll: async (filters = {}) => {
     try {
-      let sql = 'SELECT * FROM itms.fixed_deposit_requests WHERE 1=1';
+      let sql = 'SELECT * FROM fixed_deposit_requests WHERE 1=1';
       const params = [];
 
       if (filters.status) {
@@ -54,7 +54,7 @@ const FixedDepositRequest = {
   getById: async (id) => {
     try {
       const [rows] = await db.query(
-        'SELECT * FROM itms.fixed_deposit_requests WHERE id = ?',
+        'SELECT * FROM fixed_deposit_requests WHERE id = ?',
         [id]
       );
       return rows[0] || null;
@@ -72,7 +72,7 @@ const FixedDepositRequest = {
   getByRequestNo: async (requestNo) => {
     try {
       const [rows] = await db.query(
-        'SELECT * FROM itms.fixed_deposit_requests WHERE request_no = ?',
+        'SELECT * FROM fixed_deposit_requests WHERE request_no = ?',
         [requestNo]
       );
       return rows[0] || null;
@@ -90,7 +90,7 @@ const FixedDepositRequest = {
   getByFileNumber: async (fileNumber) => {
     try {
       const [rows] = await db.query(
-        'SELECT * FROM itms.fixed_deposit_requests WHERE file_number = ? ORDER BY created_at DESC',
+        'SELECT * FROM fixed_deposit_requests WHERE file_number = ? ORDER BY created_at DESC',
         [fileNumber]
       );
       return rows;
@@ -108,7 +108,7 @@ const FixedDepositRequest = {
   searchByFileNumber: async (fileNumberPattern) => {
     try {
       const [rows] = await db.query(
-        'SELECT * FROM itms.fixed_deposit_requests WHERE file_number LIKE ? ORDER BY created_at DESC',
+        'SELECT * FROM fixed_deposit_requests WHERE file_number LIKE ? ORDER BY created_at DESC',
         [`%${fileNumberPattern}%`]
       );
       return rows;
@@ -125,7 +125,7 @@ const FixedDepositRequest = {
    */
   create: async (data) => {
     try {
-      const sql = `INSERT INTO itms.fixed_deposit_requests (
+      const sql = `INSERT INTO fixed_deposit_requests (
         portfolio_id, book, module, request_no, file_number, status,
         counterparty_type, counterparty_id, contact_person, request_remarks,
         instrument_type, isin, currency, requested_amount, target_yield,
@@ -209,7 +209,7 @@ const FixedDepositRequest = {
       updateFields.push('updated_at = NOW()');
       values.push(id);
 
-      const sql = `UPDATE itms.fixed_deposit_requests SET ${updateFields.join(', ')} WHERE id = ?`;
+      const sql = `UPDATE fixed_deposit_requests SET ${updateFields.join(', ')} WHERE id = ?`;
       await db.query(sql, values);
 
       return { success: true, id };
@@ -226,7 +226,7 @@ const FixedDepositRequest = {
    */
   delete: async (id) => {
     try {
-      await db.query('DELETE FROM itms.fixed_deposit_requests WHERE id = ?', [id]);
+      await db.query('DELETE FROM fixed_deposit_requests WHERE id = ?', [id]);
       return { success: true };
     } catch (error) {
       console.error('Error deleting fixed deposit request:', error);
@@ -244,7 +244,7 @@ const FixedDepositRequest = {
   approve: async (id, approvedBy, approverNotes = null) => {
     try {
       await db.query(
-        `UPDATE itms.fixed_deposit_requests 
+        `UPDATE fixed_deposit_requests 
          SET status = 'Approved',
              approved_by = ?,
              approver_notes = ?,
@@ -270,7 +270,7 @@ const FixedDepositRequest = {
   reject: async (id, rejectedBy, approverNotes = null) => {
     try {
       await db.query(
-        `UPDATE itms.fixed_deposit_requests 
+        `UPDATE fixed_deposit_requests 
          SET status = 'Rejected',
              rejected_by = ?,
              approver_notes = ?,
@@ -295,7 +295,7 @@ const FixedDepositRequest = {
   submitForApproval: async (id, submittedBy) => {
     try {
       await db.query(
-        `UPDATE itms.fixed_deposit_requests 
+        `UPDATE fixed_deposit_requests 
          SET status = 'Pending',
              submitted_by = ?,
              submitted_at = NOW(),
@@ -319,7 +319,7 @@ const FixedDepositRequest = {
     try {
       const prefix = `FD${dateStr}`;
       const [rows] = await db.query(
-        `SELECT request_no FROM itms.fixed_deposit_requests 
+        `SELECT request_no FROM fixed_deposit_requests 
          WHERE request_no LIKE ? 
          ORDER BY request_no DESC 
          LIMIT 1`,

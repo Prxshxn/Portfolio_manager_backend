@@ -144,7 +144,7 @@ router.post('/', async (req, res) => {
     if (deal.userId || deal.created_by) {
       userId = deal.userId || deal.created_by;
     } else if (deal.username) {
-      const [userRows] = await pool.query('SELECT id FROM itms.users WHERE username = ?', [deal.username]);
+      const [userRows] = await pool.query('SELECT id FROM users WHERE username = ?', [deal.username]);
       if (userRows.length > 0) {
         userId = userRows[0].id;
       }
@@ -352,7 +352,7 @@ router.put('/:deal_number', async (req, res) => {
     let userId = authorized_by;
     if (typeof authorized_by === 'string') {
       try {
-        const [userRows] = await pool.query('SELECT id FROM itms.users WHERE username = ?', [authorized_by]);
+        const [userRows] = await pool.query('SELECT id FROM users WHERE username = ?', [authorized_by]);
         if (userRows.length > 0) {
           userId = userRows[0].id;
         } else {

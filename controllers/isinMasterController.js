@@ -313,7 +313,7 @@ module.exports = {
           
           // Update remaining face value for the referenced buy deal
           console.log(`Updating remaining face value for buy deal: ${sell.buy_deal_number}`);
-          const [buyDeals] = await connection.query('SELECT * FROM itms.gsec WHERE deal_number = ? AND transaction_type = "Buy"', [sell.buy_deal_number]);
+          const [buyDeals] = await connection.query('SELECT * FROM gsec WHERE deal_number = ? AND transaction_type = "Buy"', [sell.buy_deal_number]);
           if (buyDeals && buyDeals.length > 0) {
             const buyDeal = buyDeals[0];
             const original = parseFloat(buyDeal.remaining_face_value || buyDeal.face_value || 0);
@@ -323,7 +323,7 @@ module.exports = {
             
             console.log(`Buy deal ${sell.buy_deal_number}: original=${original}, sold=${sold}, newRemaining=${newRemaining}`);
             
-            await connection.query('UPDATE itms.gsec SET remaining_face_value = ? WHERE id = ?', [newRemaining.toFixed(4), buyDeal.id]);
+            await connection.query('UPDATE gsec SET remaining_face_value = ? WHERE id = ?', [newRemaining.toFixed(4), buyDeal.id]);
           } else {
             console.error(`Buy deal not found: ${sell.buy_deal_number}`);
           }
@@ -490,12 +490,12 @@ module.exports = {
       return res.status(400).json({ success: false, error: 'Invalid status. Must be approved or rejected.' });
     }
     
-    // Note: Comment column doesn't exist in itms.gsec table, so we don't require it
+    // Note: Comment column doesn't exist in gsec table, so we don't require it
     // If needed in the future, a rejection_reason or notes column can be added
     
     try {
       // First get the current transaction to determine the approval level
-      const [currentTransaction] = await db.query('SELECT * FROM itms.gsec WHERE id = ?', [id]);
+      const [currentTransaction] = await db.query('SELECT * FROM gsec WHERE id = ?', [id]);
       
       if (currentTransaction.length === 0) {
         return res.status(404).json({ success: false, error: 'Transaction not found' });
@@ -507,7 +507,7 @@ module.exports = {
     const finalStatus = status === 'approved' ? 'final_approved' : status;
     
     // Simplified update data - only status and current_approval_level
-    // Note: comment, authorized_by, authorized_at columns don't exist in itms.gsec table
+    // Note: comment, authorized_by, authorized_at columns don't exist in gsec table
     const updateData = {
       status: finalStatus
     };

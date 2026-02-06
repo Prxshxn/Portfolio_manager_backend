@@ -2,8 +2,8 @@ const mysql = require('mysql2/promise');
 require('dotenv').config();
 
 // Create a connection pool with improved settings
-// Connect to default database but allow cross-database queries using database.table format
-// Queries without prefix will use the default database, queries with prefix (e.g., itms.table) will work too
+// Connect to default database (ITMS-LV1) - all queries use tables from this database
+// Queries should NOT use database prefix - tables are in the default database
 const pool = mysql.createPool({
   host: process.env.DB_HOST || 'localhost',
   port: process.env.DB_PORT || 3306,

@@ -32,12 +32,12 @@ router.get('/requests', checkAuth, async (req, res) => {
         ) as counterparty_long_name,
         p.portfolio_name as portfolio_name,
         u.username as submitted_by_name
-      FROM itms.fixed_deposit_requests fd
-      LEFT JOIN itms.counterparty_master_corporate corp ON fd.counterparty_id = corp.id
-      LEFT JOIN itms.counterparty_master_individual ind ON fd.counterparty_id = ind.id
-      LEFT JOIN itms.counterparty_master_joint joint ON fd.counterparty_id = joint.id
-      LEFT JOIN itms.portfolio_master p ON CAST(fd.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci = CAST(p.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci
-      LEFT JOIN itms.users u ON fd.submitted_by = u.id
+      FROM fixed_deposit_requests fd
+      LEFT JOIN counterparty_master_corporate corp ON fd.counterparty_id = corp.id
+      LEFT JOIN counterparty_master_individual ind ON fd.counterparty_id = ind.id
+      LEFT JOIN counterparty_master_joint joint ON fd.counterparty_id = joint.id
+      LEFT JOIN portfolio_master p ON CAST(fd.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci = CAST(p.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci
+      LEFT JOIN users u ON fd.submitted_by = u.id
       WHERE 1=1
     `;
     
@@ -108,12 +108,12 @@ router.get('/requests/pending', checkAuth, async (req, res) => {
         ) as counterparty_long_name,
         p.portfolio_name as portfolio_name,
         u.username as submitted_by_name
-      FROM itms.fixed_deposit_requests fd
-      LEFT JOIN itms.counterparty_master_corporate corp ON fd.counterparty_id = corp.id
-      LEFT JOIN itms.counterparty_master_individual ind ON fd.counterparty_id = ind.id
-      LEFT JOIN itms.counterparty_master_joint joint ON fd.counterparty_id = joint.id
-      LEFT JOIN itms.portfolio_master p ON CAST(fd.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci = CAST(p.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci
-      LEFT JOIN itms.users u ON fd.submitted_by = u.id
+      FROM fixed_deposit_requests fd
+      LEFT JOIN counterparty_master_corporate corp ON fd.counterparty_id = corp.id
+      LEFT JOIN counterparty_master_individual ind ON fd.counterparty_id = ind.id
+      LEFT JOIN counterparty_master_joint joint ON fd.counterparty_id = joint.id
+      LEFT JOIN portfolio_master p ON CAST(fd.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci = CAST(p.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci
+      LEFT JOIN users u ON fd.submitted_by = u.id
       WHERE fd.current_approval_level = 'back_office_final' 
         AND LOWER(TRIM(fd.status)) IN ('pending', 'draft')
       ORDER BY fd.created_at DESC`
@@ -152,12 +152,12 @@ router.get('/requests/:id', checkAuth, async (req, res) => {
         ) as counterparty_long_name,
         p.portfolio_name as portfolio_name,
         u.username as submitted_by_name
-      FROM itms.fixed_deposit_requests fd
-      LEFT JOIN itms.counterparty_master_corporate corp ON fd.counterparty_id = corp.id
-      LEFT JOIN itms.counterparty_master_individual ind ON fd.counterparty_id = ind.id
-      LEFT JOIN itms.counterparty_master_joint joint ON fd.counterparty_id = joint.id
-      LEFT JOIN itms.portfolio_master p ON fd.portfolio_id = p.portfolio_id
-      LEFT JOIN itms.users u ON fd.submitted_by = u.id
+      FROM fixed_deposit_requests fd
+      LEFT JOIN counterparty_master_corporate corp ON fd.counterparty_id = corp.id
+      LEFT JOIN counterparty_master_individual ind ON fd.counterparty_id = ind.id
+      LEFT JOIN counterparty_master_joint joint ON fd.counterparty_id = joint.id
+      LEFT JOIN portfolio_master p ON fd.portfolio_id = p.portfolio_id
+      LEFT JOIN users u ON fd.submitted_by = u.id
       WHERE fd.id = ?`,
       [id]
     );
@@ -213,7 +213,7 @@ router.post('/requests', checkAuth, async (req, res) => {
     if (counterpartyName) {
       // First try to find in issuer_master by issuer_id
       const [issuerRows] = await db.query(
-        `SELECT id FROM itms.issuer_master WHERE issuer_id = ? LIMIT 1`,
+        `SELECT id FROM issuer_master WHERE issuer_id = ? LIMIT 1`,
         [counterpartyName]
       );
       if (issuerRows.length > 0) {
@@ -221,7 +221,7 @@ router.post('/requests', checkAuth, async (req, res) => {
       } else {
         // Fallback to counterparty_master_corporate
         const [cpRows] = await db.query(
-          `SELECT id FROM itms.counterparty_master_corporate WHERE issuer_id = ? OR id = ? LIMIT 1`,
+          `SELECT id FROM counterparty_master_corporate WHERE issuer_id = ? OR id = ? LIMIT 1`,
           [counterpartyName, counterpartyName]
         );
         if (cpRows.length > 0) {
@@ -241,7 +241,7 @@ router.post('/requests', checkAuth, async (req, res) => {
     const approvalLevel = 'back_office_final';
     
     const [result] = await db.query(
-      `INSERT INTO itms.fixed_deposit_requests (
+      `INSERT INTO fixed_deposit_requests (
         portfolio_id, book, module, request_no, file_number, status, current_approval_level,
         counterparty_type, counterparty_id, contact_person, request_remarks,
         instrument_type, isin, currency, requested_amount, target_yield,
@@ -321,7 +321,7 @@ router.put('/requests/:id', checkAuth, async (req, res) => {
     let counterpartyId = null;
     if (counterpartyName) {
       const [cpRows] = await db.query(
-        `SELECT id FROM itms.counterparty_master_corporate WHERE unique_id = ? OR short_name = ? LIMIT 1`,
+        `SELECT id FROM counterparty_master_corporate WHERE unique_id = ? OR short_name = ? LIMIT 1`,
         [counterpartyName, counterpartyName]
       );
       if (cpRows.length > 0) {
@@ -358,7 +358,7 @@ router.put('/requests/:id', checkAuth, async (req, res) => {
     }
     
     await db.query(
-      `UPDATE itms.fixed_deposit_requests SET ${updateFields.join(', ')} WHERE id = ?`,
+      `UPDATE fixed_deposit_requests SET ${updateFields.join(', ')} WHERE id = ?`,
       updateValues
     );
     
@@ -380,7 +380,7 @@ router.put('/requests/:id/approve', checkAuth, async (req, res) => {
     const { approverNotes } = req.body;
     
     await db.query(
-      `UPDATE itms.fixed_deposit_requests 
+      `UPDATE fixed_deposit_requests 
        SET status = 'Approved', 
            current_approval_level = 'final_approved',
            approver_notes = ?,
@@ -413,7 +413,7 @@ router.put('/requests/:id/reject', checkAuth, async (req, res) => {
     }
     
     await db.query(
-      `UPDATE itms.fixed_deposit_requests 
+      `UPDATE fixed_deposit_requests 
        SET status = 'Returned', 
            current_approval_level = 'back_office_final',
            approver_notes = ?,
@@ -457,12 +457,12 @@ router.get('/requests/file-number/:fileNumber', checkAuth, async (req, res) => {
         ) as counterparty_long_name,
         p.portfolio_name as portfolio_name,
         u.username as submitted_by_name
-      FROM itms.fixed_deposit_requests fd
-      LEFT JOIN itms.counterparty_master_corporate corp ON fd.counterparty_id = corp.id
-      LEFT JOIN itms.counterparty_master_individual ind ON fd.counterparty_id = ind.id
-      LEFT JOIN itms.counterparty_master_joint joint ON fd.counterparty_id = joint.id
-      LEFT JOIN itms.portfolio_master p ON CAST(fd.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci = CAST(p.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci
-      LEFT JOIN itms.users u ON fd.submitted_by = u.id
+      FROM fixed_deposit_requests fd
+      LEFT JOIN counterparty_master_corporate corp ON fd.counterparty_id = corp.id
+      LEFT JOIN counterparty_master_individual ind ON fd.counterparty_id = ind.id
+      LEFT JOIN counterparty_master_joint joint ON fd.counterparty_id = joint.id
+      LEFT JOIN portfolio_master p ON CAST(fd.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci = CAST(p.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci
+      LEFT JOIN users u ON fd.submitted_by = u.id
       WHERE fd.file_number = ?
       ORDER BY fd.created_at DESC`,
       [fileNumber]
@@ -505,12 +505,12 @@ router.get('/requests/search/file-number', checkAuth, async (req, res) => {
         ) as counterparty_long_name,
         p.portfolio_name as portfolio_name,
         u.username as submitted_by_name
-      FROM itms.fixed_deposit_requests fd
-      LEFT JOIN itms.counterparty_master_corporate corp ON fd.counterparty_id = corp.id
-      LEFT JOIN itms.counterparty_master_individual ind ON fd.counterparty_id = ind.id
-      LEFT JOIN itms.counterparty_master_joint joint ON fd.counterparty_id = joint.id
-      LEFT JOIN itms.portfolio_master p ON CAST(fd.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci = CAST(p.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci
-      LEFT JOIN itms.users u ON fd.submitted_by = u.id
+      FROM fixed_deposit_requests fd
+      LEFT JOIN counterparty_master_corporate corp ON fd.counterparty_id = corp.id
+      LEFT JOIN counterparty_master_individual ind ON fd.counterparty_id = ind.id
+      LEFT JOIN counterparty_master_joint joint ON fd.counterparty_id = joint.id
+      LEFT JOIN portfolio_master p ON CAST(fd.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci = CAST(p.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci
+      LEFT JOIN users u ON fd.submitted_by = u.id
       WHERE fd.file_number LIKE ?
       ORDER BY fd.created_at DESC`,
       [`%${q}%`]

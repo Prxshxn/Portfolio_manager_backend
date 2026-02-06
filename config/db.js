@@ -4,8 +4,8 @@ const dotenv = require('dotenv');
 dotenv.config();
 
 // Create connection pool
-// Connect to default database (ITMS-LV1) but allow cross-database queries using database.table format
-// Queries without prefix will use the default database, queries with prefix (e.g., itms.table) will work too
+// Connect to default database (ITMS-LV1) - all queries use tables from this database
+// Queries should NOT use database prefix - tables are in the default database
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
   user: process.env.DB_USER,
