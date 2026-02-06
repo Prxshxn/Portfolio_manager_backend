@@ -2,14 +2,14 @@ const mysql = require('mysql2/promise');
 require('dotenv').config();
 
 // Create a connection pool with improved settings
-// Note: database property is removed to allow connection to any database on the server
-// Queries should use database.table format (e.g., itms.fund_centre_master)
+// Connect to default database but allow cross-database queries using database.table format
+// Queries without prefix will use the default database, queries with prefix (e.g., itms.table) will work too
 const pool = mysql.createPool({
   host: process.env.DB_HOST || 'localhost',
   port: process.env.DB_PORT || 3306,
   user: process.env.DB_USER || 'root',
   password: process.env.DB_PASSWORD || 'Prashan@321',
-  // database: process.env.DB_NAME || 'portfolio_manager', // Removed - connect without specifying database
+  database: process.env.DB_NAME || 'ITMS-LV1', // Default database, but can still query other databases
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
@@ -39,7 +39,8 @@ const initDatabase = async () => {
     console.log('Please make sure:');
     console.log('1. MySQL server is running');
     console.log('2. The credentials in config/database.js are correct');
-    console.log('3. Connection is made without specifying a database - use database.table format in queries');
+    console.log(`3. The database "${process.env.DB_NAME || 'ITMS-LV1'}" exists or set DB_NAME in .env`);
+    console.log('4. You can still use database.table format in queries to access other databases');
   }
 };
 
