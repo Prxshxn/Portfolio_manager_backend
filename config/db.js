@@ -4,11 +4,13 @@ const dotenv = require('dotenv');
 dotenv.config();
 
 // Create connection pool
+// Note: database property is removed to allow connection to any database on the server
+// Queries should use database.table format (e.g., itms.fund_centre_master)
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
+  // database: process.env.DB_NAME, // Removed - connect without specifying database
   port: process.env.DB_PORT || 3306,
   waitForConnections: true,
   connectionLimit: 10,
@@ -50,7 +52,7 @@ async function testConnection() {
     } else if (error.code === 'ECONNREFUSED') {
       console.error('Connection refused. Please check if the database server is running.');
     } else if (error.code === 'ER_BAD_DB_ERROR') {
-      console.error('Database does not exist. Please create it or check the DB_NAME in your .env file.');
+      console.error('Database connection error. Note: Connection is made without specifying a database. Use database.table format in queries.');
     }
     process.exit(1);
   } finally {

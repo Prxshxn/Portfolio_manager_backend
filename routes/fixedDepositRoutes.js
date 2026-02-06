@@ -17,12 +17,25 @@ router.get('/requests', checkAuth, async (req, res) => {
     let query = `
       SELECT 
         fd.*,
-        cp.short_name as counterparty_name,
-        cp.long_name as counterparty_long_name,
+        COALESCE(
+          corp.short_name,
+          ind.short_name,
+          joint.short_name,
+          CONCAT('ID:', fd.counterparty_id)
+        ) as counterparty_name,
+        COALESCE(
+          corp.long_name,
+          ind.long_name,
+          joint.long_name,
+          corp.company_name,
+          NULL
+        ) as counterparty_long_name,
         p.portfolio_name as portfolio_name,
         u.username as submitted_by_name
       FROM itms.fixed_deposit_requests fd
-      LEFT JOIN itms.counterparty_master_corporate cp ON fd.counterparty_id = cp.id
+      LEFT JOIN itms.counterparty_master_corporate corp ON fd.counterparty_id = corp.id
+      LEFT JOIN itms.counterparty_master_individual ind ON fd.counterparty_id = ind.id
+      LEFT JOIN itms.counterparty_master_joint joint ON fd.counterparty_id = joint.id
       LEFT JOIN itms.portfolio_master p ON CAST(fd.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci = CAST(p.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci
       LEFT JOIN itms.users u ON fd.submitted_by = u.id
       WHERE 1=1
@@ -80,12 +93,25 @@ router.get('/requests/pending', checkAuth, async (req, res) => {
     const [requests] = await db.query(
       `SELECT 
         fd.*,
-        cp.short_name as counterparty_name,
-        cp.long_name as counterparty_long_name,
+        COALESCE(
+          corp.short_name,
+          ind.short_name,
+          joint.short_name,
+          CONCAT('ID:', fd.counterparty_id)
+        ) as counterparty_name,
+        COALESCE(
+          corp.long_name,
+          ind.long_name,
+          joint.long_name,
+          corp.company_name,
+          NULL
+        ) as counterparty_long_name,
         p.portfolio_name as portfolio_name,
         u.username as submitted_by_name
       FROM itms.fixed_deposit_requests fd
-      LEFT JOIN itms.counterparty_master_corporate cp ON fd.counterparty_id = cp.id
+      LEFT JOIN itms.counterparty_master_corporate corp ON fd.counterparty_id = corp.id
+      LEFT JOIN itms.counterparty_master_individual ind ON fd.counterparty_id = ind.id
+      LEFT JOIN itms.counterparty_master_joint joint ON fd.counterparty_id = joint.id
       LEFT JOIN itms.portfolio_master p ON CAST(fd.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci = CAST(p.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci
       LEFT JOIN itms.users u ON fd.submitted_by = u.id
       WHERE fd.current_approval_level = 'back_office_final' 
@@ -111,12 +137,25 @@ router.get('/requests/:id', checkAuth, async (req, res) => {
     const [requests] = await db.query(
       `SELECT 
         fd.*,
-        cp.short_name as counterparty_name,
-        cp.long_name as counterparty_long_name,
+        COALESCE(
+          corp.short_name,
+          ind.short_name,
+          joint.short_name,
+          CONCAT('ID:', fd.counterparty_id)
+        ) as counterparty_name,
+        COALESCE(
+          corp.long_name,
+          ind.long_name,
+          joint.long_name,
+          corp.company_name,
+          NULL
+        ) as counterparty_long_name,
         p.portfolio_name as portfolio_name,
         u.username as submitted_by_name
       FROM itms.fixed_deposit_requests fd
-      LEFT JOIN itms.counterparty_master_corporate cp ON fd.counterparty_id = cp.id
+      LEFT JOIN itms.counterparty_master_corporate corp ON fd.counterparty_id = corp.id
+      LEFT JOIN itms.counterparty_master_individual ind ON fd.counterparty_id = ind.id
+      LEFT JOIN itms.counterparty_master_joint joint ON fd.counterparty_id = joint.id
       LEFT JOIN itms.portfolio_master p ON fd.portfolio_id = p.portfolio_id
       LEFT JOIN itms.users u ON fd.submitted_by = u.id
       WHERE fd.id = ?`,
@@ -403,12 +442,25 @@ router.get('/requests/file-number/:fileNumber', checkAuth, async (req, res) => {
     const [requests] = await db.query(
       `SELECT 
         fd.*,
-        cp.short_name as counterparty_name,
-        cp.long_name as counterparty_long_name,
+        COALESCE(
+          corp.short_name,
+          ind.short_name,
+          joint.short_name,
+          CONCAT('ID:', fd.counterparty_id)
+        ) as counterparty_name,
+        COALESCE(
+          corp.long_name,
+          ind.long_name,
+          joint.long_name,
+          corp.company_name,
+          NULL
+        ) as counterparty_long_name,
         p.portfolio_name as portfolio_name,
         u.username as submitted_by_name
       FROM itms.fixed_deposit_requests fd
-      LEFT JOIN itms.counterparty_master_corporate cp ON fd.counterparty_id = cp.id
+      LEFT JOIN itms.counterparty_master_corporate corp ON fd.counterparty_id = corp.id
+      LEFT JOIN itms.counterparty_master_individual ind ON fd.counterparty_id = ind.id
+      LEFT JOIN itms.counterparty_master_joint joint ON fd.counterparty_id = joint.id
       LEFT JOIN itms.portfolio_master p ON CAST(fd.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci = CAST(p.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci
       LEFT JOIN itms.users u ON fd.submitted_by = u.id
       WHERE fd.file_number = ?
@@ -438,12 +490,25 @@ router.get('/requests/search/file-number', checkAuth, async (req, res) => {
     const [requests] = await db.query(
       `SELECT 
         fd.*,
-        cp.short_name as counterparty_name,
-        cp.long_name as counterparty_long_name,
+        COALESCE(
+          corp.short_name,
+          ind.short_name,
+          joint.short_name,
+          CONCAT('ID:', fd.counterparty_id)
+        ) as counterparty_name,
+        COALESCE(
+          corp.long_name,
+          ind.long_name,
+          joint.long_name,
+          corp.company_name,
+          NULL
+        ) as counterparty_long_name,
         p.portfolio_name as portfolio_name,
         u.username as submitted_by_name
       FROM itms.fixed_deposit_requests fd
-      LEFT JOIN itms.counterparty_master_corporate cp ON fd.counterparty_id = cp.id
+      LEFT JOIN itms.counterparty_master_corporate corp ON fd.counterparty_id = corp.id
+      LEFT JOIN itms.counterparty_master_individual ind ON fd.counterparty_id = ind.id
+      LEFT JOIN itms.counterparty_master_joint joint ON fd.counterparty_id = joint.id
       LEFT JOIN itms.portfolio_master p ON CAST(fd.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci = CAST(p.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci
       LEFT JOIN itms.users u ON fd.submitted_by = u.id
       WHERE fd.file_number LIKE ?
