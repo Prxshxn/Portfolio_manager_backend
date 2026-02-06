@@ -114,7 +114,7 @@ exports.login = async (req, res) => {
     let effectiveRole = user.role;
     let allowedTabs = user.allowed_tabs || [];
     // Fetch all assignments for this user
-    const [assignments] = await require('../config/db').query('SELECT * FROM authorizer_assignments WHERE user_id = ?', [user.id]);
+    const [assignments] = await require('../config/db').query('SELECT * FROM itms.authorizer_assignments WHERE user_id = ?', [user.id]);
     if (assignments && assignments.length > 0) {
       // Priority: back_office_final > back_office_verifier > back_office > front_office > authorizer > others
       const rolePriority = ['back_office_final', 'back_office_verifier', 'back_office', 'front_office', 'authorizer'];
