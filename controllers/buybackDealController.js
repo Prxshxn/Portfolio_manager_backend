@@ -3,6 +3,15 @@ const Gsec = require('../models/gsec');
 const db = require('../config/database');
 const holidayValidationService = require('../services/holidayValidationService');
 
+// Helper function to convert empty strings to null for numeric fields
+const sanitizeNumeric = (value) => {
+  if (value === '' || value === null || value === undefined) {
+    return null;
+  }
+  const num = parseFloat(value);
+  return isNaN(num) ? null : num;
+};
+
 const buybackDealController = {
   // Create a new buyback deal
   createDeal: async (req, res) => {
@@ -70,14 +79,14 @@ const buybackDealController = {
           strategy: leg1.strategy,
           custodian: leg1.custodian,
           settlementMode: leg1.settlementMode,
-          brokerage: leg1.brokerage || 0,
-          interestRate: leg1.interestRate || 0,
-          faceValue: leg1.faceValue,
-          yield: leg1.yield,
-          settlementAmount: leg1.settlementAmount,
-          cleanPrice: leg1.cleanPrice,
-          dirtyPrice: leg1.dirtyPrice,
-          accruedInterest: leg1.accruedInterest,
+          brokerage: sanitizeNumeric(leg1.brokerage) || 0,
+          interestRate: sanitizeNumeric(leg1.interestRate) || 0,
+          faceValue: sanitizeNumeric(leg1.faceValue),
+          yield: sanitizeNumeric(leg1.yield),
+          settlementAmount: sanitizeNumeric(leg1.settlementAmount),
+          cleanPrice: sanitizeNumeric(leg1.cleanPrice),
+          dirtyPrice: sanitizeNumeric(leg1.dirtyPrice),
+          accruedInterest: sanitizeNumeric(leg1.accruedInterest),
           currency: leg1.currency || 'LKR'
         },
         leg2: {
@@ -91,18 +100,18 @@ const buybackDealController = {
           strategy: leg2.strategy,
           custodian: leg2.custodian,
           settlementMode: leg2.settlementMode,
-          faceValue: leg2.faceValue,
-          yield: leg2.yield,
-          settlementAmount: leg2.settlementAmount,
-          cleanPrice: leg2.cleanPrice,
-          dirtyPrice: leg2.dirtyPrice,
-          accruedInterest: leg2.accruedInterest,
+          faceValue: sanitizeNumeric(leg2.faceValue),
+          yield: sanitizeNumeric(leg2.yield),
+          settlementAmount: sanitizeNumeric(leg2.settlementAmount),
+          cleanPrice: sanitizeNumeric(leg2.cleanPrice),
+          dirtyPrice: sanitizeNumeric(leg2.dirtyPrice),
+          accruedInterest: sanitizeNumeric(leg2.accruedInterest),
           currency: leg2.currency || 'LKR'
         },
         // ISIN metadata (from leg1)
-        issueDate: leg1.issueDate,
-        maturityDate: leg1.maturityDate,
-        couponRate: leg1.couponRate,
+        issueDate: leg1.issueDate || null,
+        maturityDate: leg1.maturityDate || null,
+        couponRate: sanitizeNumeric(leg1.couponRate),
         couponDate1: leg1.couponDate1,
         couponDate2: leg1.couponDate2,
         // Status and tracking
