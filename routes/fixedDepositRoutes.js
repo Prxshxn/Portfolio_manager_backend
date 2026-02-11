@@ -379,6 +379,7 @@ router.put('/requests/:id/approve', checkAuth, async (req, res) => {
     const user = req.user || JSON.parse(req.headers['x-user'] || '{}');
     const { approverNotes } = req.body;
     
+    // Update the request status
     await db.query(
       `UPDATE fixed_deposit_requests 
        SET status = 'Approved', 
@@ -390,6 +391,151 @@ router.put('/requests/:id/approve', checkAuth, async (req, res) => {
        WHERE id = ?`,
       [approverNotes || null, user.id || user.userId, id]
     );
+    
+    // Create ledger entries after final approval
+    try {
+      console.log(`[Fixed Deposit] Starting ledger entry creation for request ID: ${id}`);
+      
+      // Fetch the fixed deposit request details
+      const [fdRows] = await db.query('SELECT * FROM fixed_deposit_requests WHERE id = ?', [id]);
+      const fdRequest = fdRows[0];
+      
+      if (!fdRequest) {
+        console.error(`[Fixed Deposit] Request not found for ledger entry creation: ${id}`);
+        return res.json({ success: true, message: 'Request approved successfully' });
+      }
+      
+      console.log(`[Fixed Deposit] Request found: ${fdRequest.request_no}, Amount: ${fdRequest.requested_amount}, Status: ${fdRequest.status}`);
+      
+      // Check if ledger entries already exist for this request
+      const requestNumber = fdRequest.request_no || `FD-${id}`;
+      const [existingEntries] = await db.query(
+        'SELECT COUNT(*) as cnt FROM ledger_entries WHERE deal_number = ?',
+        [requestNumber]
+      );
+      
+      if (existingEntries[0].cnt > 0) {
+        console.log(`[Fixed Deposit] Ledger entries already exist for request ${requestNumber}, skipping creation`);
+        return res.json({ success: true, message: 'Request approved successfully' });
+      }
+      
+      const amount = parseFloat(fdRequest.requested_amount || 0);
+      if (amount <= 0) {
+        console.error(`[Fixed Deposit] Invalid amount for ledger entry: ${amount} (Request ID: ${id})`);
+        return res.json({ success: true, message: 'Request approved successfully' });
+      }
+      
+      console.log(`[Fixed Deposit] Amount validated: ${amount}`);
+      
+      // Get Fixed Deposit Investment Account
+      // Try to get from account mapping first, fallback to pattern search, then direct lookup
+      let fdInvestmentAccount = null;
+      try {
+        const accountMapping = require('../services/accountMappingService');
+        const fdAccountCode = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.FD_INVESTMENT);
+        console.log(`[Fixed Deposit] Using mapped account code: ${fdAccountCode}`);
+        const [fdAccounts] = await db.query('SELECT * FROM chart_of_accounts WHERE account_code = ?', [fdAccountCode]);
+        fdInvestmentAccount = fdAccounts[0];
+      } catch (mappingError) {
+        console.log(`[Fixed Deposit] Account mapping not found (${mappingError.message}), trying pattern search...`);
+        // Try to find any investment account
+        const [investmentAccounts] = await db.query(
+          `SELECT * FROM chart_of_accounts 
+           WHERE (name LIKE '%investment%' OR name LIKE '%deposit%' OR name LIKE '%fixed%' OR account_code LIKE '2%')
+           AND is_active = TRUE 
+           LIMIT 1`
+        );
+        if (investmentAccounts.length > 0) {
+          fdInvestmentAccount = investmentAccounts[0];
+          console.log(`[Fixed Deposit] Found investment account via pattern: ${fdInvestmentAccount.account_code} - ${fdInvestmentAccount.name}`);
+        } else {
+          // Fallback to default account code 2002
+          console.log(`[Fixed Deposit] Trying default account code 2002...`);
+          const [fdAccounts] = await db.query('SELECT * FROM chart_of_accounts WHERE account_code = ?', ['2002']);
+          fdInvestmentAccount = fdAccounts[0];
+        }
+      }
+      
+      if (!fdInvestmentAccount) {
+        console.error(`[Fixed Deposit] Fixed Deposit Investment Account not found in chart_of_accounts`);
+        console.error(`[Fixed Deposit] Please create an investment account in chart_of_accounts (e.g., code: 2002, name: "Fixed Income Investments")`);
+        return res.json({ success: true, message: 'Request approved successfully' });
+      }
+      
+      console.log(`[Fixed Deposit] Investment Account found: ID=${fdInvestmentAccount.id}, Code=${fdInvestmentAccount.account_code}, Name=${fdInvestmentAccount.name}`);
+      
+      // Get Bank Settlement Account
+      // Try multiple fallback methods to find a bank account
+      let bankAccount = null;
+      
+      // First, try to get default settlement account from mapping
+      try {
+        const accountMapping = require('../services/accountMappingService');
+        const defaultSettlementCode = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.FD_DEFAULT_SETTLEMENT);
+        console.log(`[Fixed Deposit] Using mapped settlement account code: ${defaultSettlementCode}`);
+        const [bankAccounts] = await db.query('SELECT * FROM chart_of_accounts WHERE account_code = ?', [defaultSettlementCode]);
+        bankAccount = bankAccounts[0];
+      } catch (mappingError) {
+        console.log(`[Fixed Deposit] Settlement mapping not found (${mappingError.message}), trying fallback methods...`);
+        
+        // Try to find any bank/cash account via pattern search
+        const [bankAccounts] = await db.query(
+          `SELECT * FROM chart_of_accounts 
+           WHERE (name LIKE '%bank%' OR name LIKE '%cash%' OR account_code LIKE '1%')
+           AND is_active = TRUE 
+           LIMIT 1`
+        );
+        if (bankAccounts.length > 0) {
+          bankAccount = bankAccounts[0];
+          console.log(`[Fixed Deposit] Found bank account via pattern: ${bankAccount.account_code} - ${bankAccount.name}`);
+        } else {
+          // Try default account code 1002
+          console.log(`[Fixed Deposit] Trying default account code 1002...`);
+          const [defaultBankRows] = await db.query('SELECT * FROM chart_of_accounts WHERE account_code = ?', ['1002']);
+          bankAccount = defaultBankRows[0];
+        }
+      }
+      
+      if (!bankAccount) {
+        console.error(`[Fixed Deposit] Bank Settlement Account not found for fixed deposit ledger entry`);
+        console.error(`[Fixed Deposit] Please create a bank account in chart_of_accounts (e.g., code: 1002, name: "Bank Current Account")`);
+        return res.json({ success: true, message: 'Request approved successfully' });
+      }
+      
+      console.log(`[Fixed Deposit] Bank Account found: ID=${bankAccount.id}, Code=${bankAccount.account_code}, Name=${bankAccount.name}`);
+      
+      // Create ledger entries: DR Fixed Deposit Investment, CR Bank Account
+      const entryDate = fdRequest.value_date || new Date().toISOString().split('T')[0];
+      const description = `Fixed Deposit - ${fdRequest.request_no || requestNumber}`;
+      
+      console.log(`[Fixed Deposit] Creating ledger entries: Date=${entryDate}, Amount=${amount}, Deal Number=${requestNumber}`);
+      
+      // DR: Fixed Deposit Investment Account
+      const [drResult] = await db.query(
+        `INSERT INTO ledger_entries 
+         (deal_number, account_id, entry_date, debit_amount, credit_amount, currency, description) 
+         VALUES (?, ?, ?, ?, 0, ?, ?)`,
+        [requestNumber, fdInvestmentAccount.id, entryDate, amount, fdRequest.currency || 'LKR', `${description} - DR Investment`]
+      );
+      
+      console.log(`[Fixed Deposit] DR Entry created: ID=${drResult.insertId}`);
+      
+      // CR: Bank Settlement Account
+      const [crResult] = await db.query(
+        `INSERT INTO ledger_entries 
+         (deal_number, account_id, entry_date, debit_amount, credit_amount, currency, description) 
+         VALUES (?, ?, ?, 0, ?, ?, ?)`,
+        [requestNumber, bankAccount.id, entryDate, amount, fdRequest.currency || 'LKR', `${description} - CR Bank Account`]
+      );
+      
+      console.log(`[Fixed Deposit] CR Entry created: ID=${crResult.insertId}`);
+      console.log(`[Fixed Deposit] Successfully created ledger entries for fixed deposit request ${requestNumber}`);
+    } catch (ledgerError) {
+      // Log the error but don't fail the approval
+      console.error(`[Fixed Deposit] Error creating ledger entries for fixed deposit (ID: ${id}):`, ledgerError);
+      console.error(`[Fixed Deposit] Error stack:`, ledgerError.stack);
+      // Continue with the response even if ledger entry fails
+    }
     
     res.json({ success: true, message: 'Request approved successfully' });
   } catch (error) {
