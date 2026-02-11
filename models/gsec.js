@@ -95,8 +95,8 @@ const Gsec = {
         coupon_interest, clean_price, dirty_price, accrued_interest_calculation, accrued_interest_six_decimals, 
         accrued_interest_for_100, settlement_amount, settlement_mode, issue_date, maturity_date, coupon_dates, 
         yield, brokerage, currency, portfolio, strategy, broker, accrued_interest_adjustment, clean_price_adjustment, 
-        buy_deal_number, status, current_approval_level
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+        buy_deal_number, status, current_approval_level, per_day_accrual
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
       
       // Helper function to convert empty strings to null for numeric fields
       const cleanNumericValue = (value) => {
@@ -153,7 +153,8 @@ const Gsec = {
         cleanNumericValue(data.cleanPriceAdjustment),
         data.buyDealNumber || null,
         data.status || 'pending', // Status: pending by default, ready for back office final approval
-        data.current_approval_level || 'back_office_final' // Set to back_office_final for single approval level
+        data.current_approval_level || 'back_office_final', // Set to back_office_final for single approval level
+        cleanNumericValue(data.per_day_accrual) // Daily accrual amount
         // created_at has DEFAULT CURRENT_TIMESTAMP, so we don't need to include it
       ];
       try {
