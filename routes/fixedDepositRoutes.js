@@ -4,6 +4,73 @@ const db = require('../config/db');
 const { checkAuth } = require('../middleware/auth');
 
 /**
+ * Get FD deals that can fund "part amount" - matured (approved, final_approved, maturity_date <= today) or pre-approved
+ * GET /api/fixed-deposit/fund-movement-sources
+ */
+router.get('/fund-movement-sources', checkAuth, async (req, res) => {
+  try {
+    const { counterparty } = req.query;
+    // Matured: status=Approved, current_approval_level=final_approved, maturity_date <= CURDATE()
+    let maturedSql = `
+      SELECT 
+        fdr.id,
+        fdr.request_no as deal_number,
+        fdr.requested_amount as face_value,
+        fdr.maturity_date,
+        COALESCE(corp.short_name, ind.short_name, joint.short_name, fdr.counterparty_id) as counterparty_name,
+        'fixed_deposit' as product_type,
+        'matured' as source_type
+      FROM fixed_deposit_requests fdr
+      LEFT JOIN counterparty_master_corporate corp ON fdr.counterparty_id = corp.id
+      LEFT JOIN counterparty_master_individual ind ON fdr.counterparty_id = ind.id
+      LEFT JOIN counterparty_master_joint joint ON fdr.counterparty_id = joint.id
+      WHERE fdr.status = 'Approved'
+        AND fdr.current_approval_level = 'final_approved'
+        AND fdr.maturity_date <= CURDATE()
+    `;
+    const maturedParams = [];
+    if (counterparty) {
+      maturedSql += ` AND (fdr.counterparty_id LIKE ? OR corp.short_name LIKE ? OR ind.short_name LIKE ? OR joint.short_name LIKE ?)`;
+      const cpPattern = `%${counterparty}%`;
+      maturedParams.push(cpPattern, cpPattern, cpPattern, cpPattern);
+    }
+    maturedSql += ` ORDER BY fdr.maturity_date ASC`;
+
+    // Pre-approved: pre_approval_status = 'pre_approved'
+    let preApprovedSql = `
+      SELECT 
+        fdr.id,
+        fdr.request_no as deal_number,
+        fdr.requested_amount as face_value,
+        fdr.maturity_date,
+        COALESCE(corp.short_name, ind.short_name, joint.short_name, fdr.counterparty_id) as counterparty_name,
+        'fixed_deposit' as product_type,
+        'pre_approved' as source_type
+      FROM fixed_deposit_requests fdr
+      LEFT JOIN counterparty_master_corporate corp ON fdr.counterparty_id = corp.id
+      LEFT JOIN counterparty_master_individual ind ON fdr.counterparty_id = ind.id
+      LEFT JOIN counterparty_master_joint joint ON fdr.counterparty_id = joint.id
+      WHERE fdr.pre_approval_status = 'pre_approved'
+    `;
+    const preApprovedParams = [];
+    if (counterparty) {
+      preApprovedSql += ` AND (fdr.counterparty_id LIKE ? OR corp.short_name LIKE ? OR ind.short_name LIKE ? OR joint.short_name LIKE ?)`;
+      const cpPattern = `%${counterparty}%`;
+      preApprovedParams.push(cpPattern, cpPattern, cpPattern, cpPattern);
+    }
+    preApprovedSql += ` ORDER BY fdr.maturity_date ASC`;
+
+    const [maturedRows] = await db.query(maturedSql, maturedParams);
+    const [preApprovedRows] = await db.query(preApprovedSql, preApprovedParams);
+    const data = [...maturedRows, ...preApprovedRows];
+    res.json({ success: true, data });
+  } catch (error) {
+    console.error('Error fetching fund movement sources:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch fund movement sources', details: error.message });
+  }
+});
+
+/**
  * Get all Fixed Deposit requests with optional status filter
  * GET /api/fixed-deposit/requests?status=Pending
  */
@@ -205,7 +272,13 @@ router.post('/requests', checkAuth, async (req, res) => {
       approverName,
       approverDesignation,
       approvalLimitRequired,
-      approverNotes
+      approverNotes,
+      fundMovement,
+      fundMovementType,
+      partAmountCash,
+      partAmountFromSources,
+      settlementAccountCode,
+      fundSourceDealIds
     } = req.body;
     
     // Find counterparty ID from issuer_id (from Issuer Master)
@@ -236,6 +309,30 @@ router.post('/requests', checkAuth, async (req, res) => {
     // Parse approverId as integer if provided
     const approverIdParsed = approverId ? parseInt(approverId, 10) : null;
     
+    // Fund movement part-amount validation
+    if (fundMovement === 'yes' && fundMovementType === 'part_amount') {
+      const requested = parseFloat(requestedAmount);
+      const cash = parseFloat(partAmountCash) || 0;
+      const fromSources = parseFloat(partAmountFromSources) || 0;
+      const sum = cash + fromSources;
+      const tolerance = 0.01;
+      if (isNaN(requested) || requested <= 0 || Math.abs(sum - requested) > tolerance) {
+        return res.status(400).json({
+          error: 'Part amount invalid',
+          details: 'part_amount_cash + part_amount_from_sources must equal requested_amount'
+        });
+      }
+      const sourceIds = Array.isArray(fundSourceDealIds) ? fundSourceDealIds : (fundSourceDealIds ? String(fundSourceDealIds).split(',').map(s => s.trim()).filter(Boolean) : []);
+      if (sourceIds.length === 0 || fromSources <= 0) {
+        return res.status(400).json({
+          error: 'Part amount invalid',
+          details: 'Select at least one source deal and ensure part_amount_from_sources > 0'
+        });
+      }
+    }
+
+    const fundSourceDealIdsStr = Array.isArray(fundSourceDealIds) ? fundSourceDealIds.join(',') : (fundSourceDealIds ? String(fundSourceDealIds) : null);
+
     // Set status to 'pending' and current_approval_level to 'back_office_final' for authorization workflow
     const requestStatus = status || 'pending';
     const approvalLevel = 'back_office_final';
@@ -248,8 +345,10 @@ router.post('/requests', checkAuth, async (req, res) => {
         value_date, maturity_date,
         approver_id, approver_name, approver_designation, approval_category,
         approval_limit_required, approver_notes,
+        fund_movement, fund_movement_type, part_amount_cash, part_amount_from_sources,
+        settlement_account_code, fund_source_deal_ids,
         submitted_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         portfolio || null,
         book || null,
@@ -275,6 +374,12 @@ router.post('/requests', checkAuth, async (req, res) => {
         approvalCategoryValue,
         approvalLimitRequired || null,
         approverNotes || null,
+        fundMovement || null,
+        fundMovementType || null,
+        partAmountCash != null && partAmountCash !== '' ? parseFloat(partAmountCash) : null,
+        partAmountFromSources != null && partAmountFromSources !== '' ? parseFloat(partAmountFromSources) : null,
+        settlementAccountCode || null,
+        fundSourceDealIdsStr,
         userId
       ]
     );
@@ -314,7 +419,13 @@ router.put('/requests/:id', checkAuth, async (req, res) => {
       maturityDate,
       approvalCategory,
       approvalLimitRequired,
-      approverNotes
+      approverNotes,
+      fundMovement,
+      fundMovementType,
+      partAmountCash,
+      partAmountFromSources,
+      settlementAccountCode,
+      fundSourceDealIds
     } = req.body;
     
     // Find counterparty ID if counterparty name provided
@@ -326,6 +437,30 @@ router.put('/requests/:id', checkAuth, async (req, res) => {
       );
       if (cpRows.length > 0) {
         counterpartyId = cpRows[0].id;
+      }
+    }
+    
+    // Part-amount validation when updating to part_amount
+    if (fundMovement === 'yes' && fundMovementType === 'part_amount') {
+      const requested = requestedAmount != null && requestedAmount !== '' ? parseFloat(requestedAmount) : null;
+      const cash = partAmountCash != null && partAmountCash !== '' ? parseFloat(partAmountCash) : 0;
+      const fromSources = partAmountFromSources != null && partAmountFromSources !== '' ? parseFloat(partAmountFromSources) : 0;
+      if (requested != null && !isNaN(requested) && requested > 0) {
+        const sum = cash + fromSources;
+        const tolerance = 0.01;
+        if (Math.abs(sum - requested) > tolerance) {
+          return res.status(400).json({
+            error: 'Part amount invalid',
+            details: 'part_amount_cash + part_amount_from_sources must equal requested_amount'
+          });
+        }
+        const sourceIds = Array.isArray(fundSourceDealIds) ? fundSourceDealIds : (fundSourceDealIds ? String(fundSourceDealIds).split(',').map(s => s.trim()).filter(Boolean) : []);
+        if (sourceIds.length === 0 || fromSources <= 0) {
+          return res.status(400).json({
+            error: 'Part amount invalid',
+            details: 'Select at least one source deal and ensure part_amount_from_sources > 0'
+          });
+        }
       }
     }
     
@@ -349,6 +484,16 @@ router.put('/requests/:id', checkAuth, async (req, res) => {
     if (approvalCategory !== undefined) { updateFields.push('approval_category = ?'); updateValues.push(approvalCategory); }
     if (approvalLimitRequired !== undefined) { updateFields.push('approval_limit_required = ?'); updateValues.push(approvalLimitRequired); }
     if (approverNotes !== undefined) { updateFields.push('approver_notes = ?'); updateValues.push(approverNotes); }
+    if (fundMovement !== undefined) { updateFields.push('fund_movement = ?'); updateValues.push(fundMovement); }
+    if (fundMovementType !== undefined) { updateFields.push('fund_movement_type = ?'); updateValues.push(fundMovementType); }
+    if (partAmountCash !== undefined) { updateFields.push('part_amount_cash = ?'); updateValues.push(partAmountCash != null && partAmountCash !== '' ? parseFloat(partAmountCash) : null); }
+    if (partAmountFromSources !== undefined) { updateFields.push('part_amount_from_sources = ?'); updateValues.push(partAmountFromSources != null && partAmountFromSources !== '' ? parseFloat(partAmountFromSources) : null); }
+    if (settlementAccountCode !== undefined) { updateFields.push('settlement_account_code = ?'); updateValues.push(settlementAccountCode); }
+    if (fundSourceDealIds !== undefined) {
+      const fundSourceDealIdsStr = Array.isArray(fundSourceDealIds) ? fundSourceDealIds.join(',') : (fundSourceDealIds ? String(fundSourceDealIds) : null);
+      updateFields.push('fund_source_deal_ids = ?');
+      updateValues.push(fundSourceDealIdsStr);
+    }
     
     updateFields.push('updated_at = NOW()');
     updateValues.push(id);

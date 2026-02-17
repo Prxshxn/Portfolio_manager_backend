@@ -583,4 +583,144 @@ router.get('/premature', MaturityController.getPrematureMaturityDeals);
  */
 router.post('/premature', MaturityController.processPrematureMaturity);
 
+/**
+ * @swagger
+ * /maturity/pre-approval/deals:
+ *   get:
+ *     summary: Get deals available for pre-approval
+ *     description: Retrieves all final approved deals across products that can be pre-approved
+ *     tags: [Maturity]
+ *     parameters:
+ *       - in: query
+ *         name: productType
+ *         schema:
+ *           type: string
+ *           enum: [all, gsec, money_market, fixed_deposit]
+ *         description: Filter by product type
+ *       - in: query
+ *         name: dateRange
+ *         schema:
+ *           type: string
+ *         description: Date range filter (format: startDate,endDate)
+ *       - in: query
+ *         name: counterparty
+ *         schema:
+ *           type: string
+ *         description: Filter by counterparty name
+ *       - in: query
+ *         name: status
+ *         schema:
+ *           type: string
+ *         description: Filter by pre-approval status
+ *     responses:
+ *       200:
+ *         description: Deals retrieved successfully
+ */
+router.get('/pre-approval/deals', MaturityController.getPreApprovalDeals);
+
+/**
+ * @swagger
+ * /maturity/pre-approval/{productType}/{dealId}:
+ *   post:
+ *     summary: Pre-approve a deal
+ *     description: Mark a deal as pre-approved and elevate to authorizer
+ *     tags: [Maturity]
+ *     parameters:
+ *       - in: path
+ *         name: productType
+ *         required: true
+ *         schema:
+ *           type: string
+ *           enum: [gsec, money_market, fixed_deposit, repo]
+ *       - in: path
+ *         name: dealId
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: Deal pre-approved successfully
+ */
+router.post('/pre-approval/:productType/:dealId', MaturityController.preApproveDeal);
+
+/**
+ * @swagger
+ * /maturity/pre-approval/{productType}/{dealId}/approve:
+ *   put:
+ *     summary: Authorizer approves pre-approval
+ *     description: Authorizer approves a pre-approved deal
+ *     tags: [Maturity]
+ *     parameters:
+ *       - in: path
+ *         name: productType
+ *         required: true
+ *         schema:
+ *           type: string
+ *           enum: [gsec, money_market, fixed_deposit, repo]
+ *       - in: path
+ *         name: dealId
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: Pre-approval approved successfully
+ */
+router.put('/pre-approval/:productType/:dealId/approve', MaturityController.approvePreApproval);
+
+/**
+ * @swagger
+ * /maturity/pre-approval/{productType}/{dealId}/reject:
+ *   put:
+ *     summary: Authorizer rejects pre-approval
+ *     description: Authorizer rejects a pre-approved deal
+ *     tags: [Maturity]
+ *     parameters:
+ *       - in: path
+ *         name: productType
+ *         required: true
+ *         schema:
+ *           type: string
+ *           enum: [gsec, money_market, fixed_deposit, repo]
+ *       - in: path
+ *         name: dealId
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: Pre-approval rejected successfully
+ */
+router.put('/pre-approval/:productType/:dealId/reject', MaturityController.rejectPreApproval);
+
+/**
+ * @swagger
+ * /maturity/pre-approval/blotter:
+ *   get:
+ *     summary: Get pre-approved deals for blotter
+ *     description: Retrieves all deals with pre_approval_status = 'pre_approved' for the blotter
+ *     tags: [Maturity]
+ *     parameters:
+ *       - in: query
+ *         name: productType
+ *         schema:
+ *           type: string
+ *           enum: [all, gsec, money_market, fixed_deposit]
+ *         description: Filter by product type
+ *       - in: query
+ *         name: dateRange
+ *         schema:
+ *           type: string
+ *         description: Date range filter (format: startDate,endDate)
+ *       - in: query
+ *         name: counterparty
+ *         schema:
+ *           type: string
+ *         description: Filter by counterparty name
+ *     responses:
+ *       200:
+ *         description: Pre-approved deals retrieved successfully
+ */
+router.get('/pre-approval/blotter', MaturityController.getPreApprovedDeals);
+
 module.exports = router;

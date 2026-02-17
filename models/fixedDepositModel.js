@@ -125,6 +125,10 @@ const FixedDepositRequest = {
    */
   create: async (data) => {
     try {
+      const fundSourceIds = data.fund_source_deal_ids != null
+        ? (Array.isArray(data.fund_source_deal_ids) ? data.fund_source_deal_ids.join(',') : String(data.fund_source_deal_ids))
+        : null;
+
       const sql = `INSERT INTO fixed_deposit_requests (
         portfolio_id, book, module, request_no, file_number, status,
         counterparty_type, counterparty_id, contact_person, request_remarks,
@@ -132,8 +136,10 @@ const FixedDepositRequest = {
         value_date, maturity_date,
         approver_id, approver_name, approver_designation, approval_category,
         approval_limit_required, approver_notes,
+        fund_movement, fund_movement_type, part_amount_cash, part_amount_from_sources,
+        settlement_account_code, fund_source_deal_ids,
         submitted_by, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`;
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`;
 
       const values = [
         data.portfolio_id || null,
@@ -159,6 +165,12 @@ const FixedDepositRequest = {
         data.approval_category || null,
         data.approval_limit_required || null,
         data.approver_notes || null,
+        data.fund_movement || null,
+        data.fund_movement_type || null,
+        data.part_amount_cash != null && data.part_amount_cash !== '' ? parseFloat(data.part_amount_cash) : null,
+        data.part_amount_from_sources != null && data.part_amount_from_sources !== '' ? parseFloat(data.part_amount_from_sources) : null,
+        data.settlement_account_code || null,
+        fundSourceIds,
         data.submitted_by || null
       ];
 
@@ -188,14 +200,19 @@ const FixedDepositRequest = {
         'instrument_type', 'isin', 'currency', 'requested_amount', 'target_yield',
         'value_date', 'maturity_date',
         'approver_id', 'approver_name', 'approver_designation', 'approval_category',
-        'approval_limit_required', 'approver_notes'
+        'approval_limit_required', 'approver_notes',
+        'fund_movement', 'fund_movement_type', 'part_amount_cash', 'part_amount_from_sources',
+        'settlement_account_code', 'fund_source_deal_ids'
       ];
 
       fields.forEach(field => {
         if (data.hasOwnProperty(field)) {
           updateFields.push(`${field} = ?`);
-          if (field === 'requested_amount' || field === 'target_yield') {
-            values.push(data[field] ? parseFloat(data[field]) : null);
+          if (field === 'requested_amount' || field === 'target_yield' || field === 'part_amount_cash' || field === 'part_amount_from_sources') {
+            values.push(data[field] != null && data[field] !== '' ? parseFloat(data[field]) : null);
+          } else if (field === 'fund_source_deal_ids') {
+            const v = data[field];
+            values.push(v != null ? (Array.isArray(v) ? v.join(',') : String(v)) : null);
           } else {
             values.push(data[field] || null);
           }
