@@ -45,7 +45,7 @@ exports.getSellTransactionReport = async ({ asAtDate, portfolio, isin, valueDate
              COALESCE(corp.short_name, ind.short_name, joint.short_name, CONCAT('ID:', g.counterparty_id)) as counterparty,
              im.coupon_rate, im.issue_date, im.coupon_date_1, im.coupon_date_2
     FROM gsec g 
-    LEFT JOIN isin_master im ON g.isin_number = im.isin_number 
+    LEFT JOIN isin_master im ON g.isin_number COLLATE utf8mb4_0900_ai_ci = im.isin_number COLLATE utf8mb4_0900_ai_ci
     LEFT JOIN counterparty_master_corporate corp ON g.counterparty_id = corp.id
     LEFT JOIN counterparty_master_individual ind ON g.counterparty_id = ind.id
     LEFT JOIN counterparty_master_joint joint ON g.counterparty_id = joint.id

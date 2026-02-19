@@ -276,7 +276,6 @@ module.exports = {
         ...req.body,
         transaction_type: req.body.transaction_type || req.body.transactionType, // Ensure always set
         status: 'pending',
-        current_approval_level: 'back_office_final', // Single approval level - back office final only
         created_by: req.body.userId || null,
         created_at: new Date()
       };
