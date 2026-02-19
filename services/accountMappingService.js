@@ -33,6 +33,8 @@ const MAPPING_KEYS = {
   // Fixed Deposit Accounts
   FD_INVESTMENT: 'FD_INVESTMENT', // Fixed Deposit Investment Account (default: 2002)
   FD_DEFAULT_SETTLEMENT: 'FD_DEFAULT_SETTLEMENT', // Default Bank Settlement Account for Fixed Deposits
+  FD_ACCRUAL_ASSET: 'FD_ACCRUAL_ASSET', // Fixed Deposit Daily Accrual Asset (EOD)
+  FD_ACCRUAL_INCOME: 'FD_ACCRUAL_INCOME', // Fixed Deposit Daily Accrual Income (EOD)
   
   // Maturity Processing Accounts (Pattern-based lookups)
   MATURITY_LIABILITY: 'MATURITY_LIABILITY',
