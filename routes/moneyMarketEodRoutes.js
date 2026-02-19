@@ -149,11 +149,44 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
       }
     }
 
+    // Fixed Deposit per-day accrual posting
+    console.log('--- Fixed Deposit EOD posting block reached ---');
+    const [fdDeals] = await db.query(
+      `SELECT id, request_no, daily_accrual, maturity_date FROM fixed_deposit_requests 
+       WHERE status = 'Approved' AND daily_accrual IS NOT NULL AND daily_accrual > 0 AND maturity_date >= ?`,
+      [systemDay]
+    );
+    console.log('Fixed Deposit deals to post:', fdDeals.length);
+    let fdPostedCount = 0;
+    for (const deal of fdDeals) {
+      try {
+        const amount = Number(deal.daily_accrual);
+        if (isNaN(amount) || amount === 0) {
+          console.warn('Skipping FD request due to invalid daily_accrual:', deal.request_no, deal.daily_accrual);
+          continue;
+        }
+        console.log('Posting FD ledger for request:', deal.request_no, amount);
+        const drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.FD_ACCRUAL_ASSET);
+        const crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.FD_ACCRUAL_INCOME);
+        await postLedgerEntry({
+          date: systemDay,
+          dr_account: drAccount,
+          cr_account: crAccount,
+          amount,
+          deal_id: deal.request_no,
+          description: `Fixed Deposit Daily Accrual for Request ${deal.request_no}`
+        });
+        fdPostedCount++;
+      } catch (err) {
+        console.error('Failed to post FD ledger for request:', deal.request_no, err);
+      }
+    }
+
     // Advance system day
     const nextDay = new Date(systemDay);
     nextDay.setDate(nextDay.getDate() + 1);
     await setSystemDay(nextDay.toISOString().slice(0, 10));
-    res.json({ success: true, message: `EOD complete. Posted for ${postedCount} money market deals and ${gsecPostedCount} GSec deals.`, next_system_day: nextDay.toISOString().slice(0, 10) });
+    res.json({ success: true, message: `EOD complete. Posted for ${postedCount} money market deals, ${gsecPostedCount} GSec deals, and ${fdPostedCount} fixed deposit deals.`, next_system_day: nextDay.toISOString().slice(0, 10) });
   } catch (err) {
     console.error('EOD error:', err);
     res.status(500).json({ success: false, message: err.message });
