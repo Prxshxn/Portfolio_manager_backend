@@ -278,8 +278,18 @@ router.post('/requests', checkAuth, async (req, res) => {
       partAmountCash,
       partAmountFromSources,
       settlementAccountCode,
-      fundSourceDealIds
+      fundSourceDealIds,
+      dayBasis
     } = req.body;
+
+    const dayBasisVal = dayBasis === 364 ? 364 : 365;
+    let dailyAccrual = null;
+    const principal = requestedAmount != null && requestedAmount !== '' ? parseFloat(requestedAmount) : null;
+    const yieldPct = targetYield != null && targetYield !== '' ? parseFloat(targetYield) : null;
+    if (principal != null && !isNaN(principal) && principal > 0 && yieldPct != null && !isNaN(yieldPct)) {
+      dailyAccrual = (principal * yieldPct / 100) / dayBasisVal;
+      dailyAccrual = Math.floor(dailyAccrual * 100000000) / 100000000;
+    }
     
     // Find counterparty ID from issuer_id (from Issuer Master)
     let counterpartyId = null;
@@ -343,12 +353,13 @@ router.post('/requests', checkAuth, async (req, res) => {
         counterparty_type, counterparty_id, contact_person, request_remarks,
         instrument_type, isin, currency, requested_amount, target_yield,
         value_date, maturity_date,
+        day_basis, daily_accrual,
         approver_id, approver_name, approver_designation, approval_category,
         approval_limit_required, approver_notes,
         fund_movement, fund_movement_type, part_amount_cash, part_amount_from_sources,
         settlement_account_code, fund_source_deal_ids,
         submitted_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         portfolio || null,
         book || null,
@@ -368,6 +379,8 @@ router.post('/requests', checkAuth, async (req, res) => {
         targetYield ? parseFloat(targetYield) : null,
         valueDate,
         maturityDate,
+        dayBasisVal,
+        dailyAccrual,
         approverIdParsed,
         approverName || null,
         approverDesignation || null,
@@ -425,8 +438,19 @@ router.put('/requests/:id', checkAuth, async (req, res) => {
       partAmountCash,
       partAmountFromSources,
       settlementAccountCode,
-      fundSourceDealIds
+      fundSourceDealIds,
+      dayBasis
     } = req.body;
+
+    // For PUT we may need existing requested_amount/target_yield to recompute daily_accrual
+    let existingRow = null;
+    if (dayBasis !== undefined || requestedAmount !== undefined || targetYield !== undefined) {
+      const [rows] = await db.query(
+        'SELECT requested_amount, target_yield, day_basis FROM fixed_deposit_requests WHERE id = ?',
+        [id]
+      );
+      existingRow = rows[0] || null;
+    }
     
     // Find counterparty ID if counterparty name provided
     let counterpartyId = null;
@@ -493,6 +517,27 @@ router.put('/requests/:id', checkAuth, async (req, res) => {
       const fundSourceDealIdsStr = Array.isArray(fundSourceDealIds) ? fundSourceDealIds.join(',') : (fundSourceDealIds ? String(fundSourceDealIds) : null);
       updateFields.push('fund_source_deal_ids = ?');
       updateValues.push(fundSourceDealIdsStr);
+    }
+    if (dayBasis !== undefined) {
+      const dayBasisVal = dayBasis === 364 ? 364 : 365;
+      updateFields.push('day_basis = ?');
+      updateValues.push(dayBasisVal);
+    }
+    if (existingRow) {
+      const principal = requestedAmount !== undefined
+        ? (requestedAmount != null && requestedAmount !== '' ? parseFloat(requestedAmount) : null)
+        : (existingRow.requested_amount != null ? parseFloat(existingRow.requested_amount) : null);
+      const yieldPct = targetYield !== undefined
+        ? (targetYield != null && targetYield !== '' ? parseFloat(targetYield) : null)
+        : (existingRow.target_yield != null ? parseFloat(existingRow.target_yield) : null);
+      const basis = dayBasis !== undefined ? (dayBasis === 364 ? 364 : 365) : (existingRow.day_basis === 364 ? 364 : 365);
+      let dailyAccrual = null;
+      if (principal != null && !isNaN(principal) && principal > 0 && yieldPct != null && !isNaN(yieldPct)) {
+        dailyAccrual = (principal * yieldPct / 100) / basis;
+        dailyAccrual = Math.floor(dailyAccrual * 100000000) / 100000000;
+      }
+      updateFields.push('daily_accrual = ?');
+      updateValues.push(dailyAccrual);
     }
     
     updateFields.push('updated_at = NOW()');
