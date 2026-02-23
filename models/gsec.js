@@ -89,8 +89,10 @@ const Gsec = {
         }
       }
 
+      // Use counterparty and isin for old schema; frontend may send counterparty as 'c3'/'i2'/'j1' or numeric
+      const counterpartyValue = data.counterparty != null && data.counterparty !== '' ? data.counterparty : counterpartyId;
       const sql = `INSERT INTO gsec (
-        transaction_type, counterparty_id, deal_number, isin_number, face_value, trade_date, value_date, next_coupon_date, 
+        transaction_type, counterparty, deal_number, isin, face_value, trade_date, value_date, next_coupon_date, 
         last_coupon_date, number_of_days_interest_accrued, number_of_days_for_coupon_period, accrued_interest, 
         coupon_interest, clean_price, dirty_price, accrued_interest_calculation, accrued_interest_six_decimals, 
         accrued_interest_for_100, settlement_amount, settlement_mode, issue_date, maturity_date, coupon_dates, 
@@ -121,7 +123,7 @@ const Gsec = {
 
       const values = [
         data.transactionType,
-        counterpartyId, // Use parsed integer ID instead of string
+        counterpartyValue, // counterparty: prefixed string ('c3') or numeric id for old schema
         data.dealNumber,
         data.isin,
         cleanNumericValue(data.faceValue),
@@ -520,22 +522,23 @@ const Gsec = {
    * Get recent GSec transactions with associated data
    */
   getRecent: async () => {
-    // Query with JOIN to get counterparty short names
-    // Use counterparty_id to match with counterparty table IDs
+    // Query with JOIN to get counterparty short names.
+    // Support both schemas: old (counterparty INT only) and new (counterparty_id + counterparty string 'c1'/'i2'/'j3').
+    // Use only g.isin and g.counterparty so it works when isin_number/counterparty_id columns do not exist.
     const sql = `
       SELECT 
         g.*,
-        g.isin_number as isin,
+        g.isin,
         COALESCE(
           corp.short_name,
           ind.short_name,
           joint.short_name,
-          CONCAT('ID:', g.counterparty_id)
+          CONCAT('ID:', g.counterparty)
         ) as counterparty_name
       FROM gsec g
-      LEFT JOIN counterparty_master_corporate corp ON g.counterparty_id = corp.id
-      LEFT JOIN counterparty_master_individual ind ON g.counterparty_id = ind.id
-      LEFT JOIN counterparty_master_joint joint ON g.counterparty_id = joint.id
+      LEFT JOIN counterparty_master_corporate corp ON (g.counterparty LIKE 'c%' AND CAST(SUBSTRING(g.counterparty, 2) AS UNSIGNED) = corp.id) OR (g.counterparty = corp.id)
+      LEFT JOIN counterparty_master_individual ind ON (g.counterparty LIKE 'i%' AND CAST(SUBSTRING(g.counterparty, 2) AS UNSIGNED) = ind.id) OR (g.counterparty = ind.id)
+      LEFT JOIN counterparty_master_joint joint ON (g.counterparty LIKE 'j%' AND CAST(SUBSTRING(g.counterparty, 2) AS UNSIGNED) = joint.id) OR (g.counterparty = joint.id)
       ORDER BY g.id DESC 
       LIMIT 150
     `;
