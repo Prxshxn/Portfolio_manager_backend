@@ -129,7 +129,7 @@ exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturi
     
     // Query all Buy records for this ISIN to calculate correct balance
     // Only include GSEC Buy transactions - buyback deals are separate
-    let balanceSql = `SELECT face_value, clean_price FROM gsec WHERE isin = ? AND transaction_type = 'Buy'`;
+    let balanceSql = `SELECT face_value, clean_price FROM gsec WHERE isin_number = ? AND transaction_type = 'Buy'`;
     const balanceParams = [isin];
     
     // Apply the same filters as the main query for GSEC deals
@@ -291,7 +291,7 @@ exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturi
     const balanceSql = `SELECT face_value, transaction_type FROM (
       SELECT face_value, transaction_type FROM gsec g WHERE 1=1` +
       (portfolio ? ' AND g.portfolio = ?' : '') +
-      (isin ? ' AND g.isin = ?' : '') +
+      (isin ? ' AND g.isin_number = ?' : '') +
       (valueDate ? ' AND g.value_date = ?' : '') +
       (maturityDate ? ' AND g.maturity_date = ?' : '') +
       (asAtDate ? ' AND g.value_date <= ?' : '') +

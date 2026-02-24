@@ -56,10 +56,24 @@ async function getFundCentreByCurrency(currency) {
  * @returns {Promise<number>} ID of the created fund centre
  */
 async function createFundCentre(fundCentre) {
-  const { name, fund_centre_code, country, gmt_timezone, currency } = fundCentre;
+  const { 
+    name, 
+    fund_centre_code, 
+    country, 
+    gmt_timezone, 
+    currency,
+    city,
+    iana_timezone,
+    latitude,
+    longitude,
+    dst_observed
+  } = fundCentre;
+  
   const [result] = await db.query(
-    'INSERT INTO fund_centre_master (name, fund_centre_code, country, gmt_timezone, currency, created_at, updated_at) VALUES (?, ?, ?, ?, ?, NOW(), NOW())',
-    [name, fund_centre_code, country, gmt_timezone, currency]
+    `INSERT INTO fund_centre_master 
+     (name, fund_centre_code, country, gmt_timezone, currency, city, iana_timezone, latitude, longitude, dst_observed, created_at, updated_at) 
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+    [name, fund_centre_code, country, gmt_timezone, currency, city || null, iana_timezone || null, latitude || null, longitude || null, dst_observed || 'N']
   );
   return result.insertId;
 }
@@ -71,10 +85,26 @@ async function createFundCentre(fundCentre) {
  * @returns {Promise<boolean>} Success status
  */
 async function updateFundCentre(id, fundCentre) {
-  const { name, fund_centre_code, country, gmt_timezone, currency } = fundCentre;
+  const { 
+    name, 
+    fund_centre_code, 
+    country, 
+    gmt_timezone, 
+    currency,
+    city,
+    iana_timezone,
+    latitude,
+    longitude,
+    dst_observed
+  } = fundCentre;
+  
   const [result] = await db.query(
-    'UPDATE fund_centre_master SET name = ?, fund_centre_code = ?, country = ?, gmt_timezone = ?, currency = ?, updated_at = NOW() WHERE id = ?',
-    [name, fund_centre_code, country, gmt_timezone, currency, id]
+    `UPDATE fund_centre_master 
+     SET name = ?, fund_centre_code = ?, country = ?, gmt_timezone = ?, currency = ?, 
+         city = ?, iana_timezone = ?, latitude = ?, longitude = ?, dst_observed = ?, 
+         updated_at = NOW() 
+     WHERE id = ?`,
+    [name, fund_centre_code, country, gmt_timezone, currency, city || null, iana_timezone || null, latitude || null, longitude || null, dst_observed || 'N', id]
   );
   return result.affectedRows > 0;
 }

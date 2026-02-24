@@ -587,10 +587,8 @@ async function getMaturitiesWithApprovalLevel(db, productType, date) {
       ${productType === 'money_market' ? 'mmd.status' : productType === 'gsec' ? 'g.status' : 'rd.status'} as deal_status,
       COALESCE(mpl.authorization_level, 'not_initiated') as approval_level,
       CASE 
-        WHEN mpl.authorization_level = 'front_office' THEN 'Front Office'
-        WHEN mpl.authorization_level = 'back_office_verifier' THEN 'Back Office Verifier'
         WHEN mpl.authorization_level = 'back_office_final' THEN 'Back Office Final'
-        ELSE 'Not Initiated'
+        ELSE 'Pending Final Approval'
       END as approval_level_display,
       CASE 
         WHEN mpl.authorization_level = 'back_office_final' THEN 1
@@ -617,7 +615,7 @@ async function getMaturitiesWithApprovalLevel(db, productType, date) {
       )
     WHERE ${productType === 'money_market' ? 'mmd.maturity_date' : productType === 'gsec' ? 'g.maturity_date' : 'rd.maturity_date'} <= ?
       AND COALESCE(${productType === 'money_market' ? 'mmd.matured' : productType === 'gsec' ? 'g.matured' : 'rd.matured'}, 0) = 0
-      AND (mpl.id IS NULL OR mpl.authorization_level != 'back_office_final')
+      AND (mpl.id IS NULL OR mpl.authorization_level = 'back_office_final')
     ORDER BY ${productType === 'money_market' ? 'mmd.maturity_date' : productType === 'gsec' ? 'g.maturity_date' : 'rd.maturity_date'} ASC
   `;
 
@@ -780,7 +778,7 @@ MaturityController.processMaturities = async (req, res) => {
         const interestAmount = (principalAmount * interestRate * daysToMaturity) / 365;
         const totalAmount = principalAmount + interestAmount;
 
-        // Create initial maturity processing log entry (front_office level)
+        // Create initial maturity processing log entry (3-tier: start at front_office)
         await connection.query(`
           INSERT INTO maturity_processing_log
           (deal_id, deal_number, maturity_action, principal_amount, interest_amount, total_amount,
@@ -1694,6 +1692,701 @@ MaturityController.exportMaturities = async (req, res) => {
   }
 };
 
+// ==================== Pre-Approval Endpoints ====================
+
+/**
+ * Get deals available for pre-approval (final approved deals)
+ */
+MaturityController.getPreApprovalDeals = async (req, res) => {
+  try {
+    const { productType, dateRange, counterparty, status } = req.query;
+    const db = require('../config/database');
+    
+    let deals = [];
+    
+    // Get GSEC deals - final approved, Buy type, not matured
+    if (!productType || productType === 'all' || productType === 'gsec') {
+      let gsecQuery = `
+        SELECT 
+          g.id,
+          g.deal_number,
+          g.isin,
+          g.counterparty,
+          COALESCE(
+            corp.short_name,
+            ind.short_name,
+            joint.short_name,
+            g.counterparty
+          ) as counterparty_name,
+          g.face_value,
+          g.maturity_date,
+          g.status,
+          DATEDIFF(g.maturity_date, CURDATE()) as days_to_maturity,
+          'gsec' as product_type,
+          COALESCE(g.pre_approved, 0) as pre_approved,
+          g.pre_approval_status
+        FROM gsec g
+        LEFT JOIN counterparty_master_corporate corp ON 
+          (g.counterparty LIKE 'c%' AND SUBSTRING(g.counterparty, 2) = corp.id)
+        LEFT JOIN counterparty_master_individual ind ON 
+          (g.counterparty LIKE 'i%' AND SUBSTRING(g.counterparty, 2) = ind.id)
+        LEFT JOIN counterparty_master_joint joint ON 
+          (g.counterparty LIKE 'j%' AND SUBSTRING(g.counterparty, 2) = joint.id)
+        WHERE g.status = 'final_approved'
+          AND g.transaction_type = 'Buy'
+          AND COALESCE(g.matured, 0) = 0
+      `;
+      
+      const params = [];
+      if (dateRange) {
+        const [startDate, endDate] = dateRange.split(',');
+        if (startDate) {
+          gsecQuery += ` AND g.maturity_date >= ?`;
+          params.push(startDate);
+        }
+        if (endDate) {
+          gsecQuery += ` AND g.maturity_date <= ?`;
+          params.push(endDate);
+        }
+      }
+      if (counterparty) {
+        gsecQuery += ` AND (g.counterparty LIKE ? OR corp.short_name LIKE ? OR ind.short_name LIKE ? OR joint.short_name LIKE ?)`;
+        const cpPattern = `%${counterparty}%`;
+        params.push(cpPattern, cpPattern, cpPattern, cpPattern);
+      }
+      if (status && status !== 'all') {
+        if (status === 'not_pre_approved') {
+          gsecQuery += ` AND COALESCE(g.pre_approved, 0) = 0`;
+        } else {
+          gsecQuery += ` AND g.pre_approval_status = ?`;
+          params.push(status);
+        }
+      }
+      
+      gsecQuery += ` ORDER BY g.maturity_date ASC`;
+      const [gsecRows] = await db.query(gsecQuery, params);
+      deals = deals.concat(gsecRows.map(row => ({ ...row, product_type: 'gsec' })));
+    }
+    
+    // Get Money Market deals - Approved, not matured
+    if (!productType || productType === 'all' || productType === 'money_market') {
+      let mmQuery = `
+        SELECT 
+          mmd.id,
+          mmd.deal_number,
+          NULL as isin,
+          mmd.counterparty_id as counterparty,
+          COALESCE(
+            corp.short_name,
+            ind.short_name,
+            joint.short_name,
+            mmd.counterparty_id
+          ) as counterparty_name,
+          mmd.principal_amount as face_value,
+          mmd.maturity_date,
+          mmd.status,
+          DATEDIFF(mmd.maturity_date, CURDATE()) as days_to_maturity,
+          'money_market' as product_type,
+          COALESCE(mmd.pre_approved, 0) as pre_approved,
+          mmd.pre_approval_status
+        FROM money_market_deals mmd
+        LEFT JOIN counterparty_master_corporate corp ON mmd.counterparty_id = corp.id
+        LEFT JOIN counterparty_master_individual ind ON mmd.counterparty_id = ind.id
+        LEFT JOIN counterparty_master_joint joint ON mmd.counterparty_id = joint.id
+        WHERE mmd.status = 'Approved'
+          AND COALESCE(mmd.matured, 0) = 0
+      `;
+      
+      const params = [];
+      if (dateRange) {
+        const [startDate, endDate] = dateRange.split(',');
+        if (startDate) {
+          mmQuery += ` AND mmd.maturity_date >= ?`;
+          params.push(startDate);
+        }
+        if (endDate) {
+          mmQuery += ` AND mmd.maturity_date <= ?`;
+          params.push(endDate);
+        }
+      }
+      if (counterparty) {
+        mmQuery += ` AND (mmd.counterparty_id LIKE ? OR corp.short_name LIKE ? OR ind.short_name LIKE ? OR joint.short_name LIKE ?)`;
+        const cpPattern = `%${counterparty}%`;
+        params.push(cpPattern, cpPattern, cpPattern, cpPattern);
+      }
+      if (status && status !== 'all') {
+        if (status === 'not_pre_approved') {
+          mmQuery += ` AND COALESCE(mmd.pre_approved, 0) = 0`;
+        } else {
+          mmQuery += ` AND mmd.pre_approval_status = ?`;
+          params.push(status);
+        }
+      }
+      
+      mmQuery += ` ORDER BY mmd.maturity_date ASC`;
+      const [mmRows] = await db.query(mmQuery, params);
+      deals = deals.concat(mmRows.map(row => ({ ...row, product_type: 'money_market' })));
+    }
+    
+    // Get Fixed Deposit deals - Approved, final_approved level
+    if (!productType || productType === 'all' || productType === 'fixed_deposit') {
+      let fdQuery = `
+        SELECT 
+          fdr.id,
+          fdr.request_no as deal_number,
+          NULL as isin,
+          fdr.counterparty_id as counterparty,
+          COALESCE(
+            corp.short_name,
+            ind.short_name,
+            joint.short_name,
+            fdr.counterparty_id
+          ) as counterparty_name,
+          fdr.requested_amount as face_value,
+          fdr.maturity_date,
+          fdr.status,
+          DATEDIFF(fdr.maturity_date, CURDATE()) as days_to_maturity,
+          'fixed_deposit' as product_type,
+          COALESCE(fdr.pre_approved, 0) as pre_approved,
+          fdr.pre_approval_status
+        FROM fixed_deposit_requests fdr
+        LEFT JOIN counterparty_master_corporate corp ON fdr.counterparty_id = corp.id
+        LEFT JOIN counterparty_master_individual ind ON fdr.counterparty_id = ind.id
+        LEFT JOIN counterparty_master_joint joint ON fdr.counterparty_id = joint.id
+        WHERE fdr.status = 'Approved'
+          AND fdr.current_approval_level = 'final_approved'
+      `;
+      
+      const params = [];
+      if (dateRange) {
+        const [startDate, endDate] = dateRange.split(',');
+        if (startDate) {
+          fdQuery += ` AND fdr.maturity_date >= ?`;
+          params.push(startDate);
+        }
+        if (endDate) {
+          fdQuery += ` AND fdr.maturity_date <= ?`;
+          params.push(endDate);
+        }
+      }
+      if (counterparty) {
+        fdQuery += ` AND (fdr.counterparty_id LIKE ? OR corp.short_name LIKE ? OR ind.short_name LIKE ? OR joint.short_name LIKE ?)`;
+        const cpPattern = `%${counterparty}%`;
+        params.push(cpPattern, cpPattern, cpPattern, cpPattern);
+      }
+      if (status && status !== 'all') {
+        if (status === 'not_pre_approved') {
+          fdQuery += ` AND COALESCE(fdr.pre_approved, 0) = 0`;
+        } else {
+          fdQuery += ` AND fdr.pre_approval_status = ?`;
+          params.push(status);
+        }
+      }
+      
+      fdQuery += ` ORDER BY fdr.maturity_date ASC`;
+      const [fdRows] = await db.query(fdQuery, params);
+      deals = deals.concat(fdRows.map(row => ({ ...row, product_type: 'fixed_deposit' })));
+    }
+    
+    res.json({
+      success: true,
+      data: deals,
+      message: `Found ${deals.length} deals available for pre-approval`
+    });
+  } catch (error) {
+    console.error('Error fetching pre-approval deals:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch pre-approval deals: ' + error.message
+    });
+  }
+};
+
+/**
+ * Pre-approve a deal - mark as pre-approved and elevate to authorizer
+ */
+MaturityController.preApproveDeal = async (req, res) => {
+  try {
+    const { productType, dealId } = req.params;
+    const db = require('../config/database');
+    
+    if (!productType || !dealId) {
+      return res.status(400).json({
+        success: false,
+        error: 'productType and dealId are required'
+      });
+    }
+    
+    const user = req.headers['x-user-data'] ? JSON.parse(req.headers['x-user-data']) : null;
+    const userId = user?.id;
+    
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'User authentication required'
+      });
+    }
+    
+    let tableName;
+    let dealNumberField;
+    
+    switch (productType) {
+      case 'gsec':
+        tableName = 'gsec';
+        dealNumberField = 'deal_number';
+        break;
+      case 'money_market':
+        tableName = 'money_market_deals';
+        dealNumberField = 'deal_number';
+        break;
+      case 'fixed_deposit':
+        tableName = 'fixed_deposit_requests';
+        dealNumberField = 'request_no';
+        break;
+      case 'repo':
+        tableName = 'repo_deals';
+        dealNumberField = 'id';
+        break;
+      default:
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid product type'
+        });
+    }
+    
+    // Update deal with pre-approval status
+    const [result] = await db.query(`
+      UPDATE ${tableName}
+      SET pre_approved = 1,
+          pre_approved_by = ?,
+          pre_approved_at = NOW(),
+          pre_approval_status = 'pre_approved_pending',
+          current_approval_level = 'back_office_final'
+      WHERE id = ?
+    `, [userId, dealId]);
+    
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Deal not found or cannot be pre-approved'
+      });
+    }
+    
+    // Get deal number for response
+    const [dealRows] = await db.query(`
+      SELECT ${dealNumberField} as deal_number FROM ${tableName} WHERE id = ?
+    `, [dealId]);
+    
+    res.json({
+      success: true,
+      message: `Deal ${dealRows[0]?.deal_number || dealId} has been pre-approved and elevated to authorizer`,
+      data: {
+        dealId,
+        dealNumber: dealRows[0]?.deal_number || dealId,
+        productType,
+        preApprovalStatus: 'pre_approved_pending'
+      }
+    });
+  } catch (error) {
+    console.error('Error pre-approving deal:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to pre-approve deal: ' + error.message
+    });
+  }
+};
+
+/**
+ * Authorizer approves pre-approval
+ */
+MaturityController.approvePreApproval = async (req, res) => {
+  try {
+    const { productType, dealId } = req.params;
+    const db = require('../config/database');
+    
+    if (!productType || !dealId) {
+      return res.status(400).json({
+        success: false,
+        error: 'productType and dealId are required'
+      });
+    }
+    
+    const user = req.headers['x-user-data'] ? JSON.parse(req.headers['x-user-data']) : null;
+    const userId = user?.id;
+    const userRole = user?.role;
+    
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'User authentication required'
+      });
+    }
+    
+    // Check if user has authorization role
+    if (userRole !== 'back_office_final' && userRole !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        error: 'Only authorizers can approve pre-approvals'
+      });
+    }
+    
+    let tableName;
+    let dealNumberField;
+    
+    switch (productType) {
+      case 'gsec':
+        tableName = 'gsec';
+        dealNumberField = 'deal_number';
+        break;
+      case 'money_market':
+        tableName = 'money_market_deals';
+        dealNumberField = 'deal_number';
+        break;
+      case 'fixed_deposit':
+        tableName = 'fixed_deposit_requests';
+        dealNumberField = 'request_no';
+        break;
+      case 'repo':
+        tableName = 'repo_deals';
+        dealNumberField = 'id';
+        break;
+      default:
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid product type'
+        });
+    }
+    
+    // Update deal with approved pre-approval status
+    const [result] = await db.query(`
+      UPDATE ${tableName}
+      SET pre_approval_status = 'pre_approved',
+          pre_approval_authorized_by = ?,
+          pre_approval_authorized_at = NOW()
+      WHERE id = ?
+        AND pre_approval_status = 'pre_approved_pending'
+    `, [userId, dealId]);
+    
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Deal not found or pre-approval is not pending'
+      });
+    }
+    
+    // Get deal number for response
+    const [dealRows] = await db.query(`
+      SELECT ${dealNumberField} as deal_number FROM ${tableName} WHERE id = ?
+    `, [dealId]);
+    
+    res.json({
+      success: true,
+      message: `Pre-approval for deal ${dealRows[0]?.deal_number || dealId} has been approved`,
+      data: {
+        dealId,
+        dealNumber: dealRows[0]?.deal_number || dealId,
+        productType,
+        preApprovalStatus: 'pre_approved'
+      }
+    });
+  } catch (error) {
+    console.error('Error approving pre-approval:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to approve pre-approval: ' + error.message
+    });
+  }
+};
+
+/**
+ * Authorizer rejects pre-approval
+ */
+MaturityController.rejectPreApproval = async (req, res) => {
+  try {
+    const { productType, dealId } = req.params;
+    const db = require('../config/database');
+    
+    if (!productType || !dealId) {
+      return res.status(400).json({
+        success: false,
+        error: 'productType and dealId are required'
+      });
+    }
+    
+    const user = req.headers['x-user-data'] ? JSON.parse(req.headers['x-user-data']) : null;
+    const userId = user?.id;
+    const userRole = user?.role;
+    
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'User authentication required'
+      });
+    }
+    
+    // Check if user has authorization role
+    if (userRole !== 'back_office_final' && userRole !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        error: 'Only authorizers can reject pre-approvals'
+      });
+    }
+    
+    let tableName;
+    let dealNumberField;
+    
+    switch (productType) {
+      case 'gsec':
+        tableName = 'gsec';
+        dealNumberField = 'deal_number';
+        break;
+      case 'money_market':
+        tableName = 'money_market_deals';
+        dealNumberField = 'deal_number';
+        break;
+      case 'fixed_deposit':
+        tableName = 'fixed_deposit_requests';
+        dealNumberField = 'request_no';
+        break;
+      case 'repo':
+        tableName = 'repo_deals';
+        dealNumberField = 'id';
+        break;
+      default:
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid product type'
+        });
+    }
+    
+    // Update deal - reject pre-approval and reset
+    const [result] = await db.query(`
+      UPDATE ${tableName}
+      SET pre_approved = 0,
+          pre_approval_status = 'rejected',
+          pre_approval_authorized_by = ?,
+          pre_approval_authorized_at = NOW()
+      WHERE id = ?
+        AND pre_approval_status = 'pre_approved_pending'
+    `, [userId, dealId]);
+    
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Deal not found or pre-approval is not pending'
+      });
+    }
+    
+    // Get deal number for response
+    const [dealRows] = await db.query(`
+      SELECT ${dealNumberField} as deal_number FROM ${tableName} WHERE id = ?
+    `, [dealId]);
+    
+    res.json({
+      success: true,
+      message: `Pre-approval for deal ${dealRows[0]?.deal_number || dealId} has been rejected`,
+      data: {
+        dealId,
+        dealNumber: dealRows[0]?.deal_number || dealId,
+        productType,
+        preApprovalStatus: 'rejected'
+      }
+    });
+  } catch (error) {
+    console.error('Error rejecting pre-approval:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to reject pre-approval: ' + error.message
+    });
+  }
+};
+
+/**
+ * Get pre-approved deals for blotter (status = 'pre_approved')
+ */
+MaturityController.getPreApprovedDeals = async (req, res) => {
+  try {
+    const { productType, dateRange, counterparty, status } = req.query;
+    const db = require('../config/database');
+    
+    let deals = [];
+    
+    // Get GSEC deals - pre_approved status
+    if (!productType || productType === 'all' || productType === 'gsec') {
+      let gsecQuery = `
+        SELECT 
+          g.id,
+          g.deal_number,
+          g.isin,
+          g.counterparty,
+          COALESCE(
+            corp.short_name,
+            ind.short_name,
+            joint.short_name,
+            g.counterparty
+          ) as counterparty_name,
+          g.face_value,
+          g.maturity_date,
+          g.status,
+          DATEDIFF(g.maturity_date, CURDATE()) as days_to_maturity,
+          'gsec' as product_type,
+          g.pre_approved,
+          g.pre_approval_status,
+          g.pre_approved_at,
+          g.pre_approval_authorized_at
+        FROM gsec g
+        LEFT JOIN counterparty_master_corporate corp ON 
+          (g.counterparty LIKE 'c%' AND SUBSTRING(g.counterparty, 2) = corp.id)
+        LEFT JOIN counterparty_master_individual ind ON 
+          (g.counterparty LIKE 'i%' AND SUBSTRING(g.counterparty, 2) = ind.id)
+        LEFT JOIN counterparty_master_joint joint ON 
+          (g.counterparty LIKE 'j%' AND SUBSTRING(g.counterparty, 2) = joint.id)
+        WHERE g.pre_approval_status = 'pre_approved'
+      `;
+      
+      const params = [];
+      if (dateRange) {
+        const [startDate, endDate] = dateRange.split(',');
+        if (startDate) {
+          gsecQuery += ` AND g.maturity_date >= ?`;
+          params.push(startDate);
+        }
+        if (endDate) {
+          gsecQuery += ` AND g.maturity_date <= ?`;
+          params.push(endDate);
+        }
+      }
+      if (counterparty) {
+        gsecQuery += ` AND (g.counterparty LIKE ? OR corp.short_name LIKE ? OR ind.short_name LIKE ? OR joint.short_name LIKE ?)`;
+        const cpPattern = `%${counterparty}%`;
+        params.push(cpPattern, cpPattern, cpPattern, cpPattern);
+      }
+      
+      gsecQuery += ` ORDER BY g.maturity_date ASC`;
+      const [gsecRows] = await db.query(gsecQuery, params);
+      deals = deals.concat(gsecRows.map(row => ({ ...row, product_type: 'gsec' })));
+    }
+    
+    // Get Money Market deals - pre_approved status
+    if (!productType || productType === 'all' || productType === 'money_market') {
+      let mmQuery = `
+        SELECT 
+          mmd.id,
+          mmd.deal_number,
+          NULL as isin,
+          mmd.counterparty_id as counterparty,
+          COALESCE(
+            corp.short_name,
+            ind.short_name,
+            joint.short_name,
+            mmd.counterparty_id
+          ) as counterparty_name,
+          mmd.principal_amount as face_value,
+          mmd.maturity_date,
+          mmd.status,
+          DATEDIFF(mmd.maturity_date, CURDATE()) as days_to_maturity,
+          'money_market' as product_type,
+          mmd.pre_approved,
+          mmd.pre_approval_status,
+          mmd.pre_approved_at,
+          mmd.pre_approval_authorized_at
+        FROM money_market_deals mmd
+        LEFT JOIN counterparty_master_corporate corp ON mmd.counterparty_id = corp.id
+        LEFT JOIN counterparty_master_individual ind ON mmd.counterparty_id = ind.id
+        LEFT JOIN counterparty_master_joint joint ON mmd.counterparty_id = joint.id
+        WHERE mmd.pre_approval_status = 'pre_approved'
+      `;
+      
+      const params = [];
+      if (dateRange) {
+        const [startDate, endDate] = dateRange.split(',');
+        if (startDate) {
+          mmQuery += ` AND mmd.maturity_date >= ?`;
+          params.push(startDate);
+        }
+        if (endDate) {
+          mmQuery += ` AND mmd.maturity_date <= ?`;
+          params.push(endDate);
+        }
+      }
+      if (counterparty) {
+        mmQuery += ` AND (mmd.counterparty_id LIKE ? OR corp.short_name LIKE ? OR ind.short_name LIKE ? OR joint.short_name LIKE ?)`;
+        const cpPattern = `%${counterparty}%`;
+        params.push(cpPattern, cpPattern, cpPattern, cpPattern);
+      }
+      
+      mmQuery += ` ORDER BY mmd.maturity_date ASC`;
+      const [mmRows] = await db.query(mmQuery, params);
+      deals = deals.concat(mmRows.map(row => ({ ...row, product_type: 'money_market' })));
+    }
+    
+    // Get Fixed Deposit deals - pre_approved status
+    if (!productType || productType === 'all' || productType === 'fixed_deposit') {
+      let fdQuery = `
+        SELECT 
+          fdr.id,
+          fdr.request_no as deal_number,
+          NULL as isin,
+          fdr.counterparty_id as counterparty,
+          COALESCE(
+            corp.short_name,
+            ind.short_name,
+            joint.short_name,
+            fdr.counterparty_id
+          ) as counterparty_name,
+          fdr.requested_amount as face_value,
+          fdr.maturity_date,
+          fdr.status,
+          DATEDIFF(fdr.maturity_date, CURDATE()) as days_to_maturity,
+          'fixed_deposit' as product_type,
+          fdr.pre_approved,
+          fdr.pre_approval_status,
+          fdr.pre_approved_at,
+          fdr.pre_approval_authorized_at
+        FROM fixed_deposit_requests fdr
+        LEFT JOIN counterparty_master_corporate corp ON fdr.counterparty_id = corp.id
+        LEFT JOIN counterparty_master_individual ind ON fdr.counterparty_id = ind.id
+        LEFT JOIN counterparty_master_joint joint ON fdr.counterparty_id = joint.id
+        WHERE fdr.pre_approval_status = 'pre_approved'
+      `;
+      
+      const params = [];
+      if (dateRange) {
+        const [startDate, endDate] = dateRange.split(',');
+        if (startDate) {
+          fdQuery += ` AND fdr.maturity_date >= ?`;
+          params.push(startDate);
+        }
+        if (endDate) {
+          fdQuery += ` AND fdr.maturity_date <= ?`;
+          params.push(endDate);
+        }
+      }
+      if (counterparty) {
+        fdQuery += ` AND (fdr.counterparty_id LIKE ? OR corp.short_name LIKE ? OR ind.short_name LIKE ? OR joint.short_name LIKE ?)`;
+        const cpPattern = `%${counterparty}%`;
+        params.push(cpPattern, cpPattern, cpPattern, cpPattern);
+      }
+      
+      fdQuery += ` ORDER BY fdr.maturity_date ASC`;
+      const [fdRows] = await db.query(fdQuery, params);
+      deals = deals.concat(fdRows.map(row => ({ ...row, product_type: 'fixed_deposit' })));
+    }
+    
+    res.json({
+      success: true,
+      data: deals,
+      message: `Found ${deals.length} pre-approved deals`
+    });
+  } catch (error) {
+    console.error('Error fetching pre-approved deals:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch pre-approved deals: ' + error.message
+    });
+  }
+};
+
 module.exports = MaturityController;
  
 // --- Maturity Blotter helpers (3-tier flow like GSEC) ---
@@ -1712,16 +2405,13 @@ MaturityController.getMaturityBlotter = async (req, res) => {
     // Role-based filtering for the 3-tier approval flow
     let filterSql = '';
     if (role === 'front_office') {
-      // Front office sees deals they initiated (authorization_level = 'front_office')
       filterSql = `mpl.authorization_level = 'front_office'`;
     } else if (role === 'back_office_verifier') {
-      // Verifier sees deals that Front Office has approved (authorization_level = 'back_office_verifier')
-      // These are ready for verifier approval
       filterSql = `mpl.authorization_level = 'back_office_verifier'`;
+    } else if (role === 'back_office_final' || role === 'admin') {
+      filterSql = `(mpl.authorization_level = 'back_office_final' OR mpl.authorization_level IS NULL)`;
     } else {
-      // back_office_final or admin: sees deals that Verifier has approved (authorization_level = 'back_office_final')
-      // These are ready for final approval
-      filterSql = `mpl.authorization_level = 'back_office_final'`;
+      filterSql = `1=0`;
     }
 
     const [rows] = await db.query(`
@@ -1730,6 +2420,12 @@ MaturityController.getMaturityBlotter = async (req, res) => {
         mpl.deal_number,
         mpl.maturity_action,
         mpl.processed_date AS first_logged_date,
+        COALESCE(mpl.authorization_level, 'back_office_final') AS approval_level,
+        CASE mpl.authorization_level 
+          WHEN 'front_office' THEN 'Front Office'
+          WHEN 'back_office_verifier' THEN 'Back Office Verifier'
+          WHEN 'back_office_final' THEN 'Back Office Final'
+          ELSE 'Back Office Final' END AS approval_level_display,
         CASE mpl.authorization_level 
           WHEN 'front_office' THEN 1 
           WHEN 'back_office_verifier' THEN 2 
@@ -1815,47 +2511,30 @@ MaturityController.approveMaturities = async (req, res) => {
       return res.status(401).json({ success: false, error: 'Unauthorized' });
     }
 
-    // Non-final roles update the existing log record with new authorization level
-    if (role === 'front_office' || role === 'back_office_verifier') {
-      const db = require('../config/database');
-      const today = processDate || new Date().toISOString().slice(0, 10);
-      
-      for (const id of dealIds) {
-        // Check if record exists for this deal and maturity action
-        const [existing] = await db.query(`
-          SELECT id FROM maturity_processing_log 
-          WHERE deal_id = ? AND maturity_action = ?
-          ORDER BY created_at DESC LIMIT 1
-        `, [id, maturityAction]);
-        
-        if (existing.length > 0) {
-          // Update existing record with next authorization level
-          let nextLevel = '';
-          if (role === 'front_office') {
-            nextLevel = 'back_office_verifier'; // Front Office approval moves to Verifier
-          } else if (role === 'back_office_verifier') {
-            nextLevel = 'back_office_final'; // Verifier approval moves to Final
-          }
-          
-          await db.query(`
-            UPDATE maturity_processing_log 
-            SET authorization_level = ?, processed_by = ?, processed_date = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-          `, [nextLevel, user.id, today, existing[0].id]);
-        } else {
-          // Create new record if none exists (shouldn't happen in normal flow)
-          await db.query(`
-            INSERT INTO maturity_processing_log
-            (deal_id, deal_number, maturity_action, principal_amount, interest_amount, total_amount,
-             processed_date, processed_by, authorization_level, bank_account_id)
-            VALUES (?, ?, ?, 0, 0, 0, ?, ?, ?, NULL)
-          `, [id, String(id), maturityAction, today, user.id, role]);
-        }
-      }
-      return res.json({ success: true, message: `Updated ${role} authorization for ${dealIds.length} deals` });
+    const db = require('../config/database');
+    const placeholders = dealIds.map(() => '?').join(',');
+
+    // Front office: advance front_office -> back_office_verifier
+    if (role === 'front_office') {
+      const [upd] = await db.query(`
+        UPDATE maturity_processing_log 
+        SET authorization_level = 'back_office_verifier'
+        WHERE deal_id IN (${placeholders}) AND maturity_action = ? AND authorization_level = 'front_office'
+      `, [...dealIds, maturityAction]);
+      return res.json({ success: true, message: `Maturity processing advanced to Back Office Verifier for ${upd.affectedRows || 0} deal(s)` });
     }
 
-    // Final role triggers posting using existing handler
+    // Back office verifier: advance back_office_verifier -> back_office_final
+    if (role === 'back_office_verifier') {
+      const [upd] = await db.query(`
+        UPDATE maturity_processing_log 
+        SET authorization_level = 'back_office_final'
+        WHERE deal_id IN (${placeholders}) AND maturity_action = ? AND authorization_level = 'back_office_verifier'
+      `, [...dealIds, maturityAction]);
+      return res.json({ success: true, message: `Maturity processing advanced to Back Office Final for ${upd.affectedRows || 0} deal(s)` });
+    }
+
+    // Back office final (or admin): post entries and set matured
     if (role === 'back_office_final' || role === 'admin') {
       // Reuse processMaturities flow to post entries; fabricate req/res minimal
       req.body = { dealIds, processDate, maturityAction, bankPaymentCode, bankAccountId };

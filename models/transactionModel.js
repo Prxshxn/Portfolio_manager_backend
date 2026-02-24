@@ -7,7 +7,7 @@ class Transaction {
   static getDefaultApprovalFields(userId) {
     return {
       approval_status: 'pending',
-      current_approval_level: 'front_office',
+      current_approval_level: 'back_office_final',
       approval_chain: JSON.stringify([]),
       submitted_by: userId || 0
     };
@@ -23,7 +23,7 @@ class Transaction {
           u.id as user_id
         FROM transactions t
         LEFT JOIN accounts a ON t.source_account_id = a.id
-        LEFT JOIN users u ON t.user = u.id
+        LEFT JOIN users u ON COALESCE(t.submitted_by, t.user) = u.id
         ORDER BY t.date DESC, t.deal_number DESC
       `);
       
@@ -107,7 +107,7 @@ class Transaction {
           u.id as user_id
         FROM transactions t
         LEFT JOIN accounts a ON t.source_account_id = a.id
-        LEFT JOIN users u ON t.user = u.id
+        LEFT JOIN users u ON COALESCE(t.submitted_by, t.user) = u.id
         WHERE t.deal_number = ?
       `, [deal_number]);
       
@@ -517,6 +517,7 @@ class Transaction {
           a.name as source_account
         FROM transactions t
         LEFT JOIN accounts a ON t.source_account_id = a.id
+        LEFT JOIN users u ON COALESCE(t.submitted_by, t.user) = u.id
         ORDER BY t.date DESC, t.deal_number DESC
         LIMIT ?
       `, [limit]);

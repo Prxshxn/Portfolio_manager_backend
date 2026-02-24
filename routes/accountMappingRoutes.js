@@ -207,6 +207,8 @@ router.get('/keys/all', async (req, res) => {
         GSEC_DEFAULT_SETTLEMENT: 'GSEC Default Settlement Account',
         GSEC_ACCRUAL_ASSET: 'GSEC Daily Accrual Asset',
         GSEC_ACCRUAL_INCOME: 'GSEC Daily Accrual Income',
+        FD_ACCRUAL_ASSET: 'Fixed Deposit Daily Accrual Asset',
+        FD_ACCRUAL_INCOME: 'Fixed Deposit Daily Accrual Income',
         MM_LENDING_CONTROL: 'Money Market Lending Control Account',
         MM_LOAN_LIABILITY: 'Money Market Loan Liability Account',
         MM_LENDING_INTEREST_ASSET: 'Money Market Lending Interest Asset',

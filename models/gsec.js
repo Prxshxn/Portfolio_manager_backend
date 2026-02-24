@@ -64,55 +64,100 @@ const Gsec = {
       }
       data.per_day_accrual = perDayAccrual;
 
+      // Parse counterparty string (e.g., 'i1', 'j1', 'c1') to extract the numeric ID
+      let counterpartyId = null;
+      if (data.counterparty) {
+        const counterpartyStr = String(data.counterparty).trim();
+        // Extract numeric part after the prefix (i, j, or c)
+        if (counterpartyStr.match(/^[ijc]\d+$/)) {
+          // Format: i1, j1, c1, etc.
+          counterpartyId = parseInt(counterpartyStr.substring(1), 10);
+        } else if (!isNaN(parseInt(counterpartyStr, 10))) {
+          // Already a number
+          counterpartyId = parseInt(counterpartyStr, 10);
+        } else {
+          // Try to extract any number from the string
+          const match = counterpartyStr.match(/\d+/);
+          if (match) {
+            counterpartyId = parseInt(match[0], 10);
+          }
+        }
+        
+        if (isNaN(counterpartyId) || counterpartyId === null) {
+          console.warn(`Warning: Could not parse counterparty ID from: ${data.counterparty}`);
+          counterpartyId = null;
+        }
+      }
+
+      // DB uses counterparty_id and isin_number (after rename from counterparty/isin)
+      const counterpartyValue = data.counterparty != null && data.counterparty !== '' ? data.counterparty : counterpartyId;
       const sql = `INSERT INTO gsec (
-        trade_type, transaction_type, counterparty, deal_number, isin, face_value, trade_date, value_date, next_coupon_date, 
+        transaction_type, counterparty_id, deal_number, isin_number, face_value, trade_date, value_date, next_coupon_date, 
         last_coupon_date, number_of_days_interest_accrued, number_of_days_for_coupon_period, accrued_interest, 
         coupon_interest, clean_price, dirty_price, accrued_interest_calculation, accrued_interest_six_decimals, 
         accrued_interest_for_100, settlement_amount, settlement_mode, issue_date, maturity_date, coupon_dates, 
         yield, brokerage, currency, portfolio, strategy, broker, accrued_interest_adjustment, clean_price_adjustment, 
-        per_day_accrual, status, created_by, created_at, current_approval_level, custodian, buy_deal_number
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+        buy_deal_number, status, current_approval_level, per_day_accrual
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
       
+      // Helper function to convert empty strings to null for numeric fields
+      const cleanNumericValue = (value) => {
+        if (value === '' || value === null || value === undefined) {
+          return null;
+        }
+        // If it's already a number, return it
+        if (typeof value === 'number') {
+          return isNaN(value) ? null : value;
+        }
+        // If it's a string, try to parse it
+        if (typeof value === 'string') {
+          const trimmed = value.trim();
+          if (trimmed === '' || trimmed === 'null' || trimmed === 'undefined') {
+            return null;
+          }
+          const parsed = parseFloat(trimmed);
+          return isNaN(parsed) ? null : parsed;
+        }
+        return value;
+      };
+
       const values = [
-        data.tradeType,
         data.transactionType,
-        data.counterparty,
+        counterpartyValue, // counterparty: prefixed string ('c3') or numeric id for old schema
         data.dealNumber,
         data.isin,
-        data.faceValue,
+        cleanNumericValue(data.faceValue),
         data.tradeDate || data.valueDate, // Use tradeDate if provided, otherwise fallback to valueDate
         data.valueDate,
         data.nextCouponDate,
         data.lastCouponDate,
-        data.numberOfDaysInterestAccrued,
-        data.numberOfDaysForCouponPeriod,
-        data.accruedInterest,
-        data.couponInterest,
-        data.cleanPrice,
-        data.dirtyPrice,
+        cleanNumericValue(data.numberOfDaysInterestAccrued),
+        cleanNumericValue(data.numberOfDaysForCouponPeriod),
+        cleanNumericValue(data.accruedInterest),
+        cleanNumericValue(data.couponInterest),
+        cleanNumericValue(data.cleanPrice),
+        cleanNumericValue(data.dirtyPrice),
         data.accruedInterestCalculation,
-        data.accruedInterestSixDecimals,
-        data.accruedInterestFor100,
-        data.settlementAmount,
+        cleanNumericValue(data.accruedInterestSixDecimals),
+        cleanNumericValue(data.accruedInterestFor100),
+        cleanNumericValue(data.settlementAmount),
         data.settlementMode,
         data.issueDate,
         data.maturityDate,
         data.couponDates,
-        data.yield,
-        data.brokerage,
+        cleanNumericValue(data.yield),
+        cleanNumericValue(data.brokerage),
         data.currency || 'LKR',
         data.portfolio,
         data.strategy,
         data.broker,
-        data.accruedInterestAdjustment,
-        data.cleanPriceAdjustment,
-        data.per_day_accrual,
-        data.status || 'pending', // Use provided status or default to pending
-        data.userId || null, // Creator's user ID
-        currentDate, // Creation timestamp
-        data.current_approval_level !== undefined ? data.current_approval_level : 1, // Use frontend value or default to 1
-        data.custodian || null,
-        data.buyDealNumber || null
+        cleanNumericValue(data.accruedInterestAdjustment),
+        cleanNumericValue(data.cleanPriceAdjustment),
+        data.buyDealNumber || null,
+        data.status || 'pending', // Status: pending by default
+        data.current_approval_level || 'front_office', // 3-tier: start at front_office for Front Office Verifier
+        cleanNumericValue(data.per_day_accrual) // Daily accrual amount
+        // created_at has DEFAULT CURRENT_TIMESTAMP, so we don't need to include it
       ];
       try {
         // Backend-side validation: prevent overselling from a Buy deal
@@ -477,25 +522,22 @@ const Gsec = {
    * Get recent GSec transactions with associated data
    */
   getRecent: async () => {
-    // Query with JOIN to get counterparty short names
-    // Counterparty IDs are stored with prefixes: c1, i1, j2, etc.
-    // Extract numeric part to match with counterparty table IDs
+    // Query with JOIN to get counterparty short names.
+    // DB uses isin_number and counterparty_id (after rename from isin/counterparty).
     const sql = `
       SELECT 
         g.*,
+        g.isin_number AS isin,
         COALESCE(
           corp.short_name,
           ind.short_name,
           joint.short_name,
-          g.counterparty
+          CONCAT('ID:', g.counterparty_id)
         ) as counterparty_name
       FROM gsec g
-      LEFT JOIN counterparty_master_corporate corp ON 
-        (g.counterparty LIKE 'c%' AND SUBSTRING(g.counterparty, 2) = corp.id)
-      LEFT JOIN counterparty_master_individual ind ON 
-        (g.counterparty LIKE 'i%' AND SUBSTRING(g.counterparty, 2) = ind.id)
-      LEFT JOIN counterparty_master_joint joint ON 
-        (g.counterparty LIKE 'j%' AND SUBSTRING(g.counterparty, 2) = joint.id)
+      LEFT JOIN counterparty_master_corporate corp ON (g.counterparty_id LIKE 'c%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = corp.id) OR (g.counterparty_id = corp.id)
+      LEFT JOIN counterparty_master_individual ind ON (g.counterparty_id LIKE 'i%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = ind.id) OR (g.counterparty_id = ind.id)
+      LEFT JOIN counterparty_master_joint joint ON (g.counterparty_id LIKE 'j%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = joint.id) OR (g.counterparty_id = joint.id)
       ORDER BY g.id DESC 
       LIMIT 150
     `;
@@ -514,7 +556,7 @@ const Gsec = {
           dirty_price: transaction.dirty_price ? parseFloat(transaction.dirty_price).toFixed(4) : null,
           face_value: transaction.face_value ? parseFloat(transaction.face_value).toFixed(2) : null,
           // Use counterparty_name from JOIN, fallback to counterparty ID if not found
-          counterparty_name: transaction.counterparty_name || transaction.counterparty || 'Unknown'
+          counterparty_name: transaction.counterparty_name || transaction.counterparty_id || 'Unknown'
         };
       });
       
@@ -553,7 +595,7 @@ const Gsec = {
     let sql = `SELECT 
       id,
       deal_number,
-      isin,
+      isin_number AS isin,
       yield,
       face_value,
       remaining_face_value,
@@ -566,7 +608,7 @@ const Gsec = {
       AND status IN ('Approved', 'Settled', 'final_approved')`;
     const params = [];
     if (isin) {
-      sql += ' AND isin = ?';
+      sql += ' AND isin_number = ?';
       params.push(isin);
     }
     if (portfolio) {
@@ -762,15 +804,15 @@ const Gsec = {
     
     // Whitelist of valid database columns in gsec table (based on actual schema)
     const validColumns = [
-      'trade_type', 'transaction_type', 'counterparty', 'deal_number', 'buy_deal_number', 'isin', 'face_value',
+      'trade_type', 'transaction_type', 'counterparty_id', 'deal_number', 'buy_deal_number', 'isin_number', 'face_value',
       'value_date', 'trade_date', 'next_coupon_date', 'last_coupon_date', 'number_of_days_interest_accrued',
       'number_of_days_for_coupon_period', 'accrued_interest', 'daily_accrual', 'coupon_interest', 'clean_price',
       'dirty_price', 'per_day_accrual', 'accrued_interest_calculation', 'accrued_interest_six_decimals',
       'accrued_interest_for_100', 'settlement_amount', 'settlement_mode', 'issue_date',
       'maturity_date', 'coupon_dates', 'yield', 'portfolio', 'clean_price_adjustment',
-      'accrued_interest_adjustment', 'broker', 'strategy', 'stratergy', 'status', 'comment', 'created_by',
-      'created_at', 'updated_by', 'updated_at', 'authorized_by', 'authorized_at',
-      'current_approval_level', 'brokerage', 'currency', 'custodian',
+      'accrued_interest_adjustment', 'broker', 'strategy', 'stratergy', 'status', 'created_by',
+      'created_at', 'updated_by', 'updated_at',
+      'current_approval_level', 'brokerage', 'currency',
       'remaining_face_value', 'matured', 'sell_back_amount'
     ];
     
@@ -796,7 +838,7 @@ const Gsec = {
     // Add ID to values array for WHERE clause
     values.push(id);
     
-    const sql = `UPDATE gsec SET ${setClauses.join(', ')} WHERE id = ?`;
+      const sql = `UPDATE gsec SET ${setClauses.join(', ')} WHERE id = ?`;
     
     try {
       const [result] = await db.query(sql, values);
@@ -817,49 +859,44 @@ const Gsec = {
       throw new Error('Transaction not found');
     }
     
-    const currentApprovalLevel = currentTx[0].current_approval_level || 1;
-    let newApprovalLevel = currentApprovalLevel;
+    const currentLevel = (currentTx[0] && currentTx[0].current_approval_level) || 'front_office';
     let newStatus = data.status;
+    let newApprovalLevel;
     let finalApproval = false;
     
     if (data.status === 'approved') {
-      // Advance to next approval level based on CURRENT approval level
-      if (currentApprovalLevel === 1) {
-        // Front office approved -> move to back office verifier (level 2)
-        newApprovalLevel = 2;
+      // 3-tier: advance front_office -> back_office_verifier -> back_office_final -> final_approved
+      if (currentLevel === 'front_office') {
+        newApprovalLevel = 'back_office_verifier';
         newStatus = 'pending';
-      } else if (currentApprovalLevel === 2) {
-        // Back office verifier approved -> move to back office final (level 3)
-        newApprovalLevel = 3;
+      } else if (currentLevel === 'back_office_verifier') {
+        newApprovalLevel = 'back_office_final';
         newStatus = 'pending';
-      } else if (currentApprovalLevel === 3) {
-        // Back office final approved -> mark as final_approved
-        newApprovalLevel = 3; // Stay at final
+      } else if (currentLevel === 'back_office_final') {
+        newApprovalLevel = 'final_approved';
         newStatus = 'final_approved';
         finalApproval = true;
+      } else {
+        newApprovalLevel = currentLevel;
+        newStatus = newStatus === 'final_approved' ? 'final_approved' : 'pending';
       }
     } else if (data.status === 'rejected') {
-      // Reset to front office on rejection
-      newApprovalLevel = 1;
       newStatus = 'rejected';
+      newApprovalLevel = 'rejected';
+    } else {
+      newApprovalLevel = currentLevel;
     }
     
     const sql = `
       UPDATE gsec 
       SET 
         status = ?,
-        comment = ?,
-        authorized_by = ?,
-        authorized_at = ?,
         current_approval_level = ?
       WHERE id = ?
     `;
     
     const values = [
       newStatus,
-      data.comment,
-      data.authorized_by,
-      data.authorized_at,
       newApprovalLevel,
       id
     ];
@@ -1099,17 +1136,12 @@ Gsec.advanceApprovalLevel = async (id) => {
   const [results] = await db.query('SELECT * FROM gsec WHERE id = ?', [id]);
   if (!results.length) return null;
   const tx = results[0];
-  let newLevel = tx.current_approval_level;
-  let updateFields = '';
   let finalApproval = false;
-  if (tx.current_approval_level < 3) {
-    newLevel = tx.current_approval_level + 1;
-    updateFields = ', current_approval_level = ' + newLevel;
-  } else {
-    // Set status to final_approved on last approval
-    updateFields = ", status = 'final_approved'";
-    finalApproval = true;
-  }
+  
+  // Single approval level - directly mark as final_approved
+  const updateFields = ", status = 'final_approved', current_approval_level = 'final_approved'";
+  finalApproval = true;
+  
   await db.query(`UPDATE gsec SET updated_at = NOW()${updateFields} WHERE id = ?`, [id]);
   // Return updated transaction
   const [updated] = await db.query('SELECT * FROM gsec WHERE id = ?', [id]);
@@ -1337,13 +1369,13 @@ Gsec.getMaturitiesByDate = async (date) => {
     SELECT 
       g.id,
       g.deal_number,
-      g.isin,
-      g.counterparty,
+      g.isin_number AS isin,
+      g.counterparty_id AS counterparty,
       COALESCE(
         corp.short_name,
         ind.short_name,
         joint.short_name,
-        g.counterparty
+        g.counterparty_id
       ) as counterparty_name,
       g.face_value,
       g.settlement_amount,
@@ -1352,9 +1384,9 @@ Gsec.getMaturitiesByDate = async (date) => {
       g.status as deal_status,
       DATEDIFF(g.maturity_date, CURDATE()) as days_to_maturity
     FROM gsec g
-    LEFT JOIN counterparty_master_corporate corp ON g.counterparty = corp.id
-    LEFT JOIN counterparty_master_individual ind ON g.counterparty = ind.id
-    LEFT JOIN counterparty_master_joint joint ON g.counterparty = joint.id
+    LEFT JOIN counterparty_master_corporate corp ON (g.counterparty_id LIKE 'c%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = corp.id) OR (g.counterparty_id = corp.id)
+    LEFT JOIN counterparty_master_individual ind ON (g.counterparty_id LIKE 'i%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = ind.id) OR (g.counterparty_id = ind.id)
+    LEFT JOIN counterparty_master_joint joint ON (g.counterparty_id LIKE 'j%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = joint.id) OR (g.counterparty_id = joint.id)
     WHERE g.maturity_date <= ?
       AND COALESCE(g.matured, 0) = 0
     ORDER BY g.maturity_date ASC

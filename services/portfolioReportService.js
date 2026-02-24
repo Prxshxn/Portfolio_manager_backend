@@ -78,7 +78,7 @@ exports.getPortfolioReport = async ({ startDate, endDate, product, portfolio, pa
         g.deal_number,
         g.value_date,
         g.trade_date,
-        g.isin,
+        g.isin_number as isin,
         g.face_value,
         g.clean_price,
         g.dirty_price,
@@ -86,21 +86,21 @@ exports.getPortfolioReport = async ({ startDate, endDate, product, portfolio, pa
         g.maturity_date,
         NULL as maturity_amount,
         g.portfolio,
-        g.custodian,
-        g.counterparty,
+        NULL as custodian,
+        g.counterparty_id as counterparty,
         COALESCE(
           corp.short_name,
           ind.short_name,
           joint.short_name,
-          g.counterparty
+          g.counterparty_id
         ) as counterparty_name,
         g.transaction_type,
         g.status,
         g.currency
       FROM gsec g
-      LEFT JOIN counterparty_master_corporate corp ON CONCAT('c', corp.id) = g.counterparty
-      LEFT JOIN counterparty_master_individual ind ON CONCAT('i', ind.id) = g.counterparty
-      LEFT JOIN counterparty_master_joint joint ON CONCAT('j', joint.id) = g.counterparty
+      LEFT JOIN counterparty_master_corporate corp ON CONCAT('c', corp.id) = g.counterparty_id
+      LEFT JOIN counterparty_master_individual ind ON CONCAT('i', ind.id) = g.counterparty_id
+      LEFT JOIN counterparty_master_joint joint ON CONCAT('j', joint.id) = g.counterparty_id
       WHERE 1=1
     `;
     

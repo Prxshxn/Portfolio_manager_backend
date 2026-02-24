@@ -489,10 +489,8 @@ module.exports = {
       return res.status(400).json({ success: false, error: 'Invalid status. Must be approved or rejected.' });
     }
     
-    // Require comment for rejected transactions
-    if (status === 'rejected' && !comment) {
-      return res.status(400).json({ success: false, error: 'Comment is required for rejected transactions.' });
-    }
+    // Note: Comment column doesn't exist in gsec table, so we don't require it
+    // If needed in the future, a rejection_reason or notes column can be added
     
     try {
       // First get the current transaction to determine the approval level
@@ -504,13 +502,8 @@ module.exports = {
       
       const transaction = currentTransaction[0];
     
-    const updateData = {
-      status,
-      comment: comment || '',
-      authorized_by: userId || null,
-        authorized_at: new Date(),
-        current_approval_level: transaction.current_approval_level || 'front_office'
-    };
+    // Pass approved/rejected; Gsec.updateStatus advances 3-tier (front_office -> back_office_verifier -> back_office_final -> final_approved)
+    const updateData = { status };
     
       const result = await Gsec.updateStatus(id, updateData);
       if (result.affectedRows === 0) {

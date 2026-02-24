@@ -8,6 +8,8 @@
     "init-db": "node db/init-db.js",
     "check-db": "node db/check-db.js",
     "check-engine": "node db/check-engine.js",
+    "migrate": "node scripts/run-migrations.js",
+    "create-missing-tables": "node scripts/create-all-missing-tables.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

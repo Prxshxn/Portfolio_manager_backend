@@ -1,5 +1,6 @@
 -- Update buyback_deals table to include new status for three-level verification workflow
 -- This migration adds 'Pending_Final_Approval' status to the deal_status enum
+-- Note: Migration runner will handle missing table errors gracefully
 
 -- First, create a temporary table with the new enum
 CREATE TABLE buyback_deals_new LIKE buyback_deals;

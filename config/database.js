@@ -2,12 +2,14 @@ const mysql = require('mysql2/promise');
 require('dotenv').config();
 
 // Create a connection pool with improved settings
+// Connect to default database (ITMS-LV1) - all queries use tables from this database
+// Queries should NOT use database prefix - tables are in the default database
 const pool = mysql.createPool({
   host: process.env.DB_HOST || 'localhost',
   port: process.env.DB_PORT || 3306,
   user: process.env.DB_USER || 'root',
   password: process.env.DB_PASSWORD || 'Prashan@321',
-  database: process.env.DB_NAME || 'portfolio_manager',
+  database: process.env.DB_NAME || 'ITMS-LV1', // Default database, but can still query other databases
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
@@ -27,17 +29,9 @@ const initDatabase = async () => {
     const connection = await pool.getConnection();
     console.log('Database connection established successfully');
     
-    // Create tables if they don't exist
-    await connection.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        username VARCHAR(255) UNIQUE NOT NULL,
-        password VARCHAR(255) NOT NULL,
-        role ENUM('user', 'authorizer', 'admin') NOT NULL DEFAULT 'user',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-    console.log('Users table verified/created');
+    // IMPORTANT:
+    // Do not auto-create tables here. Schema must be managed via migrations (`npm run migrate`),
+    // otherwise environments can end up with partial / inconsistent schemas.
     
     connection.release();
   } catch (err) {
@@ -45,7 +39,8 @@ const initDatabase = async () => {
     console.log('Please make sure:');
     console.log('1. MySQL server is running');
     console.log('2. The credentials in config/database.js are correct');
-    console.log('3. The database "portfolio_manager" exists (create it manually if needed)');
+    console.log(`3. The database "${process.env.DB_NAME || 'ITMS-LV1'}" exists or set DB_NAME in .env`);
+    console.log('4. You can still use database.table format in queries to access other databases');
   }
 };
 

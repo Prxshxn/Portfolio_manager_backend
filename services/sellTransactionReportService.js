@@ -40,11 +40,15 @@ function formatPercentage(value, decimals = 4) {
 
 exports.getSellTransactionReport = async ({ asAtDate, portfolio, isin, valueDate, maturityDate, page, pageSize }) => {
   // Build query with filters - only include Sell transactions from GSEC deals
-  let sql = `SELECT g.id, g.portfolio, g.custodian, g.deal_number, g.face_value, g.value_date, g.maturity_date, g.isin, g.coupon_interest, g.clean_price, g.yield, g.counterparty, g.transaction_type, 
+  let sql = `SELECT g.id, g.portfolio, g.deal_number, g.face_value, g.value_date, g.maturity_date, g.isin_number as isin, g.coupon_interest, g.clean_price, g.yield, g.counterparty_id, g.transaction_type, 
              g.buy_deal_number, g.accrued_interest, g.dirty_price, g.settlement_amount,
+             COALESCE(corp.short_name, ind.short_name, joint.short_name, CONCAT('ID:', g.counterparty_id)) as counterparty,
              im.coupon_rate, im.issue_date, im.coupon_date_1, im.coupon_date_2
     FROM gsec g 
-    LEFT JOIN isin_master im ON g.isin = im.isin_number 
+    LEFT JOIN isin_master im ON g.isin_number COLLATE utf8mb4_0900_ai_ci = im.isin_number COLLATE utf8mb4_0900_ai_ci
+    LEFT JOIN counterparty_master_corporate corp ON g.counterparty_id = corp.id
+    LEFT JOIN counterparty_master_individual ind ON g.counterparty_id = ind.id
+    LEFT JOIN counterparty_master_joint joint ON g.counterparty_id = joint.id
     WHERE g.transaction_type = 'Sell'`;
   const params = [];
   
@@ -54,7 +58,7 @@ exports.getSellTransactionReport = async ({ asAtDate, portfolio, isin, valueDate
     params.push(portfolio);
   }
   if (isin) {
-    sql += ' AND g.isin = ?';
+    sql += ' AND g.isin_number = ?';
     params.push(isin);
   }
   if (valueDate) {
@@ -75,16 +79,19 @@ exports.getSellTransactionReport = async ({ asAtDate, portfolio, isin, valueDate
 
   // Pagination - only apply if page and pageSize are provided
   if (page && pageSize) {
-    const offset = (page - 1) * pageSize;
+    // Ensure page and pageSize are numbers (defensive conversion)
+    const pageNum = typeof page === 'number' ? page : parseInt(page, 10);
+    const pageSizeNum = typeof pageSize === 'number' ? pageSize : parseInt(pageSize, 10);
+    const offset = (pageNum - 1) * pageSizeNum;
     sql += ' LIMIT ? OFFSET ?';
-    params.push(pageSize, offset);
+    params.push(pageSizeNum, offset);
   }
 
   // Query DB
   const [rows] = await db.query(sql, params);
 
   // Get all unique ISINs from the current page results
-  const uniqueIsins = [...new Set(rows.map(row => row.isin))];
+  const uniqueIsins = [...new Set(rows.map(row => row.isin || row.isin_number))];
 
   // Calculate balance for each ISIN across ALL records (not just current page)
   const isinBalances = {};
@@ -92,7 +99,7 @@ exports.getSellTransactionReport = async ({ asAtDate, portfolio, isin, valueDate
   
   for (const isin of uniqueIsins) {
     // Query all Buy records for this ISIN to calculate correct balance
-    let balanceSql = `SELECT face_value, clean_price FROM gsec WHERE isin = ? AND transaction_type = 'Buy'`;
+    let balanceSql = `SELECT face_value, clean_price FROM gsec WHERE isin_number = ? AND transaction_type = 'Buy'`;
     const balanceParams = [isin];
     
     // Apply the same filters as the main query for GSEC deals
@@ -164,26 +171,27 @@ exports.getSellTransactionReport = async ({ asAtDate, portfolio, isin, valueDate
     });
 
     // Calculate available balance: balance - repo_collateral - sell_back
-    const balance = Number(truncate4(isinBalances[row.isin]).toFixed(4));
+    const isinValue = row.isin || row.isin_number;
+    const balance = Number(truncate4(isinBalances[isinValue] || 0).toFixed(4));
     const availableBalance = balance; // No repo collateral or sell back for sell transactions
 
     return {
       id: row.id,
       portfolio: row.portfolio,
-      custodian: row.custodian || '',
+      custodian: '', // custodian column doesn't exist in gsec table
       deal_number: row.deal_number || '',
       face_value: formatCurrency(row.face_value, 2),
       value_date: row.value_date,
       maturity_date: row.maturity_date,
-      isin: row.isin,
+      isin: isinValue,
       coupon_interest: formatPrice(row.coupon_interest, 4),
       clean_price: formatPrice(row.clean_price, 4),
       yield: formatPercentage(row.yield, 4),
       dtm: dtm ? dtm.toLocaleString('en-US') : '',
-      balance: formatPrice(isinBalances[row.isin], 4),
+      balance: formatPrice(isinBalances[isinValue] || 0, 4),
       available_balance: formatPrice(availableBalance, 4),
       wap: (function() {
-        const wapData = isinWapMap[row.isin];
+        const wapData = isinWapMap[isinValue];
         if (wapData && wapData.sumFV) {
           const wapValue = Math.floor((wapData.sumFVCP / wapData.sumFV) * 10000) / 10000;
           return formatPrice(wapValue, 4);
@@ -210,10 +218,9 @@ exports.getSellTransactionReport = async ({ asAtDate, portfolio, isin, valueDate
   
   // Count query - only Sell transactions from GSEC
   let countSql = `SELECT COUNT(*) as count FROM gsec g 
-    LEFT JOIN isin_master im ON g.isin = im.isin_number 
     WHERE g.transaction_type = 'Sell'` +
     (portfolio ? ' AND g.portfolio = ?' : '') +
-    (isin ? ' AND g.isin = ?' : '') +
+    (isin ? ' AND g.isin_number = ?' : '') +
     (valueDate ? ' AND g.value_date = ?' : '') +
     (maturityDate ? ' AND g.maturity_date = ?' : '') +
     (asAtDate ? ' AND g.value_date <= ?' : '');
@@ -226,7 +233,7 @@ exports.getSellTransactionReport = async ({ asAtDate, portfolio, isin, valueDate
     // Calculate total balance only for Buy transactions
     const balanceSql = `SELECT face_value FROM gsec g WHERE g.transaction_type = 'Buy'` +
       (portfolio ? ' AND g.portfolio = ?' : '') +
-      (isin ? ' AND g.isin = ?' : '') +
+      (isin ? ' AND g.isin_number = ?' : '') +
       (valueDate ? ' AND g.value_date = ?' : '') +
       (maturityDate ? ' AND g.maturity_date = ?' : '') +
       (asAtDate ? ' AND g.value_date <= ?' : '');

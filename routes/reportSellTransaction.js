@@ -6,9 +6,12 @@ const reportExporter = require('../utils/reportExporter');
 router.get('/', async (req, res) => {
   try {
     const { asAtDate, portfolio, isin, valueDate, maturityDate, format, page = 1, pageSize = 20 } = req.query;
+    // Convert page and pageSize to numbers to fix SQL LIMIT clause issue
+    const pageNum = parseInt(page, 10) || 1;
+    const pageSizeNum = parseInt(pageSize, 10) || 20;
 
     const { data, total, totalPortfolioBalance } = await sellTransactionReportService.getSellTransactionReport({
-      asAtDate, portfolio, isin, valueDate, maturityDate, page, pageSize
+      asAtDate, portfolio, isin, valueDate, maturityDate, page: pageNum, pageSize: pageSizeNum
     });
 
     if (format === 'csv' || format === 'excel' || format === 'pdf') {

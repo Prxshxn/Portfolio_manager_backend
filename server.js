@@ -86,6 +86,7 @@ const paymentMasterRoutes = require('./routes/paymentMasterRoutes');
 const strategyMasterRoutes = require('./routes/strategyMasterRoutes');
 const maturityRoutes = require('./routes/maturity');
 const repoRoutes = require('./routes/repoRoutes');
+const transactionDocumentRoutes = require('./routes/transactionDocumentRoutes');
 
 // Use routes
 app.use('/api/accounts', accountRoutes);
@@ -95,6 +96,7 @@ app.use('/api', require('./routes/index'));
 app.use('/api/money-market-deals', moneyMarketDealsRoutes);
 app.use('/api/maturity', maturityRoutes);
 app.use('/api/repo-deals', repoRoutes);
+app.use('/api/documents', transactionDocumentRoutes);
 app.use('/api/mark-to-market', markToMarketRoutes); // FIXED: Mark-to-Market routes mounted
 app.use('/api/account-mappings', accountMappingRoutes);
 app.use('/api/chart-of-accounts', chartOfAccountsRoutes);

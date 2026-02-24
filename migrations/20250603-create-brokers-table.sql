@@ -1,0 +1,27 @@
+-- Create brokers table
+CREATE TABLE IF NOT EXISTS brokers (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  broker_code VARCHAR(50) NOT NULL UNIQUE,
+  broker_name VARCHAR(100) NOT NULL,
+  building_number VARCHAR(50),
+  street_name VARCHAR(100),
+  street_name2 VARCHAR(100),
+  city VARCHAR(100),
+  province VARCHAR(100),
+  zip_code VARCHAR(20),
+  country VARCHAR(100),
+  contact_name VARCHAR(100),
+  contact_phone VARCHAR(30),
+  contact_mobile VARCHAR(30),
+  contact_fax VARCHAR(30),
+  contact_email VARCHAR(100),
+  broker_type VARCHAR(20),
+  brokerage_method VARCHAR(20),
+  brokerage_cal_method_id INT,
+  brokerage_input_percentage DECIMAL(10, 4),
+  brokerage_settlement_method_id INT,
+  settlement_account_number VARCHAR(100),
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_broker_code (broker_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
