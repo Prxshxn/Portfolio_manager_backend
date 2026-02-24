@@ -778,12 +778,12 @@ MaturityController.processMaturities = async (req, res) => {
         const interestAmount = (principalAmount * interestRate * daysToMaturity) / 365;
         const totalAmount = principalAmount + interestAmount;
 
-        // Create initial maturity processing log entry (front_office level)
+        // Create initial maturity processing log entry (3-tier: start at front_office)
         await connection.query(`
           INSERT INTO maturity_processing_log
           (deal_id, deal_number, maturity_action, principal_amount, interest_amount, total_amount,
            processed_date, processed_by, authorization_level, bank_account_id)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'back_office_final', ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'front_office', ?)
         `, [
           dealId,
           deal.deal_number,
@@ -2404,12 +2404,13 @@ MaturityController.getMaturityBlotter = async (req, res) => {
 
     // Role-based filtering for the 3-tier approval flow
     let filterSql = '';
-    // Only back_office_final role can see and authorize deals
-    if (role === 'back_office_final' || role === 'admin') {
-      // back_office_final or admin: sees all pending deals ready for final approval
+    if (role === 'front_office') {
+      filterSql = `mpl.authorization_level = 'front_office'`;
+    } else if (role === 'back_office_verifier') {
+      filterSql = `mpl.authorization_level = 'back_office_verifier'`;
+    } else if (role === 'back_office_final' || role === 'admin') {
       filterSql = `(mpl.authorization_level = 'back_office_final' OR mpl.authorization_level IS NULL)`;
     } else {
-      // Other roles see nothing
       filterSql = `1=0`;
     }
 
@@ -2419,8 +2420,16 @@ MaturityController.getMaturityBlotter = async (req, res) => {
         mpl.deal_number,
         mpl.maturity_action,
         mpl.processed_date AS first_logged_date,
+        COALESCE(mpl.authorization_level, 'back_office_final') AS approval_level,
         CASE mpl.authorization_level 
-          WHEN 'back_office_final' THEN 1 
+          WHEN 'front_office' THEN 'Front Office'
+          WHEN 'back_office_verifier' THEN 'Back Office Verifier'
+          WHEN 'back_office_final' THEN 'Back Office Final'
+          ELSE 'Back Office Final' END AS approval_level_display,
+        CASE mpl.authorization_level 
+          WHEN 'front_office' THEN 1 
+          WHEN 'back_office_verifier' THEN 2 
+          WHEN 'back_office_final' THEN 3 
           ELSE 0 END AS current_stage,
         -- Get product type and maturity amount
         CASE 
@@ -2502,9 +2511,30 @@ MaturityController.approveMaturities = async (req, res) => {
       return res.status(401).json({ success: false, error: 'Unauthorized' });
     }
 
-    // Only back_office_final role can authorize - removed front_office and back_office_verifier logic
+    const db = require('../config/database');
+    const placeholders = dealIds.map(() => '?').join(',');
 
-    // Final role triggers posting using existing handler
+    // Front office: advance front_office -> back_office_verifier
+    if (role === 'front_office') {
+      const [upd] = await db.query(`
+        UPDATE maturity_processing_log 
+        SET authorization_level = 'back_office_verifier'
+        WHERE deal_id IN (${placeholders}) AND maturity_action = ? AND authorization_level = 'front_office'
+      `, [...dealIds, maturityAction]);
+      return res.json({ success: true, message: `Maturity processing advanced to Back Office Verifier for ${upd.affectedRows || 0} deal(s)` });
+    }
+
+    // Back office verifier: advance back_office_verifier -> back_office_final
+    if (role === 'back_office_verifier') {
+      const [upd] = await db.query(`
+        UPDATE maturity_processing_log 
+        SET authorization_level = 'back_office_final'
+        WHERE deal_id IN (${placeholders}) AND maturity_action = ? AND authorization_level = 'back_office_verifier'
+      `, [...dealIds, maturityAction]);
+      return res.json({ success: true, message: `Maturity processing advanced to Back Office Final for ${upd.affectedRows || 0} deal(s)` });
+    }
+
+    // Back office final (or admin): post entries and set matured
     if (role === 'back_office_final' || role === 'admin') {
       // Reuse processMaturities flow to post entries; fabricate req/res minimal
       req.body = { dealIds, processDate, maturityAction, bankPaymentCode, bankAccountId };
