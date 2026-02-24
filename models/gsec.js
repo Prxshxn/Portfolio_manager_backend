@@ -523,22 +523,21 @@ const Gsec = {
    */
   getRecent: async () => {
     // Query with JOIN to get counterparty short names.
-    // Support both schemas: old (counterparty INT only) and new (counterparty_id + counterparty string 'c1'/'i2'/'j3').
-    // Use only g.isin and g.counterparty so it works when isin_number/counterparty_id columns do not exist.
+    // DB uses isin_number and counterparty_id (after rename from isin/counterparty).
     const sql = `
       SELECT 
         g.*,
-        g.isin,
+        g.isin_number AS isin,
         COALESCE(
           corp.short_name,
           ind.short_name,
           joint.short_name,
-          CONCAT('ID:', g.counterparty)
+          CONCAT('ID:', g.counterparty_id)
         ) as counterparty_name
       FROM gsec g
-      LEFT JOIN counterparty_master_corporate corp ON (g.counterparty LIKE 'c%' AND CAST(SUBSTRING(g.counterparty, 2) AS UNSIGNED) = corp.id) OR (g.counterparty = corp.id)
-      LEFT JOIN counterparty_master_individual ind ON (g.counterparty LIKE 'i%' AND CAST(SUBSTRING(g.counterparty, 2) AS UNSIGNED) = ind.id) OR (g.counterparty = ind.id)
-      LEFT JOIN counterparty_master_joint joint ON (g.counterparty LIKE 'j%' AND CAST(SUBSTRING(g.counterparty, 2) AS UNSIGNED) = joint.id) OR (g.counterparty = joint.id)
+      LEFT JOIN counterparty_master_corporate corp ON (g.counterparty_id LIKE 'c%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = corp.id) OR (g.counterparty_id = corp.id)
+      LEFT JOIN counterparty_master_individual ind ON (g.counterparty_id LIKE 'i%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = ind.id) OR (g.counterparty_id = ind.id)
+      LEFT JOIN counterparty_master_joint joint ON (g.counterparty_id LIKE 'j%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = joint.id) OR (g.counterparty_id = joint.id)
       ORDER BY g.id DESC 
       LIMIT 150
     `;
@@ -557,7 +556,7 @@ const Gsec = {
           dirty_price: transaction.dirty_price ? parseFloat(transaction.dirty_price).toFixed(4) : null,
           face_value: transaction.face_value ? parseFloat(transaction.face_value).toFixed(2) : null,
           // Use counterparty_name from JOIN, fallback to counterparty ID if not found
-          counterparty_name: transaction.counterparty_name || transaction.counterparty || 'Unknown'
+          counterparty_name: transaction.counterparty_name || transaction.counterparty_id || 'Unknown'
         };
       });
       
