@@ -27,7 +27,7 @@ router.get('/', async (req, res) => {
         g.clean_price,
         g.transaction_type
       FROM mark_to_market mtm
-      LEFT JOIN gsec g ON mtm.isin_number COLLATE utf8mb4_unicode_ci = g.isin COLLATE utf8mb4_unicode_ci
+      LEFT JOIN gsec g ON mtm.isin_number COLLATE utf8mb4_unicode_ci = g.isin_number COLLATE utf8mb4_unicode_ci
       WHERE 1=1
     `;
     

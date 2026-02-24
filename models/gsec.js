@@ -154,8 +154,8 @@ const Gsec = {
         cleanNumericValue(data.accruedInterestAdjustment),
         cleanNumericValue(data.cleanPriceAdjustment),
         data.buyDealNumber || null,
-        data.status || 'pending', // Status: pending by default, ready for back office final approval
-        data.current_approval_level || 'back_office_final', // Set to back_office_final for single approval level
+        data.status || 'pending', // Status: pending by default
+        data.current_approval_level || 'front_office', // 3-tier: start at front_office for Front Office Verifier
         cleanNumericValue(data.per_day_accrual) // Daily accrual amount
         // created_at has DEFAULT CURRENT_TIMESTAMP, so we don't need to include it
       ];
@@ -595,7 +595,7 @@ const Gsec = {
     let sql = `SELECT 
       id,
       deal_number,
-      isin,
+      isin_number AS isin,
       yield,
       face_value,
       remaining_face_value,
@@ -608,7 +608,7 @@ const Gsec = {
       AND status IN ('Approved', 'Settled', 'final_approved')`;
     const params = [];
     if (isin) {
-      sql += ' AND isin = ?';
+      sql += ' AND isin_number = ?';
       params.push(isin);
     }
     if (portfolio) {
@@ -804,7 +804,7 @@ const Gsec = {
     
     // Whitelist of valid database columns in gsec table (based on actual schema)
     const validColumns = [
-      'trade_type', 'transaction_type', 'counterparty', 'deal_number', 'buy_deal_number', 'isin', 'face_value',
+      'trade_type', 'transaction_type', 'counterparty_id', 'deal_number', 'buy_deal_number', 'isin_number', 'face_value',
       'value_date', 'trade_date', 'next_coupon_date', 'last_coupon_date', 'number_of_days_interest_accrued',
       'number_of_days_for_coupon_period', 'accrued_interest', 'daily_accrual', 'coupon_interest', 'clean_price',
       'dirty_price', 'per_day_accrual', 'accrued_interest_calculation', 'accrued_interest_six_decimals',
@@ -859,18 +859,34 @@ const Gsec = {
       throw new Error('Transaction not found');
     }
     
+    const currentLevel = (currentTx[0] && currentTx[0].current_approval_level) || 'front_office';
     let newStatus = data.status;
+    let newApprovalLevel;
     let finalApproval = false;
     
     if (data.status === 'approved') {
-      // Single approval level - directly mark as final_approved
-      newStatus = 'final_approved';
-      finalApproval = true;
+      // 3-tier: advance front_office -> back_office_verifier -> back_office_final -> final_approved
+      if (currentLevel === 'front_office') {
+        newApprovalLevel = 'back_office_verifier';
+        newStatus = 'pending';
+      } else if (currentLevel === 'back_office_verifier') {
+        newApprovalLevel = 'back_office_final';
+        newStatus = 'pending';
+      } else if (currentLevel === 'back_office_final') {
+        newApprovalLevel = 'final_approved';
+        newStatus = 'final_approved';
+        finalApproval = true;
+      } else {
+        newApprovalLevel = currentLevel;
+        newStatus = newStatus === 'final_approved' ? 'final_approved' : 'pending';
+      }
     } else if (data.status === 'rejected') {
       newStatus = 'rejected';
+      newApprovalLevel = 'rejected';
+    } else {
+      newApprovalLevel = currentLevel;
     }
     
-    // Single approval level - only update status and current_approval_level
     const sql = `
       UPDATE gsec 
       SET 
@@ -879,14 +895,9 @@ const Gsec = {
       WHERE id = ?
     `;
     
-    // Set current_approval_level based on status
-    const approvalLevel = newStatus === 'final_approved' ? 'final_approved' : 
-                         newStatus === 'rejected' ? 'rejected' : 
-                         'back_office_final';
-    
     const values = [
       newStatus,
-      approvalLevel,
+      newApprovalLevel,
       id
     ];
     
@@ -1358,13 +1369,13 @@ Gsec.getMaturitiesByDate = async (date) => {
     SELECT 
       g.id,
       g.deal_number,
-      g.isin,
-      g.counterparty,
+      g.isin_number AS isin,
+      g.counterparty_id AS counterparty,
       COALESCE(
         corp.short_name,
         ind.short_name,
         joint.short_name,
-        g.counterparty
+        g.counterparty_id
       ) as counterparty_name,
       g.face_value,
       g.settlement_amount,
@@ -1373,9 +1384,9 @@ Gsec.getMaturitiesByDate = async (date) => {
       g.status as deal_status,
       DATEDIFF(g.maturity_date, CURDATE()) as days_to_maturity
     FROM gsec g
-    LEFT JOIN counterparty_master_corporate corp ON g.counterparty = corp.id
-    LEFT JOIN counterparty_master_individual ind ON g.counterparty = ind.id
-    LEFT JOIN counterparty_master_joint joint ON g.counterparty = joint.id
+    LEFT JOIN counterparty_master_corporate corp ON (g.counterparty_id LIKE 'c%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = corp.id) OR (g.counterparty_id = corp.id)
+    LEFT JOIN counterparty_master_individual ind ON (g.counterparty_id LIKE 'i%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = ind.id) OR (g.counterparty_id = ind.id)
+    LEFT JOIN counterparty_master_joint joint ON (g.counterparty_id LIKE 'j%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = joint.id) OR (g.counterparty_id = joint.id)
     WHERE g.maturity_date <= ?
       AND COALESCE(g.matured, 0) = 0
     ORDER BY g.maturity_date ASC

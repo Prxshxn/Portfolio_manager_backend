@@ -434,7 +434,7 @@ const buybackDealController = {
                   console.log('Falling back to chronological order for deduction');
                   const [chronologicalBuyDeals] = await db.query(`
                     SELECT * FROM gsec 
-                    WHERE isin = ? AND portfolio = ? AND transaction_type = 'Buy' 
+                    WHERE isin_number = ? AND portfolio = ? AND transaction_type = 'Buy' 
                     AND remaining_face_value > 0
                     ORDER BY created_at ASC
                   `, [isin, portfolio]);

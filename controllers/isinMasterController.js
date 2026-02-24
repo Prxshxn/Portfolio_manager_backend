@@ -502,14 +502,8 @@ module.exports = {
       
       const transaction = currentTransaction[0];
     
-    // Single approval level - approved goes directly to final_approved
-    const finalStatus = status === 'approved' ? 'final_approved' : status;
-    
-    // Simplified update data - only status and current_approval_level
-    // Note: comment, authorized_by, authorized_at columns don't exist in gsec table
-    const updateData = {
-      status: finalStatus
-    };
+    // Pass approved/rejected; Gsec.updateStatus advances 3-tier (front_office -> back_office_verifier -> back_office_final -> final_approved)
+    const updateData = { status };
     
       const result = await Gsec.updateStatus(id, updateData);
       if (result.affectedRows === 0) {
