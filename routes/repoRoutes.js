@@ -716,6 +716,9 @@ router.delete('/:id', auth, repoDealController.delete);
 // Update deal status
 router.patch('/:id/status', auth, repoDealController.updateStatus);
 
+// 3-tier approval workflow (separate from lifecycle status)
+router.patch('/:id/approval', auth, repoDealController.updateApprovalStatus);
+
 // Get repo deals by counterparty
 router.get('/counterparty/:counterpartyId', auth, repoDealController.getByCounterparty);
 

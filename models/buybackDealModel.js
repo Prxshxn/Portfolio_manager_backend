@@ -1,5 +1,49 @@
 const db = require('../config/db');
 
+let buybackDealsColumnSetPromise = null;
+
+const getBuybackDealsColumnSet = async () => {
+  if (!buybackDealsColumnSetPromise) {
+    buybackDealsColumnSetPromise = db
+      .query(
+        `SELECT COLUMN_NAME
+         FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE()
+           AND TABLE_NAME = 'buyback_deals'`
+      )
+      .then(([rows]) => new Set((rows || []).map((r) => r.COLUMN_NAME)));
+  }
+  return buybackDealsColumnSetPromise;
+};
+
+const buildBuybackDealSelectSql = async (whereClause = '', whereParams = []) => {
+  const cols = await getBuybackDealsColumnSet();
+  const hasVerifiedBy = cols.has('verified_by');
+  const hasApprovedBy = cols.has('approved_by');
+
+  const selectParts = [
+    'bd.*',
+    'creator.username as created_by_name',
+    hasVerifiedBy ? 'verifier.username as verified_by_name' : 'NULL as verified_by_name',
+    hasApprovedBy ? 'approver.username as approved_by_name' : 'NULL as approved_by_name'
+  ];
+
+  const joinParts = [
+    'LEFT JOIN users creator ON bd.created_by = creator.id',
+    hasVerifiedBy ? 'LEFT JOIN users verifier ON bd.verified_by = verifier.id' : null,
+    hasApprovedBy ? 'LEFT JOIN users approver ON bd.approved_by = approver.id' : null
+  ].filter(Boolean);
+
+  const sql = `SELECT
+      ${selectParts.join(',\n      ')}
+    FROM buyback_deals bd
+    ${joinParts.join('\n    ')}
+    ${whereClause}
+    ORDER BY bd.created_at DESC`;
+
+  return { sql, params: whereParams };
+};
+
 const BuybackDeal = {
   // Create a new buyback deal
   create: async (dealData) => {
@@ -50,62 +94,47 @@ const BuybackDeal = {
 
   // Get all buyback deals
   getAll: async () => {
-    const sql = `SELECT 
-      bd.*,
-      creator.username as created_by_name,
-      verifier.username as verified_by_name,
-      approver.username as approved_by_name
-    FROM buyback_deals bd
-    LEFT JOIN users creator ON bd.created_by = creator.id
-    LEFT JOIN users verifier ON bd.verified_by = verifier.id
-    LEFT JOIN users approver ON bd.approved_by = approver.id
-    ORDER BY bd.created_at DESC`;
-    
-    const [rows] = await db.query(sql);
+    const { sql, params } = await buildBuybackDealSelectSql();
+    const [rows] = await db.query(sql, params);
     return rows;
   },
 
   // Get a single buyback deal by ID
   getById: async (id) => {
-    const sql = `SELECT 
-      bd.*,
-      creator.username as created_by_name,
-      verifier.username as verified_by_name,
-      approver.username as approved_by_name
-    FROM buyback_deals bd
-    LEFT JOIN users creator ON bd.created_by = creator.id
-    LEFT JOIN users verifier ON bd.verified_by = verifier.id
-    LEFT JOIN users approver ON bd.approved_by = approver.id
-    WHERE bd.id = ?`;
-    
-    const [rows] = await db.query(sql, [id]);
+    const { sql, params } = await buildBuybackDealSelectSql('WHERE bd.id = ?', [id]);
+    const [rows] = await db.query(sql, params);
     return rows[0];
   },
 
   // Get buyback deals by status
   getByStatus: async (status) => {
-    const sql = `SELECT 
-      bd.*,
-      creator.username as created_by_name,
-      verifier.username as verified_by_name,
-      approver.username as approved_by_name
-    FROM buyback_deals bd
-    LEFT JOIN users creator ON bd.created_by = creator.id
-    LEFT JOIN users verifier ON bd.verified_by = verifier.id
-    LEFT JOIN users approver ON bd.approved_by = approver.id
-    WHERE bd.deal_status = ?
-    ORDER BY bd.created_at DESC`;
-    
-    const [rows] = await db.query(sql, [status]);
+    const { sql, params } = await buildBuybackDealSelectSql('WHERE bd.deal_status = ?', [status]);
+    const [rows] = await db.query(sql, params);
     return rows;
   },
 
   // Update deal status
   updateStatus: async (id, status, userId, field = 'verified_by', timestampField = 'verified_at') => {
-    const sql = `UPDATE buyback_deals 
-                 SET deal_status = ?, ${field} = ?, ${timestampField} = NOW()
+    const cols = await getBuybackDealsColumnSet();
+
+    const setters = ['deal_status = ?'];
+    const params = [status];
+
+    if (field && cols.has(field)) {
+      setters.push(`${field} = ?`);
+      params.push(userId);
+    }
+
+    if (timestampField && cols.has(timestampField)) {
+      setters.push(`${timestampField} = NOW()`);
+    }
+
+    const sql = `UPDATE buyback_deals
+                 SET ${setters.join(', ')}
                  WHERE id = ?`;
-    const [result] = await db.query(sql, [status, userId, id]);
+    params.push(id);
+
+    const [result] = await db.query(sql, params);
     return result;
   },
 

@@ -10,6 +10,7 @@ const repoDealController = {
       const {
          dealType,
          counterparty,
+        settlementMode,
          tradeDate,
         valueDate,
         maturityDate,
@@ -154,10 +155,13 @@ const repoDealController = {
         isin: primaryIsin, // Use primary ISIN (either provided or first from array)
         isins: hasIsinsArray ? isins : undefined,
         issueDate,
+        settlementMode,
         haircut: parseFloat(haircut) || 0,
         faceValue: parseFloat(faceValue) || null,
         faceValueAdjustment: parseFloat(faceValueAdjustment) || 0,
         faceValueAsPerCounterparty: parseFloat(faceValueAsPerCounterparty) || null,
+        approvalStatus: 'pending',
+        currentApprovalLevel: 'front_office',
         createdBy: req.user?.id || 1 // From auth middleware, fallback to user ID 1
       };
 
@@ -428,6 +432,84 @@ const repoDealController = {
     } catch (error) {
       console.error('Error updating repo deal status:', error);
       res.status(500).json({
+        success: false,
+        message: 'Internal server error',
+        error: error.message
+      });
+    }
+  },
+
+  // 3-tier authorization (separate from repo lifecycle status)
+  updateApprovalStatus: async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { action, comment } = req.body;
+
+      if (!id || isNaN(parseInt(id))) {
+        return res.status(400).json({ success: false, message: 'Valid ID is required' });
+      }
+
+      if (!action || !['approved', 'rejected'].includes(action)) {
+        return res.status(400).json({ success: false, message: 'Valid action is required (approved, rejected)' });
+      }
+
+      const user = req.user;
+      if (!user) {
+        return res.status(401).json({ success: false, message: 'Unauthorized' });
+      }
+
+      const allowedTabs = user.allowed_tabs || user.allowedTabs || [];
+      if (!Array.isArray(allowedTabs) || !allowedTabs.includes('repo')) {
+        return res.status(403).json({ success: false, message: 'Access denied: repo not assigned' });
+      }
+
+      const existingDeal = await RepoDeal.getById(parseInt(id));
+      if (!existingDeal) {
+        return res.status(404).json({ success: false, message: 'Repo deal not found' });
+      }
+
+      const currentLevel = existingDeal.current_approval_level || 'front_office';
+
+      const role = user.role;
+      const isAdmin = role === 'admin' || user.isAdmin;
+      const requiredRoleByLevel = {
+        front_office: 'front_office',
+        back_office_verifier: 'back_office_verifier',
+        back_office_final: 'back_office_final'
+      };
+      const requiredRole = requiredRoleByLevel[currentLevel];
+
+      if (!isAdmin && requiredRole && role !== requiredRole) {
+        return res.status(403).json({
+          success: false,
+          message: `Access denied: ${requiredRole} required for ${currentLevel}`
+        });
+      }
+
+      // Only allow workflow changes when still in workflow (pending)
+      const approvalStatus = existingDeal.approval_status || 'pending';
+      if (approvalStatus !== 'pending' && currentLevel !== 'rejected') {
+        return res.status(400).json({
+          success: false,
+          message: `Deal is not pending authorization (approval_status=${approvalStatus})`
+        });
+      }
+
+      await RepoDeal.updateApprovalStatus(parseInt(id), {
+        action,
+        comment,
+        userId: user.id
+      });
+
+      const updatedDeal = await RepoDeal.getById(parseInt(id));
+      return res.json({
+        success: true,
+        message: 'Repo approval updated successfully',
+        data: updatedDeal
+      });
+    } catch (error) {
+      console.error('Error updating repo approval:', error);
+      return res.status(500).json({
         success: false,
         message: 'Internal server error',
         error: error.message

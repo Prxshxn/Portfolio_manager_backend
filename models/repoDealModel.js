@@ -5,19 +5,24 @@ const RepoDeal = {
   // Create a new repo deal
   create: async (dealData) => {
     try {
-            const sql = `
+      const counterpartyId =
+        dealData.counterparty !== undefined && dealData.counterparty !== null && dealData.counterparty !== ''
+          ? parseInt(dealData.counterparty, 10)
+          : null;
+
+      const sql = `
          INSERT INTO repo_deals (
-           deal_type, counterparty_id, trade_date, value_date, maturity_date,
+           deal_type, counterparty_id, settlement_mode, trade_date, value_date, maturity_date,
            principal_amount, interest_amount, rate, maturity_amount, tenor,
            calculation_day_basis, isin_number, issue_date, haircut, face_value,
-           face_value_adjustment, face_value_as_per_counterparty,
-           status, created_by
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           status, approval_status, current_approval_level, comment, authorized_by, authorized_at, created_by
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        `;
        
        const values = [
          dealData.dealType,
-         dealData.counterparty,
+         counterpartyId,
+         dealData.settlementMode || null,
          dealData.tradeDate,
         dealData.valueDate,
         dealData.maturityDate,
@@ -31,9 +36,12 @@ const RepoDeal = {
         dealData.issueDate,
         dealData.haircut || 0,
         dealData.faceValue || null,
-        dealData.faceValueAdjustment || 0,
-        dealData.faceValueAsPerCounterparty || null,
         dealData.status || 'Pending',
+        dealData.approvalStatus || 'pending',
+        dealData.currentApprovalLevel || 'front_office',
+        dealData.comment || null,
+        dealData.authorizedBy || null,
+        dealData.authorizedAt || null,
         dealData.createdBy
       ];
 
@@ -206,8 +214,7 @@ const RepoDeal = {
          'deal_type', 'counterparty_id', 'trade_date', 'value_date', 'maturity_date',
          'principal_amount', 'interest_amount', 'rate', 'maturity_amount', 'tenor',
          'calculation_day_basis', 'isin_number', 'issue_date', 'haircut', 'face_value',
-         'face_value_adjustment', 'face_value_as_per_counterparty',
-         'status'
+         'status', 'settlement_mode'
        ];
       
       const updates = [];
@@ -358,6 +365,139 @@ const RepoDeal = {
       console.error('Error updating repo deal status:', error);
       throw error;
     }
+  },
+
+  updateApprovalStatus: async (id, { action, comment, userId }) => {
+    // Schema-aware: repo deals might exist before the approval migration ran.
+    const approvalColumns = [
+      'approval_status',
+      'current_approval_level',
+      'comment',
+      'authorized_by',
+      'authorized_at'
+    ];
+
+    const placeholders = approvalColumns.map(() => '?').join(', ');
+    const [presentColsRows] = await db.query(
+      `SELECT COLUMN_NAME
+         FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = 'repo_deals'
+          AND COLUMN_NAME IN (${placeholders})`,
+      approvalColumns
+    );
+
+    const present = new Set((presentColsRows || []).map(r => r.COLUMN_NAME));
+
+    // Ensure required columns exist (so approvals won't hard-fail before migration runs)
+    const columnDefinitions = {
+      approval_status: 'VARCHAR(32) NULL',
+      current_approval_level: 'VARCHAR(32) NULL',
+      comment: 'TEXT NULL',
+      authorized_by: 'INT NULL',
+      authorized_at: 'DATETIME NULL'
+    };
+
+    const shouldEnsureAll = !present.has('approval_status') && !present.has('current_approval_level');
+    const shouldEnsureAny = shouldEnsureAll || !present.has('comment') || !present.has('authorized_by') || !present.has('authorized_at');
+
+    if (shouldEnsureAny) {
+      for (const col of approvalColumns) {
+        if (!present.has(col)) {
+          const def = columnDefinitions[col];
+          if (!def) continue;
+          await db.query(`ALTER TABLE repo_deals ADD COLUMN ${col} ${def}`);
+        }
+      }
+    }
+
+    // Re-check after potential ALTER TABLE
+    const [presentColsRows2] = await db.query(
+      `SELECT COLUMN_NAME
+         FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = 'repo_deals'
+          AND COLUMN_NAME IN (${placeholders})`,
+      approvalColumns
+    );
+    const present2 = new Set((presentColsRows2 || []).map(r => r.COLUMN_NAME));
+
+    const hasApprovalStatus = present2.has('approval_status');
+    const hasCurrentApprovalLevel = present2.has('current_approval_level');
+
+    const selectParts = [];
+    if (hasApprovalStatus) selectParts.push('approval_status');
+    if (hasCurrentApprovalLevel) selectParts.push('current_approval_level');
+
+    const sqlSelect = `SELECT ${selectParts.join(', ')} FROM repo_deals WHERE id = ?`;
+    const [rows] = await db.query(sqlSelect, [id]);
+    if (!rows || rows.length === 0) throw new Error('Repo deal not found');
+
+    const row = rows[0];
+
+    const currentLevel = hasCurrentApprovalLevel ? (row.current_approval_level || 'front_office') : 'front_office';
+    const currentApprovalStatus = hasApprovalStatus ? (row.approval_status || 'pending') : 'pending';
+
+    let newApprovalStatus = currentApprovalStatus;
+    let newApprovalLevel = currentLevel;
+
+    if (action === 'approved') {
+      if (currentLevel === 'front_office') {
+        newApprovalLevel = 'back_office_verifier';
+        newApprovalStatus = 'pending';
+      } else if (currentLevel === 'back_office_verifier') {
+        newApprovalLevel = 'back_office_final';
+        newApprovalStatus = 'pending';
+      } else if (currentLevel === 'back_office_final') {
+        newApprovalLevel = 'final_approved';
+        newApprovalStatus = 'final_approved';
+      }
+    } else if (action === 'rejected') {
+      newApprovalLevel = 'rejected';
+      newApprovalStatus = 'rejected';
+    } else {
+      throw new Error('Invalid approval action');
+    }
+
+    const authorizedAt = new Date();
+    const setClauses = [];
+    const values = [];
+
+    if (hasApprovalStatus) {
+      setClauses.push('approval_status = ?');
+      values.push(newApprovalStatus);
+    }
+    if (hasCurrentApprovalLevel) {
+      setClauses.push('current_approval_level = ?');
+      values.push(newApprovalLevel);
+    }
+    if (present2.has('comment')) {
+      setClauses.push('comment = ?');
+      values.push(comment || null);
+    }
+    if (present2.has('authorized_by')) {
+      setClauses.push('authorized_by = ?');
+      values.push(userId || null);
+    }
+    if (present2.has('authorized_at')) {
+      setClauses.push('authorized_at = ?');
+      values.push(authorizedAt);
+    }
+
+    if (setClauses.length === 0) {
+      throw new Error('No approval fields available to update on repo_deals.');
+    }
+
+    values.push(id);
+
+    const sqlUpdate = `UPDATE repo_deals SET ${setClauses.join(', ')} WHERE id = ?`;
+    await db.query(sqlUpdate, values);
+
+    return {
+      id,
+      approval_status: hasApprovalStatus ? newApprovalStatus : undefined,
+      current_approval_level: hasCurrentApprovalLevel ? newApprovalLevel : undefined
+    };
   },
 
   // Get summary statistics

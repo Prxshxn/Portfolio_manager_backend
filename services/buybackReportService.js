@@ -1,5 +1,21 @@
 const db = require('../config/db');
 
+let buybackDealsColumnSetPromise = null;
+
+async function getBuybackDealsColumnSet() {
+  if (!buybackDealsColumnSetPromise) {
+    buybackDealsColumnSetPromise = db
+      .query(
+        `SELECT COLUMN_NAME
+         FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE()
+           AND TABLE_NAME = 'buyback_deals'`
+      )
+      .then(([rows]) => new Set((rows || []).map((r) => r.COLUMN_NAME)));
+  }
+  return buybackDealsColumnSetPromise;
+}
+
 // Helper to truncate to 4 decimals
 function truncate4(val) {
   return Math.floor(Number(val) * 10000) / 10000;
@@ -37,6 +53,12 @@ function formatPercentage(value, decimals = 4) {
 }
 
 exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturityDate, page, pageSize }) => {
+  const cols = await getBuybackDealsColumnSet();
+  const hasVerifiedBy = cols.has('verified_by');
+  const hasVerifiedAt = cols.has('verified_at');
+  const hasApprovedBy = cols.has('approved_by');
+  const hasApprovedAt = cols.has('approved_at');
+
   // Build query with filters for buyback deals
   let sql = `
     SELECT 
@@ -76,10 +98,10 @@ exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturi
       bd.coupon_date1,
       bd.coupon_date2,
       bd.notes,
-      bd.verified_by,
-      bd.verified_at,
-      bd.approved_by,
-      bd.approved_at
+      ${hasVerifiedBy ? 'bd.verified_by' : 'NULL as verified_by'},
+      ${hasVerifiedAt ? 'bd.verified_at' : 'NULL as verified_at'},
+      ${hasApprovedBy ? 'bd.approved_by' : 'NULL as approved_by'},
+      ${hasApprovedAt ? 'bd.approved_at' : 'NULL as approved_at'}
     FROM buyback_deals bd
     WHERE 1=1
   `;
