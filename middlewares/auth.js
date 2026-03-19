@@ -13,7 +13,8 @@ module.exports = (req, res, next) => {
     // Verify token if exists
     if (token) {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      req.user = decoded;
+      // Merge decoded token data with localStorage user (so allowed_tabs etc. are preserved)
+      req.user = localStorageUser ? { ...decoded, ...localStorageUser } : decoded;
     } 
     // Fallback to localStorage data
     else if (localStorageUser) {
