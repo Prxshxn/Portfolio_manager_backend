@@ -47,6 +47,78 @@ const buildBuybackDealSelectSql = async (whereClause = '', whereParams = []) => 
 const BuybackDeal = {
   // Create a new buyback deal
   create: async (dealData) => {
+    // Some environments might have older buyback schemas.
+    // Ensure required INSERT columns exist (idempotent) so create won't crash.
+    const cols = await getBuybackDealsColumnSet();
+    const ensureColumnExists = async (column, definition) => {
+      if (cols.has(column)) return;
+      // Add as NULL-safe columns to avoid breaking existing rows.
+      await db.query(`ALTER TABLE buyback_deals ADD COLUMN ${column} ${definition}`);
+    };
+
+    const requiredColumnDefinitions = {
+      // Deal
+      deal_number: 'VARCHAR(50) NULL',
+
+      // Leg 1
+      leg1_trade_date: 'DATE NULL',
+      leg1_value_date: 'DATE NULL',
+      leg1_transaction_type: "ENUM('Buy', 'Sell') NULL",
+      leg1_trade_type: "VARCHAR(20) DEFAULT 'BuyBack'",
+      leg1_isin: 'VARCHAR(20) NULL',
+      leg1_counterparty: 'VARCHAR(50) NULL',
+      leg1_broker: 'INT NULL',
+      leg1_portfolio: 'VARCHAR(50) NULL',
+      leg1_strategy: 'VARCHAR(50) NULL',
+      leg1_custodian: 'VARCHAR(100) NULL',
+      leg1_settlement_mode: "ENUM('RTGS', 'CEFT', 'SLIPS', 'Cheque', 'Other') NULL DEFAULT 'RTGS'",
+      leg1_brokerage: 'DECIMAL(8,4) NULL DEFAULT 0.0000',
+      leg1_interest_rate: 'DECIMAL(8,4) NULL DEFAULT 0.0000',
+      leg1_face_value: 'DECIMAL(18,2) NULL',
+      leg1_yield_rate: 'DECIMAL(10,6) NULL',
+      leg1_settlement_amount: 'DECIMAL(18,2) NULL',
+      leg1_clean_price: 'DECIMAL(10,4) NULL',
+      leg1_dirty_price: 'DECIMAL(10,4) NULL',
+      leg1_accrued_interest: 'DECIMAL(10,4) NULL',
+      leg1_currency: "VARCHAR(3) NULL DEFAULT 'LKR'",
+
+      // Leg 2
+      leg2_trade_date: 'DATE NULL',
+      leg2_value_date: 'DATE NULL',
+      leg2_transaction_type: "ENUM('Buy', 'Sell') NULL",
+      leg2_trade_type: "VARCHAR(20) DEFAULT 'BuyBack'",
+      leg2_isin: 'VARCHAR(20) NULL',
+      leg2_counterparty: 'VARCHAR(50) NULL',
+      leg2_portfolio: 'VARCHAR(50) NULL',
+      leg2_strategy: 'VARCHAR(50) NULL',
+      leg2_custodian: 'VARCHAR(100) NULL',
+      leg2_settlement_mode: "ENUM('RTGS', 'CEFT', 'SLIPS', 'Cheque', 'Other') NULL DEFAULT 'RTGS'",
+      leg2_face_value: 'DECIMAL(18,2) NULL',
+      leg2_yield_rate: 'DECIMAL(10,6) NULL',
+      leg2_settlement_amount: 'DECIMAL(18,2) NULL',
+      leg2_clean_price: 'DECIMAL(10,4) NULL',
+      leg2_dirty_price: 'DECIMAL(10,4) NULL',
+      leg2_accrued_interest: 'DECIMAL(10,4) NULL',
+      leg2_currency: "VARCHAR(3) NULL DEFAULT 'LKR'",
+
+      // ISIN metadata
+      issue_date: 'DATE NULL',
+      maturity_date: 'DATE NULL',
+      coupon_rate: 'DECIMAL(8,4) NULL',
+      coupon_date1: 'VARCHAR(5) NULL',
+      coupon_date2: 'VARCHAR(5) NULL',
+
+      // Status and tracking
+      deal_status:
+        "ENUM('Draft', 'Pending_Verification', 'Verified', 'Pending_Final_Approval', 'Approved', 'Rejected', 'Settled') NULL DEFAULT 'Draft'",
+      created_by: 'INT NULL',
+      notes: 'TEXT NULL'
+    };
+
+    for (const [column, definition] of Object.entries(requiredColumnDefinitions)) {
+      await ensureColumnExists(column, definition);
+    }
+
     const sql = `INSERT INTO buyback_deals (
       deal_number,
       leg1_trade_date, leg1_value_date, leg1_transaction_type, leg1_trade_type, leg1_isin,
