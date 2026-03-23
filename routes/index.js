@@ -75,6 +75,9 @@ router.use('/holiday-calendar', require('./holidayCalendarRoutes'));
 // Mount Fund Centre Master API
 router.use('/fund-centre-master', require('./fundCentreMasterRoutes'));
 
+// T-Bill deals
+router.use('/tbill', require('./tbillRoutes'));
+
 // Mount Issuer Master API
 router.use('/issuer-master', require('./issuerMasterRoutes'));
 
