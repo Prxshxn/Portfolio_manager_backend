@@ -36,7 +36,7 @@ const mapRepoUpdatePayloadToColumns = (payload = {}) => {
 
   if (normalized.counterparty_id !== undefined && normalized.counterparty_id !== null && normalized.counterparty_id !== '') {
     const parsed = parseInt(normalized.counterparty_id, 10);
-    if (Number.isNaN(parsed)) {
+    if (Number.isNaN(parsed) || parsed <= 0) {
       // Avoid overwriting existing counterparty_id with NULL/NaN.
       delete normalized.counterparty_id;
     } else {
@@ -118,11 +118,14 @@ const repoDealController = {
       const hasRate = rate !== undefined && rate !== null && rate !== '';
       const hasTenor = tenor !== undefined && tenor !== null && tenor !== '';
       
-      if (!dealType || !counterpartyId || !tradeDate || !valueDate || !maturityDate || 
+      const hasValidCounterparty = counterpartyId !== null && Number.isFinite(counterpartyId) && counterpartyId > 0;
+      console.log('Repo create counterparty parsing:', { counterparty, counterpartyId, hasValidCounterparty });
+
+      if (!dealType || !hasValidCounterparty || !tradeDate || !valueDate || !maturityDate || 
           !hasPrincipalAmount || !hasRate || !hasTenor || !calculationDayBasis || (!hasIsin && !hasIsinsArray)) {
          const missingFields = [];
          if (!dealType) missingFields.push('dealType');
-         if (!counterpartyId) missingFields.push('counterparty');
+         if (!hasValidCounterparty) missingFields.push('counterparty');
          if (!tradeDate) missingFields.push('tradeDate');
          if (!valueDate) missingFields.push('valueDate');
          if (!maturityDate) missingFields.push('maturityDate');
