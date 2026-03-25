@@ -35,7 +35,13 @@ const mapRepoUpdatePayloadToColumns = (payload = {}) => {
   }
 
   if (normalized.counterparty_id !== undefined && normalized.counterparty_id !== null && normalized.counterparty_id !== '') {
-    normalized.counterparty_id = parseInt(normalized.counterparty_id, 10);
+    const parsed = parseInt(normalized.counterparty_id, 10);
+    if (Number.isNaN(parsed)) {
+      // Avoid overwriting existing counterparty_id with NULL/NaN.
+      delete normalized.counterparty_id;
+    } else {
+      normalized.counterparty_id = parsed;
+    }
   }
   if (normalized.principal_amount !== undefined) normalized.principal_amount = parseFloat(normalized.principal_amount);
   if (normalized.interest_amount !== undefined) normalized.interest_amount = parseFloat(normalized.interest_amount);
@@ -79,6 +85,13 @@ const repoDealController = {
         faceValueAsPerCounterparty
       } = req.body;
 
+      const counterpartyId = (() => {
+        // UI should send counterparty as numeric id (or numeric string). Guard against names/objects.
+        if (counterparty === undefined || counterparty === null || counterparty === '') return null;
+        const parsed = parseInt(counterparty, 10);
+        return Number.isNaN(parsed) ? null : parsed;
+      })();
+
              // Validation
       const hasIsinsArray = Array.isArray(isins) && isins.length > 0;
       const hasIsin = isin && typeof isin === 'string' && isin.trim() !== '';
@@ -90,6 +103,7 @@ const repoDealController = {
         isins: isins || '(not provided)',
         dealType: dealType || '(missing)',
         counterparty: counterparty || '(missing)',
+        counterpartyId,
         tradeDate: tradeDate || '(missing)',
         valueDate: valueDate || '(missing)',
         maturityDate: maturityDate || '(missing)',
@@ -104,11 +118,11 @@ const repoDealController = {
       const hasRate = rate !== undefined && rate !== null && rate !== '';
       const hasTenor = tenor !== undefined && tenor !== null && tenor !== '';
       
-      if (!dealType || !counterparty || !tradeDate || !valueDate || !maturityDate || 
+      if (!dealType || !counterpartyId || !tradeDate || !valueDate || !maturityDate || 
           !hasPrincipalAmount || !hasRate || !hasTenor || !calculationDayBasis || (!hasIsin && !hasIsinsArray)) {
          const missingFields = [];
          if (!dealType) missingFields.push('dealType');
-         if (!counterparty) missingFields.push('counterparty');
+         if (!counterpartyId) missingFields.push('counterparty');
          if (!tradeDate) missingFields.push('tradeDate');
          if (!valueDate) missingFields.push('valueDate');
          if (!maturityDate) missingFields.push('maturityDate');
@@ -192,7 +206,7 @@ const repoDealController = {
              // Create deal data object
       const dealData = {
          dealType,
-         counterparty,
+         counterparty: counterpartyId,
          tradeDate,
         valueDate,
         maturityDate,

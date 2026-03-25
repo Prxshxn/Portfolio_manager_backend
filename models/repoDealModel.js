@@ -33,7 +33,10 @@ const RepoDeal = {
 
       const counterpartyId =
         dealData.counterparty !== undefined && dealData.counterparty !== null && dealData.counterparty !== ''
-          ? parseInt(dealData.counterparty, 10)
+          ? (() => {
+              const parsed = parseInt(dealData.counterparty, 10);
+              return Number.isNaN(parsed) ? null : parsed;
+            })()
           : null;
 
       const sql = `
