@@ -512,6 +512,22 @@ const buybackDealController = {
         });
       }
 
+      // Only rejected deals are editable; edited deals are re-submitted for verification
+      const existingDeal = await BuybackDeal.getById(id);
+      if (!existingDeal) {
+        return res.status(404).json({
+          success: false,
+          error: 'Buyback deal not found'
+        });
+      }
+
+      if (String(existingDeal.deal_status || '').toLowerCase() !== 'rejected') {
+        return res.status(400).json({
+          success: false,
+          error: 'Only rejected deals can be edited'
+        });
+      }
+
       // Holiday validation - check if updated transaction dates are holidays
       // Check both legs for holidays
       const currency1 = leg1.currency || 'LKR';
@@ -585,7 +601,9 @@ const buybackDealController = {
           dirtyPrice: leg2.dirtyPrice,
           accruedInterest: leg2.accruedInterest
         },
-        notes: req.body.notes
+        notes: req.body.notes,
+        // Re-submit edited rejected deals into the approval pipeline
+        deal_status: 'Pending_Verification'
       };
 
       const result = await BuybackDeal.update(id, dealData);

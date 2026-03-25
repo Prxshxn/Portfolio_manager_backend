@@ -298,10 +298,20 @@ module.exports = {
         // Don't create a main sell transaction to avoid double deduction
         
         for (const sell of sell_deals) {
+          if (!sell?.buy_deal_number) {
+            await connection.rollback();
+            return res.status(400).json({
+              success: false,
+              error: 'Invalid sell_deals payload: buy_deal_number is required for each sell leg'
+            });
+          }
+
           // Create individual sell transaction for each buy deal
           const individualSellData = {
             ...formData,
-            dealNumber: `${formData.dealNumber}_${sell.buy_deal_number}_${Date.now()}`,
+            // Force canonical sequence generator in Gsec.createWithConnection()
+            // so every sell gets YYYYMMDD/GSEC/####.
+            dealNumber: null,
             faceValue: sell.amountToSell,
             buyDealNumber: sell.buy_deal_number, // This should be the selected deal's deal_number
             transactionType: 'Sell'
