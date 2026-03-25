@@ -1,10 +1,36 @@
 const db = require('../config/db');
 const CashflowCaptureService = require('../services/cashflowCaptureService');
 
+const ensureRepoDealColumns = async () => {
+  const requiredColumns = {
+    face_value_adjustment: 'DECIMAL(20,4) NULL',
+    face_value_as_per_counterparty: 'DECIMAL(20,4) NULL'
+  };
+
+  const columnNames = Object.keys(requiredColumns);
+  const placeholders = columnNames.map(() => '?').join(', ');
+  const [rows] = await db.query(
+    `SELECT COLUMN_NAME
+       FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = 'repo_deals'
+        AND COLUMN_NAME IN (${placeholders})`,
+    columnNames
+  );
+  const present = new Set((rows || []).map((r) => r.COLUMN_NAME));
+
+  for (const columnName of columnNames) {
+    if (present.has(columnName)) continue;
+    await db.query(`ALTER TABLE repo_deals ADD COLUMN ${columnName} ${requiredColumns[columnName]}`);
+  }
+};
+
 const RepoDeal = {
   // Create a new repo deal
   create: async (dealData) => {
     try {
+      await ensureRepoDealColumns();
+
       const counterpartyId =
         dealData.counterparty !== undefined && dealData.counterparty !== null && dealData.counterparty !== ''
           ? parseInt(dealData.counterparty, 10)
@@ -14,9 +40,9 @@ const RepoDeal = {
          INSERT INTO repo_deals (
            deal_type, counterparty_id, settlement_mode, trade_date, value_date, maturity_date,
            principal_amount, interest_amount, rate, maturity_amount, tenor,
-           calculation_day_basis, isin_number, issue_date, haircut, face_value,
+           calculation_day_basis, isin_number, issue_date, haircut, face_value, face_value_adjustment, face_value_as_per_counterparty,
            status, approval_status, current_approval_level, comment, authorized_by, authorized_at, created_by
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        `;
        
        const values = [
@@ -36,6 +62,8 @@ const RepoDeal = {
         dealData.issueDate,
         dealData.haircut || 0,
         dealData.faceValue || null,
+        dealData.faceValueAdjustment || 0,
+        dealData.faceValueAsPerCounterparty || null,
         dealData.status || 'Pending',
         dealData.approvalStatus || 'pending',
         dealData.currentApprovalLevel || 'front_office',
@@ -210,11 +238,14 @@ const RepoDeal = {
   // Update repo deal
   update: async (id, updateData) => {
     try {
+      await ensureRepoDealColumns();
+
              const allowedFields = [
          'deal_type', 'counterparty_id', 'trade_date', 'value_date', 'maturity_date',
          'principal_amount', 'interest_amount', 'rate', 'maturity_amount', 'tenor',
          'calculation_day_basis', 'isin_number', 'issue_date', 'haircut', 'face_value',
-         'status', 'settlement_mode'
+         'face_value_adjustment', 'face_value_as_per_counterparty',
+         'status', 'approval_status', 'current_approval_level', 'comment', 'settlement_mode'
        ];
       
       const updates = [];
