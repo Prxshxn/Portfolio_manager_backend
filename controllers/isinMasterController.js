@@ -227,6 +227,9 @@ module.exports = {
   saveGsec: async (req, res) => {
     const controllerStartTime = Date.now();
     console.log('=== SAVING GSEC CONTROLLER ===');
+    // #region agent log
+    (typeof fetch === 'function') && fetch('http://127.0.0.1:7242/ingest/29dc6e6a-2fb8-4497-a57e-c480a1e8f80b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'989560'},body:JSON.stringify({sessionId:'989560',runId:'pre-fix',hypothesisId:'H1_H2_H3',location:'isinMasterController.js:saveGsec',message:'saveGsec entry',data:{method:req.method,path:req.originalUrl,transactionType:req.body?.transactionType||req.body?.transaction_type,dealNumber:req.body?.dealNumber||req.body?.deal_number,buyDealNumber:req.body?.buyDealNumber||req.body?.buy_deal_number,sellDealsCount:Array.isArray(req.body?.sell_deals)?req.body.sell_deals.length:0,status:req.body?.status},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     
     // Set a timeout for the entire operation
     const timeout = setTimeout(() => {
@@ -295,10 +298,20 @@ module.exports = {
         // Don't create a main sell transaction to avoid double deduction
         
         for (const sell of sell_deals) {
+          if (!sell?.buy_deal_number) {
+            await connection.rollback();
+            return res.status(400).json({
+              success: false,
+              error: 'Invalid sell_deals payload: buy_deal_number is required for each sell leg'
+            });
+          }
+
           // Create individual sell transaction for each buy deal
           const individualSellData = {
             ...formData,
-            dealNumber: `${formData.dealNumber}_${sell.buy_deal_number}_${Date.now()}`,
+            // Force canonical sequence generator in Gsec.createWithConnection()
+            // so every sell gets YYYYMMDD/GSEC/####.
+            dealNumber: null,
             faceValue: sell.amountToSell,
             buyDealNumber: sell.buy_deal_number, // This should be the selected deal's deal_number
             transactionType: 'Sell'
@@ -447,6 +460,9 @@ module.exports = {
       updated_at: new Date(),
       updated_by: req.body.userId || null
     };
+    // #region agent log
+    (typeof fetch === 'function') && fetch('http://127.0.0.1:7242/ingest/29dc6e6a-2fb8-4497-a57e-c480a1e8f80b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'989560'},body:JSON.stringify({sessionId:'989560',runId:'pre-fix',hypothesisId:'H1_H2_H4_H5',location:'isinMasterController.js:updateGsecTransaction',message:'updateGsecTransaction entry',data:{id,method:req.method,path:req.originalUrl,incomingStatus:req.body?.status,forcedStatus:updateData?.status,transactionType:req.body?.transactionType||req.body?.transaction_type,dealNumber:req.body?.dealNumber||req.body?.deal_number},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     
     try {
       // Holiday validation - check if updated transaction dates are holidays

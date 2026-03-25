@@ -1,6 +1,62 @@
 const RepoDeal = require('../models/repoDealModel');
 const holidayValidationService = require('../services/holidayValidationService');
 
+const mapRepoUpdatePayloadToColumns = (payload = {}) => {
+  const map = {
+    dealType: 'deal_type',
+    counterparty: 'counterparty_id',
+    settlementMode: 'settlement_mode',
+    tradeDate: 'trade_date',
+    valueDate: 'value_date',
+    maturityDate: 'maturity_date',
+    principalAmount: 'principal_amount',
+    interestAmount: 'interest_amount',
+    rate: 'rate',
+    maturityAmount: 'maturity_amount',
+    tenor: 'tenor',
+    calculationDayBasis: 'calculation_day_basis',
+    isin: 'isin_number',
+    issueDate: 'issue_date',
+    haircut: 'haircut',
+    faceValue: 'face_value',
+    faceValueAdjustment: 'face_value_adjustment',
+    faceValueAsPerCounterparty: 'face_value_as_per_counterparty',
+    status: 'status',
+    approvalStatus: 'approval_status',
+    currentApprovalLevel: 'current_approval_level',
+    comment: 'comment'
+  };
+
+  const normalized = {};
+  for (const [key, value] of Object.entries(payload)) {
+    if (value === undefined) continue;
+    const mappedKey = map[key] || key;
+    normalized[mappedKey] = value;
+  }
+
+  if (normalized.counterparty_id !== undefined && normalized.counterparty_id !== null && normalized.counterparty_id !== '') {
+    const parsed = parseInt(normalized.counterparty_id, 10);
+    if (Number.isNaN(parsed)) {
+      // Avoid overwriting existing counterparty_id with NULL/NaN.
+      delete normalized.counterparty_id;
+    } else {
+      normalized.counterparty_id = parsed;
+    }
+  }
+  if (normalized.principal_amount !== undefined) normalized.principal_amount = parseFloat(normalized.principal_amount);
+  if (normalized.interest_amount !== undefined) normalized.interest_amount = parseFloat(normalized.interest_amount);
+  if (normalized.rate !== undefined) normalized.rate = parseFloat(normalized.rate);
+  if (normalized.maturity_amount !== undefined) normalized.maturity_amount = parseFloat(normalized.maturity_amount);
+  if (normalized.tenor !== undefined) normalized.tenor = parseInt(normalized.tenor, 10);
+  if (normalized.calculation_day_basis !== undefined) normalized.calculation_day_basis = parseInt(normalized.calculation_day_basis, 10);
+  if (normalized.haircut !== undefined) normalized.haircut = parseFloat(normalized.haircut);
+  if (normalized.face_value !== undefined) normalized.face_value = parseFloat(normalized.face_value);
+  if (normalized.face_value_adjustment !== undefined) normalized.face_value_adjustment = parseFloat(normalized.face_value_adjustment);
+  if (normalized.face_value_as_per_counterparty !== undefined) normalized.face_value_as_per_counterparty = parseFloat(normalized.face_value_as_per_counterparty);
+
+  return normalized;
+};
+
 const repoDealController = {
   // Create a new repo deal
   create: async (req, res) => {
@@ -29,6 +85,13 @@ const repoDealController = {
         faceValueAsPerCounterparty
       } = req.body;
 
+      const counterpartyId = (() => {
+        // UI should send counterparty as numeric id (or numeric string). Guard against names/objects.
+        if (counterparty === undefined || counterparty === null || counterparty === '') return null;
+        const parsed = parseInt(counterparty, 10);
+        return Number.isNaN(parsed) ? null : parsed;
+      })();
+
              // Validation
       const hasIsinsArray = Array.isArray(isins) && isins.length > 0;
       const hasIsin = isin && typeof isin === 'string' && isin.trim() !== '';
@@ -40,6 +103,7 @@ const repoDealController = {
         isins: isins || '(not provided)',
         dealType: dealType || '(missing)',
         counterparty: counterparty || '(missing)',
+        counterpartyId,
         tradeDate: tradeDate || '(missing)',
         valueDate: valueDate || '(missing)',
         maturityDate: maturityDate || '(missing)',
@@ -54,11 +118,11 @@ const repoDealController = {
       const hasRate = rate !== undefined && rate !== null && rate !== '';
       const hasTenor = tenor !== undefined && tenor !== null && tenor !== '';
       
-      if (!dealType || !counterparty || !tradeDate || !valueDate || !maturityDate || 
+      if (!dealType || !counterpartyId || !tradeDate || !valueDate || !maturityDate || 
           !hasPrincipalAmount || !hasRate || !hasTenor || !calculationDayBasis || (!hasIsin && !hasIsinsArray)) {
          const missingFields = [];
          if (!dealType) missingFields.push('dealType');
-         if (!counterparty) missingFields.push('counterparty');
+         if (!counterpartyId) missingFields.push('counterparty');
          if (!tradeDate) missingFields.push('tradeDate');
          if (!valueDate) missingFields.push('valueDate');
          if (!maturityDate) missingFields.push('maturityDate');
@@ -142,7 +206,7 @@ const repoDealController = {
              // Create deal data object
       const dealData = {
          dealType,
-         counterparty,
+         counterparty: counterpartyId,
          tradeDate,
         valueDate,
         maturityDate,
@@ -279,7 +343,17 @@ const repoDealController = {
         });
       }
 
-      const updateData = { ...req.body };
+      const existingApprovalStatus = String(existingDeal.approval_status || '').toLowerCase();
+      const existingApprovalLevel = String(existingDeal.current_approval_level || '').toLowerCase();
+      const isRejected = existingApprovalStatus === 'rejected' || existingApprovalLevel === 'rejected';
+      if (!isRejected) {
+        return res.status(400).json({
+          success: false,
+          message: 'Only rejected repo deals can be edited'
+        });
+      }
+
+      const updateData = mapRepoUpdatePayloadToColumns(req.body);
       
       // Remove fields that shouldn't be updated
       delete updateData.id;
@@ -288,9 +362,9 @@ const repoDealController = {
       delete updateData.updated_at;
 
       // Validate dates if provided
-      if (updateData.valueDate && updateData.tradeDate) {
-        const value = new Date(updateData.valueDate);
-        const trade = new Date(updateData.tradeDate);
+      if (updateData.value_date && updateData.trade_date) {
+        const value = new Date(updateData.value_date);
+        const trade = new Date(updateData.trade_date);
         if (value < trade) {
           return res.status(400).json({
             success: false,
@@ -299,9 +373,9 @@ const repoDealController = {
         }
       }
 
-      if (updateData.maturityDate && updateData.valueDate) {
-        const maturity = new Date(updateData.maturityDate);
-        const value = new Date(updateData.valueDate);
+      if (updateData.maturity_date && updateData.value_date) {
+        const maturity = new Date(updateData.maturity_date);
+        const value = new Date(updateData.value_date);
         if (maturity <= value) {
           return res.status(400).json({
             success: false,
@@ -314,8 +388,8 @@ const repoDealController = {
       // Default currency is LKR for repo deals
       const currency = 'LKR';
       const holidayValidation = await holidayValidationService.validateTransactionDates({
-        tradeDate: updateData.tradeDate || existingDeal.trade_date,
-        valueDate: updateData.valueDate || existingDeal.value_date,
+        tradeDate: updateData.trade_date || existingDeal.trade_date,
+        valueDate: updateData.value_date || existingDeal.value_date,
         currency: currency
       });
 
@@ -326,12 +400,16 @@ const repoDealController = {
         });
       }
 
+      // Re-submit edited rejected deals into approval flow.
+      updateData.approval_status = 'pending';
+      updateData.current_approval_level = 'front_office';
+
       // Update the deal
       const updatedDeal = await RepoDeal.update(parseInt(id), updateData);
 
       res.json({
         success: true,
-        message: 'Repo deal updated successfully',
+        message: 'Rejected repo deal updated and re-submitted successfully',
         data: updatedDeal
       });
 

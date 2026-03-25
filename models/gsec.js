@@ -559,6 +559,13 @@ const Gsec = {
           counterparty_name: transaction.counterparty_name || transaction.counterparty_id || 'Unknown'
         };
       });
+      const rejectedRowsForDebug = formattedResults
+        .filter(t => t.status === 'rejected')
+        .slice(0, 20)
+        .map(t => ({ id: t.id, deal_number: t.deal_number, created_by: t.created_by, status: t.status, current_approval_level: t.current_approval_level }));
+      // #region agent log
+      (typeof fetch === 'function') && fetch('http://127.0.0.1:7242/ingest/29dc6e6a-2fb8-4497-a57e-c480a1e8f80b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'989560'},body:JSON.stringify({sessionId:'989560',runId:'pre-fix',hypothesisId:'H4',location:'gsec.js:getRecent',message:'Rejected rows returned to UI',data:{countRejected:rejectedRowsForDebug.length,rejectedRows:rejectedRowsForDebug},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       
       // Debug: Log dirty price data being returned
       console.log('=== GETRECENT DIRTY PRICE DEBUG ===');
@@ -779,6 +786,10 @@ const Gsec = {
    * Update an existing GSec transaction
    */
   update: async (id, data) => {
+    const [beforeRows] = await db.query('SELECT id, deal_number, transaction_type, status, current_approval_level, face_value, settlement_amount, clean_price, dirty_price, value_date, maturity_date FROM gsec WHERE id = ?', [id]);
+    // #region agent log
+    (typeof fetch === 'function') && fetch('http://127.0.0.1:7242/ingest/29dc6e6a-2fb8-4497-a57e-c480a1e8f80b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'989560'},body:JSON.stringify({sessionId:'989560',runId:'pre-fix',hypothesisId:'H2_H5',location:'gsec.js:update:entry',message:'gsec.update before state',data:{id,before:beforeRows?.[0]||null,inputDealNumber:data?.dealNumber||data?.deal_number,inputStatus:data?.status,inputTransactionType:data?.transactionType||data?.transaction_type},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     // Handle the financial calculation requirements
     // Ensure accrued interest and clean price are truncated (not rounded) to 4 decimal places
     if (data.accrued_interest) {
@@ -816,6 +827,15 @@ const Gsec = {
       'remaining_face_value', 'matured', 'sell_back_amount'
     ];
     
+    // Resolve actual columns from DB so updates are schema-aware
+    const [dbColumns] = await db.query(
+      `SELECT COLUMN_NAME
+       FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'gsec'`
+    );
+    const existingColumns = new Set((dbColumns || []).map((c) => c.COLUMN_NAME));
+
     // Map data object to SQL SET clauses
     Object.keys(data).forEach(key => {
       // Skip the id field and any fields that are not DB columns
@@ -823,8 +843,8 @@ const Gsec = {
         // Convert camelCase to snake_case for DB fields
         const dbField = key.replace(/([A-Z])/g, '_$1').toLowerCase();
         
-        // Only include fields that exist in the database
-        if (validColumns.includes(dbField)) {
+        // Only include fields that are valid and actually exist in current schema
+        if (validColumns.includes(dbField) && existingColumns.has(dbField)) {
         setClauses.push(`${dbField} = ?`);
         values.push(data[key]);
         }
@@ -842,6 +862,10 @@ const Gsec = {
     
     try {
       const [result] = await db.query(sql, values);
+      const [afterRows] = await db.query('SELECT id, deal_number, transaction_type, status, current_approval_level, face_value, settlement_amount, clean_price, dirty_price, value_date, maturity_date FROM gsec WHERE id = ?', [id]);
+      // #region agent log
+      (typeof fetch === 'function') && fetch('http://127.0.0.1:7242/ingest/29dc6e6a-2fb8-4497-a57e-c480a1e8f80b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'989560'},body:JSON.stringify({sessionId:'989560',runId:'pre-fix',hypothesisId:'H2_H5',location:'gsec.js:update:exit',message:'gsec.update after state',data:{id,affectedRows:result?.affectedRows,beforeDealNumber:beforeRows?.[0]?.deal_number||null,after:afterRows?.[0]||null,setClauseCount:setClauses.length},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       return result;
     } catch (error) {
       console.error('Error in update:', error);
