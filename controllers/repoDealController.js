@@ -1,6 +1,29 @@
 const RepoDeal = require('../models/repoDealModel');
 const holidayValidationService = require('../services/holidayValidationService');
 
+const parseCounterpartyId = (value) => {
+  if (value === undefined || value === null || value === '') return null;
+  const s = String(value).trim();
+  // Accept numeric strings
+  if (/^\d+$/.test(s)) {
+    const n = parseInt(s, 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+  // Accept prefixed ids like i7 / j12 / c3
+  const m = s.match(/^[a-zA-Z]+(\d+)$/);
+  if (m && m[1]) {
+    const n = parseInt(m[1], 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+  // Last resort: first number anywhere in string
+  const any = s.match(/\d+/);
+  if (any && any[0]) {
+    const n = parseInt(any[0], 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+  return null;
+};
+
 const mapRepoUpdatePayloadToColumns = (payload = {}) => {
   const map = {
     dealType: 'deal_type',
@@ -35,8 +58,8 @@ const mapRepoUpdatePayloadToColumns = (payload = {}) => {
   }
 
   if (normalized.counterparty_id !== undefined && normalized.counterparty_id !== null && normalized.counterparty_id !== '') {
-    const parsed = parseInt(normalized.counterparty_id, 10);
-    if (Number.isNaN(parsed) || parsed <= 0) {
+    const parsed = parseCounterpartyId(normalized.counterparty_id);
+    if (!parsed) {
       // Avoid overwriting existing counterparty_id with NULL/NaN.
       delete normalized.counterparty_id;
     } else {
@@ -85,12 +108,7 @@ const repoDealController = {
         faceValueAsPerCounterparty
       } = req.body;
 
-      const counterpartyId = (() => {
-        // UI should send counterparty as numeric id (or numeric string). Guard against names/objects.
-        if (counterparty === undefined || counterparty === null || counterparty === '') return null;
-        const parsed = parseInt(counterparty, 10);
-        return Number.isNaN(parsed) ? null : parsed;
-      })();
+      const counterpartyId = parseCounterpartyId(counterparty);
 
              // Validation
       const hasIsinsArray = Array.isArray(isins) && isins.length > 0;
@@ -118,8 +136,16 @@ const repoDealController = {
       const hasRate = rate !== undefined && rate !== null && rate !== '';
       const hasTenor = tenor !== undefined && tenor !== null && tenor !== '';
       
-      const hasValidCounterparty = counterpartyId !== null && Number.isFinite(counterpartyId) && counterpartyId > 0;
-      console.log('Repo create counterparty parsing:', { counterparty, counterpartyId, hasValidCounterparty });
+      const hasCounterpartyValue = !(counterparty === undefined || counterparty === null || String(counterparty).trim() === '');
+      const hasValidCounterparty = !!counterpartyId;
+      console.log('Repo create counterparty parsing:', { counterparty, counterpartyId, hasCounterpartyValue, hasValidCounterparty });
+
+      if (hasCounterpartyValue && !hasValidCounterparty) {
+        return res.status(400).json({
+          success: false,
+          message: `Invalid counterparty value: "${String(counterparty)}". Please select a valid counterparty from the dropdown.`
+        });
+      }
 
       if (!dealType || !hasValidCounterparty || !tradeDate || !valueDate || !maturityDate || 
           !hasPrincipalAmount || !hasRate || !hasTenor || !calculationDayBasis || (!hasIsin && !hasIsinsArray)) {

@@ -1,6 +1,26 @@
 const db = require('../config/db');
 const CashflowCaptureService = require('../services/cashflowCaptureService');
 
+const parseCounterpartyId = (value) => {
+  if (value === undefined || value === null || value === '') return null;
+  const s = String(value).trim();
+  if (/^\d+$/.test(s)) {
+    const n = parseInt(s, 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+  const m = s.match(/^[a-zA-Z]+(\d+)$/);
+  if (m && m[1]) {
+    const n = parseInt(m[1], 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+  const any = s.match(/\d+/);
+  if (any && any[0]) {
+    const n = parseInt(any[0], 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+  return null;
+};
+
 const ensureRepoDealColumns = async () => {
   const requiredColumns = {
     face_value_adjustment: 'DECIMAL(20,4) NULL',
@@ -31,13 +51,7 @@ const RepoDeal = {
     try {
       await ensureRepoDealColumns();
 
-      const counterpartyId =
-        dealData.counterparty !== undefined && dealData.counterparty !== null && dealData.counterparty !== ''
-          ? (() => {
-              const parsed = parseInt(dealData.counterparty, 10);
-              return Number.isNaN(parsed) ? null : parsed;
-            })()
-          : null;
+      const counterpartyId = parseCounterpartyId(dealData.counterparty);
 
       const sql = `
          INSERT INTO repo_deals (
