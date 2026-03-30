@@ -70,6 +70,16 @@ function formatNumber2(val) {
   }).format(truncated);
 }
 
+function toExcelNumber(val) {
+  if (val === undefined || val === null || val === '') return null;
+  if (typeof val === 'number') return Number.isFinite(val) ? val : null;
+  const s = String(val).trim();
+  if (!s) return null;
+  const normalized = s.replace(/,/g, '');
+  const n = Number(normalized);
+  return Number.isFinite(n) ? n : null;
+}
+
 function preprocessExportData(data) {
   // Compute WAP per ISIN
   const isinMap = {};
@@ -167,10 +177,50 @@ exports.export = async (format, data) => {
     return parser.parse(processedData);
   }
   if (format === 'excel') {
+    const numeric2dpKeys = new Set(['face_value', 'sell_back']);
+    const numeric4dpKeys = new Set([
+      'coupon_interest',
+      'yield',
+      'balance',
+      'available_balance',
+      'clean_price',
+      'nvp',
+      'wap',
+      'repo_collateral'
+    ]);
+    const intKeys = new Set(['dtm']);
+
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('GSec Report');
     sheet.columns = EXPORT_COLUMNS.map(col => ({ header: col.label, key: col.key }));
-    sheet.addRows(processedData);
+
+    const excelRows = processedData.map(row => {
+      const next = { ...row };
+      for (const k of numeric2dpKeys) next[k] = toExcelNumber(next[k]);
+      for (const k of numeric4dpKeys) next[k] = toExcelNumber(next[k]);
+      for (const k of intKeys) {
+        const n = toExcelNumber(next[k]);
+        next[k] = n === null ? null : Math.trunc(n);
+      }
+      return next;
+    });
+
+    sheet.addRows(excelRows);
+
+    // Apply number formats so values remain numeric (AutoSum works) but display nicely
+    for (const k of numeric2dpKeys) {
+      const col = sheet.getColumn(k);
+      if (col) col.numFmt = '#,##0.00';
+    }
+    for (const k of numeric4dpKeys) {
+      const col = sheet.getColumn(k);
+      if (col) col.numFmt = '#,##0.0000';
+    }
+    for (const k of intKeys) {
+      const col = sheet.getColumn(k);
+      if (col) col.numFmt = '0';
+    }
+
     return workbook.xlsx.writeBuffer();
   }
   if (format === 'pdf') {
@@ -335,13 +385,35 @@ exports.exportPortfolio = async (format, data) => {
   }
 
   if (format === 'excel') {
+    const numeric2dpKeys = new Set([
+      'face_value',
+      'clean_price',
+      'dirty_price',
+      'settlement_amount',
+      'maturity_amount',
+      'amount'
+    ]);
+
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('Portfolio Report');
     sheet.columns = PORTFOLIO_EXPORT_COLUMNS.map(col => ({
       header: col.label,
       key: col.key
     }));
-    sheet.addRows(processedData);
+
+    const excelRows = processedData.map(row => {
+      const next = { ...row };
+      for (const k of numeric2dpKeys) next[k] = toExcelNumber(next[k]);
+      return next;
+    });
+
+    sheet.addRows(excelRows);
+
+    for (const k of numeric2dpKeys) {
+      const col = sheet.getColumn(k);
+      if (col) col.numFmt = '#,##0.00';
+    }
+
     return workbook.xlsx.writeBuffer();
   }
 
