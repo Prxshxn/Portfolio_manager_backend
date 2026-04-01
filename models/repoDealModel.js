@@ -53,13 +53,22 @@ const RepoDeal = {
 
       const counterpartyId = parseCounterpartyId(dealData.counterparty);
 
+      // Calculate daily_accrual: interestAmount / tenor (truncated to 8 decimals)
+      let dailyAccrual = null;
+      const interestAmt = parseFloat(dealData.interestAmount);
+      const tenorVal = parseFloat(dealData.tenor);
+      if (interestAmt && tenorVal && tenorVal > 0) {
+        dailyAccrual = Math.floor((interestAmt / tenorVal) * 100000000) / 100000000;
+      }
+
       const sql = `
          INSERT INTO repo_deals (
            deal_type, counterparty_id, settlement_mode, trade_date, value_date, maturity_date,
            principal_amount, interest_amount, rate, maturity_amount, tenor,
            calculation_day_basis, isin_number, issue_date, haircut, face_value, face_value_adjustment, face_value_as_per_counterparty,
-           status, approval_status, current_approval_level, comment, authorized_by, authorized_at, created_by
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           status, approval_status, current_approval_level, comment, authorized_by, authorized_at, created_by,
+           daily_accrual
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        `;
        
        const values = [
@@ -87,7 +96,8 @@ const RepoDeal = {
         dealData.comment || null,
         dealData.authorizedBy || null,
         dealData.authorizedAt || null,
-        dealData.createdBy
+        dealData.createdBy,
+        dailyAccrual
       ];
 
       const [result] = await db.query(sql, values);
@@ -262,7 +272,8 @@ const RepoDeal = {
          'principal_amount', 'interest_amount', 'rate', 'maturity_amount', 'tenor',
          'calculation_day_basis', 'isin_number', 'issue_date', 'haircut', 'face_value',
          'face_value_adjustment', 'face_value_as_per_counterparty',
-         'status', 'approval_status', 'current_approval_level', 'comment', 'settlement_mode'
+         'status', 'approval_status', 'current_approval_level', 'comment', 'settlement_mode',
+         'daily_accrual'
        ];
       
       const updates = [];
@@ -605,6 +616,119 @@ const RepoDeal = {
       return rows;
     } catch (error) {
       console.error('Error fetching repo maturities by date:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Backfill purchase ledger entries for final_approved Repo deals that are missing them.
+   * Optionally pass a single dealId to backfill just that deal.
+   */
+  backfillLedgerEntries: async (dealId = null) => {
+    try {
+      const ledgerController = require('../controllers/ledgerController');
+      const accountMapping = require('../services/accountMappingService');
+
+      let query = `
+        SELECT rd.*
+        FROM repo_deals rd
+        WHERE rd.approval_status = 'final_approved'
+          AND NOT EXISTS (
+            SELECT 1 FROM ledger_entries le WHERE le.deal_number = rd.id
+          )
+      `;
+      const params = [];
+      if (dealId) {
+        query += ' AND rd.id = ?';
+        params.push(dealId);
+      }
+
+      const [deals] = await db.query(query, params);
+
+      if (deals.length === 0) {
+        return {
+          success: true,
+          message: dealId
+            ? 'Deal already has ledger entries or is not final_approved'
+            : 'No deals found that need ledger entries',
+          processed: 0
+        };
+      }
+
+      let processed = 0;
+      const errors = [];
+
+      for (const deal of deals) {
+        try {
+          // Resolve settlement bank account (used for both Repo and Reverse Repo)
+          let bankAccount = null;
+          if (deal.settlement_mode) {
+            const [sa] = await db.query(
+              'SELECT ledger_account_code FROM settlement_accounts WHERE bank_payment_code = ? LIMIT 1',
+              [deal.settlement_mode]
+            );
+            if (sa && sa.length > 0 && sa[0].ledger_account_code) {
+              bankAccount = sa[0].ledger_account_code;
+            }
+          }
+
+          if (!bankAccount) {
+            errors.push(`Deal ${deal.id}: no settlement bank account resolved for settlement_mode=${deal.settlement_mode}`);
+            continue;
+          }
+
+          const valueDate = deal.value_date
+            ? new Date(deal.value_date).toISOString().slice(0, 10)
+            : new Date().toISOString().slice(0, 10);
+
+          let drAccount;
+          let crAccount;
+          let description;
+
+          if (deal.deal_type === 'Repo') {
+            // Asset-side Repo: DR Reverse Repo asset, CR Bank
+            drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REPO_REVERSE_REPO_ASSET);
+            crAccount = bankAccount;
+            description = `Repo Purchase (Backfill) - Deal ${deal.id}`;
+          } else if (deal.deal_type === 'Reverse Repo') {
+            // Reverse Repo borrowing: DR Bank, CR Repo liability
+            drAccount = bankAccount;
+            crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REVERSE_REPO_LIABILITY);
+            description = `Reverse Repo Borrowing (Backfill) - Deal ${deal.id}`;
+          } else {
+            // Unknown type - skip
+            errors.push(`Deal ${deal.id}: unsupported deal_type=${deal.deal_type} for backfill`);
+            continue;
+          }
+
+          const result = await ledgerController.postLedgerEntry({
+            date: valueDate,
+            dr_account: drAccount,
+            cr_account: crAccount,
+            amount: Number(deal.principal_amount),
+            deal_id: String(deal.id),
+            description
+          });
+
+          if (result.success) {
+            processed++;
+          } else {
+            errors.push(`Deal ${deal.id}: ${result.error}`);
+          }
+        } catch (err) {
+          errors.push(`Deal ${deal.id}: ${err.message}`);
+        }
+      }
+
+      return {
+        success: true,
+        message: `Backfilled ${processed} of ${deals.length} Repo deals`,
+        processed,
+        total: deals.length,
+        errors: errors.length > 0 ? errors : undefined
+      };
+    } catch (error) {
+      console.error('Error backfilling repo ledger entries:', error);
       throw error;
     }
   }

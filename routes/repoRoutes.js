@@ -701,6 +701,9 @@ const repoDealController = require('../controllers/repoDealController');
 // Create new repo deal
 router.post('/', auth, repoDealController.create);
 
+// Backfill ledger entries for approved repo deals (must be before /:id to avoid capture)
+router.post('/backfill-ledger', auth, repoDealController.backfillLedger);
+
 // Get all repo deals with optional filters
 router.get('/', auth, repoDealController.getAll);
 

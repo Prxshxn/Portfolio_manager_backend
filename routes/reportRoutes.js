@@ -15,4 +15,7 @@ router.get('/counterparty-master', reportController.getCounterpartyMasterReport)
 // Buyback report endpoint
 router.get('/buyback', reportController.getBuybackReport);
 
+// Repo + Reverse Repo report endpoint
+router.get('/repo', reportController.getRepoReport);
+
 module.exports = router;
