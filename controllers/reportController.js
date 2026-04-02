@@ -2,6 +2,7 @@ const gsecReportService = require('../services/gsecReportService');
 const portfolioReportService = require('../services/portfolioReportService');
 const counterpartyReportService = require('../services/counterpartyReportService');
 const buybackReportService = require('../services/buybackReportService');
+const repoReportService = require('../services/repoReportService');
 const reportExporter = require('../utils/reportExporter');
 
 // GET /api/reports/gsec
@@ -317,5 +318,58 @@ exports.getBuybackReport = async (req, res) => {
   } catch (err) {
     console.error('Buyback Report Error:', err);
     res.status(500).json({ error: 'Failed to generate Buyback report', details: err.message });
+  }
+};
+
+// GET /api/reports/repo
+exports.getRepoReport = async (req, res) => {
+  try {
+    console.log('=== REPO REPORT API CALLED ===');
+    console.log('Query params:', req.query);
+
+    const {
+      asAtDate,
+      portfolio,
+      isin,
+      valueDate,
+      maturityDate,
+      dealType,
+      format,
+      page,
+      pageSize
+    } = req.query;
+
+    const reportParams = {
+      asAtDate,
+      portfolio,
+      isin,
+      valueDate,
+      maturityDate,
+      dealType
+    };
+
+    if (page && pageSize) {
+      reportParams.page = Number(page);
+      reportParams.pageSize = Number(pageSize);
+    }
+
+    const { data, total } = await repoReportService.getRepoReport(reportParams);
+
+    if (format === 'csv' || format === 'excel' || format === 'pdf') {
+      const fileBuffer = await reportExporter.exportRepo(format, data);
+      res.setHeader('Content-Disposition', `attachment; filename=repo_report.${format === 'excel' ? 'xlsx' : format}`);
+      res.setHeader('Content-Type', reportExporter.getMimeType(format));
+      return res.send(fileBuffer);
+    }
+
+    const response = { data, total };
+    if (page && pageSize) {
+      response.page = Number(page);
+      response.pageSize = Number(pageSize);
+    }
+    res.json(response);
+  } catch (err) {
+    console.error('Repo Report Error:', err);
+    res.status(500).json({ error: 'Failed to generate Repo report', details: err.message });
   }
 };

@@ -45,6 +45,12 @@ const MAPPING_KEYS = {
   MATURITY_INTEREST_RECEIVED: 'MATURITY_INTEREST_RECEIVED',
   MATURITY_INTEREST_RECEIVABLE: 'MATURITY_INTEREST_RECEIVABLE',
   
+  // Repo/Reverse Repo Accounts
+  REPO_REVERSE_REPO_ASSET: 'REPO_REVERSE_REPO_ASSET',   // 131-101-410-206-44 Reverse Repo with Banks and Other Financial Institutes
+  REPO_INTEREST_INCOME: 'REPO_INTEREST_INCOME',           // 467-101-190-440-44 Interest Received on R/Repo with Banks and Other Financial Institutes
+  REVERSE_REPO_LIABILITY: 'REVERSE_REPO_LIABILITY',       // 249-101-330-308-44 Repo with Banks and Other Financial Institutes (liability)
+  REVERSE_REPO_INTEREST_EXPENSE: 'REVERSE_REPO_INTEREST_EXPENSE', // 669-101-240-752-44 Interest Paid on Repo with Banks and Other Financial Institutes
+
   // General Accounts
   CASH_BANK_ASSET: 'CASH_BANK_ASSET',
   INCOME_REVENUE: 'INCOME_REVENUE',

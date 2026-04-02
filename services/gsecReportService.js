@@ -46,9 +46,18 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     // Build query with filters - only include Buy transactions from GSEC deals
     // Note: remaining_face_value is computed, not a column, so we calculate it later
     let sql = `SELECT g.id, g.portfolio, g.deal_number, g.face_value, g.value_date, g.maturity_date, g.isin_number as isin, g.coupon_interest, g.clean_price, g.yield, g.counterparty_id, g.transaction_type, 
+               COALESCE(
+                 corp.short_name,
+                 ind.short_name,
+                 joint.short_name,
+                 CONCAT('ID:', g.counterparty_id)
+               ) AS counterparty_name,
                im.coupon_rate, im.issue_date, im.coupon_date_1, im.coupon_date_2
       FROM gsec g 
       LEFT JOIN isin_master im ON g.isin_number COLLATE utf8mb4_unicode_ci = im.isin_number COLLATE utf8mb4_unicode_ci
+      LEFT JOIN counterparty_master_corporate corp ON (g.counterparty_id LIKE 'c%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = corp.id) OR (g.counterparty_id = corp.id)
+      LEFT JOIN counterparty_master_individual ind ON (g.counterparty_id LIKE 'i%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = ind.id) OR (g.counterparty_id = ind.id)
+      LEFT JOIN counterparty_master_joint joint ON (g.counterparty_id LIKE 'j%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = joint.id) OR (g.counterparty_id = joint.id)
       WHERE g.transaction_type = 'Buy'`;
     const params = [];
     
@@ -538,7 +547,7 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       accrued_interest: nvpResult.accruedInterest ? formatPrice(nvpResult.accruedInterest, 4) : '',
       repo_collateral: row.repo_collateral ? formatPrice(row.repo_collateral, 4) : '0.0000',
       sell_back: row.sell_back ? formatCurrency(row.sell_back, 2) : '0.00',
-      counterparty: row.counterparty_id ? String(row.counterparty_id) : '',
+      counterparty: row.counterparty_name || (row.counterparty_id ? String(row.counterparty_id) : ''),
       transaction_type: row.transaction_type || ''
     };
   });

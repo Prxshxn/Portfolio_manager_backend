@@ -149,44 +149,241 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
       }
     }
 
-    // Fixed Deposit per-day accrual posting
-    console.log('--- Fixed Deposit EOD posting block reached ---');
-    const [fdDeals] = await db.query(
-      `SELECT id, request_no, daily_accrual, maturity_date FROM fixed_deposit_requests 
-       WHERE status = 'Approved' AND daily_accrual IS NOT NULL AND daily_accrual > 0 AND maturity_date >= ?`,
-      [systemDay]
-    );
-    console.log('Fixed Deposit deals to post:', fdDeals.length);
-    let fdPostedCount = 0;
-    for (const deal of fdDeals) {
-      try {
-        const amount = Number(deal.daily_accrual);
-        if (isNaN(amount) || amount === 0) {
-          console.warn('Skipping FD request due to invalid daily_accrual:', deal.request_no, deal.daily_accrual);
-          continue;
+    // Fixed Deposit per-day accrual posting (temporarily disabled – FD table has no daily_accrual column)
+    // console.log('--- Fixed Deposit EOD posting block reached ---');
+    // const [fdDeals] = await db.query(
+    //   `SELECT id, request_no, daily_accrual, maturity_date FROM fixed_deposit_requests 
+    //    WHERE status = 'Approved' AND daily_accrual IS NOT NULL AND daily_accrual > 0 AND maturity_date >= ?`,
+    //   [systemDay]
+    // );
+    // console.log('Fixed Deposit deals to post:', fdDeals.length);
+    // let fdPostedCount = 0;
+    // for (const deal of fdDeals) {
+    //   try {
+    //     const amount = Number(deal.daily_accrual);
+    //     if (isNaN(amount) || amount === 0) {
+    //       console.warn('Skipping FD request due to invalid daily_accrual:', deal.request_no, deal.daily_accrual);
+    //       continue;
+    //     }
+    //     console.log('Posting FD ledger for request:', deal.request_no, amount);
+    //     const drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.FD_ACCRUAL_ASSET);
+    //     const crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.FD_ACCRUAL_INCOME);
+    //     await postLedgerEntry({
+    //       date: systemDay,
+    //       dr_account: drAccount,
+    //       cr_account: crAccount,
+    //       amount,
+    //       deal_id: deal.request_no,
+    //       description: `Fixed Deposit Daily Accrual for Request ${deal.request_no}`
+    //     });
+    //     fdPostedCount++;
+    //   } catch (err) {
+    //     console.error('Failed to post FD ledger for request:', deal.request_no, err);
+    //   }
+    // }
+
+    // --- Repo Deal EOD Processing ---
+    console.log('--- Repo Deal EOD posting block reached ---');
+    let repoAccrualCount = 0;
+    let repoMaturityCount = 0;
+    let repoBackfillCount = 0;
+    // Fixed deposit EOD block is currently disabled, so keep count at 0
+    const fdPostedCount = 0;
+
+    // Backfill: post purchase entries for final_approved repo deals missing ledger entries
+    try {
+      const [repoBackfillDeals] = await db.query(
+        `SELECT rd.id, rd.deal_type, rd.principal_amount, rd.settlement_mode, rd.value_date
+         FROM repo_deals rd
+         WHERE rd.approval_status = 'final_approved'
+           AND NOT EXISTS (
+             SELECT 1 FROM ledger_entries le WHERE le.deal_number = rd.id
+           )`
+      );
+      console.log('Repo deals to backfill:', repoBackfillDeals.length);
+
+      for (const deal of repoBackfillDeals) {
+        try {
+          let bankAccount = null;
+          if (deal.settlement_mode) {
+            const [sa] = await db.query(
+              'SELECT ledger_account_code FROM settlement_accounts WHERE bank_payment_code = ? LIMIT 1',
+              [deal.settlement_mode]
+            );
+            if (sa && sa.length > 0 && sa[0].ledger_account_code) {
+              bankAccount = sa[0].ledger_account_code;
+            }
+          }
+          if (!bankAccount) {
+            console.warn(`Skipping backfill for repo deal ${deal.id}: no settlement bank account resolved`);
+            continue;
+          }
+          const valueDate = deal.value_date
+            ? new Date(deal.value_date).toISOString().slice(0, 10)
+            : systemDay;
+
+          let drAccount;
+          let crAccount;
+          let description;
+
+          if (deal.deal_type === 'Repo') {
+            drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REPO_REVERSE_REPO_ASSET);
+            crAccount = bankAccount;
+            description = `Repo Purchase (Backfill) - Deal ${deal.id}`;
+          } else if (deal.deal_type === 'Reverse Repo') {
+            drAccount = bankAccount;
+            crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REVERSE_REPO_LIABILITY);
+            description = `Reverse Repo Borrowing (Backfill) - Deal ${deal.id}`;
+          } else {
+            console.warn(`Skipping backfill for repo deal ${deal.id}: unsupported deal_type=${deal.deal_type}`);
+            continue;
+          }
+
+          await postLedgerEntry({
+            date: valueDate,
+            dr_account: drAccount,
+            cr_account: crAccount,
+            amount: Number(deal.principal_amount),
+            deal_id: String(deal.id),
+            description
+          });
+          repoBackfillCount++;
+        } catch (err) {
+          console.error('Failed to backfill repo deal:', deal.id, err);
         }
-        console.log('Posting FD ledger for request:', deal.request_no, amount);
-        const drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.FD_ACCRUAL_ASSET);
-        const crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.FD_ACCRUAL_INCOME);
-        await postLedgerEntry({
-          date: systemDay,
-          dr_account: drAccount,
-          cr_account: crAccount,
-          amount,
-          deal_id: deal.request_no,
-          description: `Fixed Deposit Daily Accrual for Request ${deal.request_no}`
-        });
-        fdPostedCount++;
-      } catch (err) {
-        console.error('Failed to post FD ledger for request:', deal.request_no, err);
       }
+    } catch (err) {
+      console.error('Error in repo backfill block:', err);
     }
 
-    // Advance system day
+    // Daily accrual posting for active repo deals
+    try {
+      const [repoAccrualDeals] = await db.query(
+        `SELECT id, deal_type, daily_accrual, value_date, maturity_date
+         FROM repo_deals
+         WHERE approval_status = 'final_approved'
+           AND daily_accrual IS NOT NULL AND daily_accrual > 0
+           AND value_date <= ? AND maturity_date > ?`,
+        [systemDay, systemDay]
+      );
+      console.log('Repo deals for daily accrual:', repoAccrualDeals.length);
+
+      for (const deal of repoAccrualDeals) {
+        try {
+          const amount = Number(deal.daily_accrual);
+          if (isNaN(amount) || amount === 0) continue;
+
+          if (deal.deal_type === 'Repo') {
+            const drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REPO_REVERSE_REPO_ASSET);
+            const crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REPO_INTEREST_INCOME);
+            await postLedgerEntry({
+              date: systemDay,
+              dr_account: drAccount,
+              cr_account: crAccount,
+              amount,
+              deal_id: String(deal.id),
+              description: `Repo Daily Interest Accrual - Deal ${deal.id}`
+            });
+            repoAccrualCount++;
+          } else if (deal.deal_type === 'Reverse Repo') {
+            const drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REVERSE_REPO_INTEREST_EXPENSE);
+            const crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REVERSE_REPO_LIABILITY);
+            await postLedgerEntry({
+              date: systemDay,
+              dr_account: drAccount,
+              cr_account: crAccount,
+              amount,
+              deal_id: String(deal.id),
+              description: `Reverse Repo Daily Interest Accrual - Deal ${deal.id}`
+            });
+            repoAccrualCount++;
+          }
+        } catch (err) {
+          console.error('Failed to post repo accrual for deal:', deal.id, err);
+        }
+      }
+    } catch (err) {
+      console.error('Error in repo accrual block:', err);
+    }
+
+    // Advance system day (compute nextDay early so we can check maturity)
     const nextDay = new Date(systemDay);
     nextDay.setDate(nextDay.getDate() + 1);
-    await setSystemDay(nextDay.toISOString().slice(0, 10));
-    res.json({ success: true, message: `EOD complete. Posted for ${postedCount} money market deals, ${gsecPostedCount} GSec deals, and ${fdPostedCount} fixed deposit deals.`, next_system_day: nextDay.toISOString().slice(0, 10) });
+    const tomorrowStr = nextDay.toISOString().slice(0, 10);
+
+    // Maturity entries for repo deals maturing tomorrow (day before maturity)
+    try {
+      const [maturingRepoDeals] = await db.query(
+        `SELECT id, deal_type, principal_amount, interest_amount, settlement_mode, maturity_date
+         FROM repo_deals
+         WHERE approval_status = 'final_approved'
+           AND maturity_date = ? AND matured = 0`,
+        [tomorrowStr]
+      );
+      console.log('Repo deals maturing tomorrow:', maturingRepoDeals.length);
+
+      for (const deal of maturingRepoDeals) {
+        try {
+          let bankAccount = null;
+          if (deal.settlement_mode) {
+            const [sa] = await db.query(
+              'SELECT ledger_account_code FROM settlement_accounts WHERE bank_payment_code = ? LIMIT 1',
+              [deal.settlement_mode]
+            );
+            if (sa && sa.length > 0 && sa[0].ledger_account_code) {
+              bankAccount = sa[0].ledger_account_code;
+            }
+          }
+          if (!bankAccount) {
+            console.warn(`Skipping maturity entry for repo deal ${deal.id}: no settlement bank account resolved`);
+            continue;
+          }
+          const maturityAmount = Number(deal.principal_amount) + Number(deal.interest_amount);
+
+          let drAccount;
+          let crAccount;
+          let description;
+
+          if (deal.deal_type === 'Repo') {
+            const repoAsset = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REPO_REVERSE_REPO_ASSET);
+            drAccount = bankAccount;
+            crAccount = repoAsset;
+            description = `Repo Maturity - Deal ${deal.id}`;
+          } else if (deal.deal_type === 'Reverse Repo') {
+            const liabilityAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REVERSE_REPO_LIABILITY);
+            drAccount = liabilityAccount;
+            crAccount = bankAccount;
+            description = `Reverse Repo Maturity - Deal ${deal.id}`;
+          } else {
+            console.warn(`Skipping maturity entry for repo deal ${deal.id}: unsupported deal_type=${deal.deal_type}`);
+            continue;
+          }
+
+          await postLedgerEntry({
+            date: systemDay,
+            dr_account: drAccount,
+            cr_account: crAccount,
+            amount: maturityAmount,
+            deal_id: String(deal.id),
+            description
+          });
+
+          await db.query('UPDATE repo_deals SET matured = 1 WHERE id = ?', [deal.id]);
+          repoMaturityCount++;
+        } catch (err) {
+          console.error('Failed to post repo maturity for deal:', deal.id, err);
+        }
+      }
+    } catch (err) {
+      console.error('Error in repo maturity block:', err);
+    }
+
+    await setSystemDay(tomorrowStr);
+    res.json({
+      success: true,
+      message: `EOD complete. Posted for ${postedCount} money market deals, ${gsecPostedCount} GSec deals, ${fdPostedCount} fixed deposit deals, and ${repoAccrualCount} repo accrual + ${repoMaturityCount} repo maturity + ${repoBackfillCount} repo backfill entries.`,
+      next_system_day: tomorrowStr
+    });
   } catch (err) {
     console.error('EOD error:', err);
     res.status(500).json({ success: false, message: err.message });

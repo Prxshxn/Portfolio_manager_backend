@@ -57,6 +57,23 @@ const PORTFOLIO_EXPORT_COLUMNS = [
   { key: 'currency', label: 'Currency' }
 ];
 
+// Repo + Reverse Repo report export columns
+const REPO_EXPORT_COLUMNS = [
+  { key: 'deal_type', label: 'Deal Type' },
+  { key: 'counterparty', label: 'Counterparty' },
+  { key: 'settlement_mode', label: 'Settlement Mode' },
+  { key: 'trade_date', label: 'Trade Date' },
+  { key: 'value_date', label: 'Value Date' },
+  { key: 'maturity_date', label: 'Maturity Date' },
+  { key: 'principal_amount', label: 'Principal Amount' },
+  { key: 'rate', label: 'Rate (%)' },
+  { key: 'tenor', label: 'Tenor (Days)' },
+  { key: 'interest_amount', label: 'Interest Amount' },
+  { key: 'maturity_amount', label: 'Maturity Amount' },
+  { key: 'isin', label: 'ISIN number' },
+  { key: 'face_value_as_per_counterparty', label: 'Face value as per counterparty' }
+];
+
 function formatNumber2(val) {
   if (val === undefined || val === null || val === '') return '';
   const n = Number(val);
@@ -68,6 +85,16 @@ function formatNumber2(val) {
     minimumFractionDigits: 2, 
     maximumFractionDigits: 2 
   }).format(truncated);
+}
+
+function toExcelNumber(val) {
+  if (val === undefined || val === null || val === '') return null;
+  if (typeof val === 'number') return Number.isFinite(val) ? val : null;
+  const s = String(val).trim();
+  if (!s) return null;
+  const normalized = s.replace(/,/g, '');
+  const n = Number(normalized);
+  return Number.isFinite(n) ? n : null;
 }
 
 function preprocessExportData(data) {
@@ -158,6 +185,20 @@ function preprocessPortfolioExportData(data) {
   });
 }
 
+function preprocessRepoExportData(data) {
+  return (data || []).map(row => {
+    const mapped = {};
+    REPO_EXPORT_COLUMNS.forEach(col => {
+      let val = row[col.key];
+      if (['trade_date', 'value_date', 'maturity_date'].includes(col.key)) {
+        val = formatDate(val);
+      }
+      mapped[col.key] = val !== undefined && val !== null ? val : '';
+    });
+    return mapped;
+  });
+}
+
 exports.export = async (format, data) => {
   // Always format dates for export
   const processedData = preprocessExportData(data);
@@ -167,10 +208,50 @@ exports.export = async (format, data) => {
     return parser.parse(processedData);
   }
   if (format === 'excel') {
+    const numeric2dpKeys = new Set(['face_value', 'sell_back']);
+    const numeric4dpKeys = new Set([
+      'coupon_interest',
+      'yield',
+      'balance',
+      'available_balance',
+      'clean_price',
+      'nvp',
+      'wap',
+      'repo_collateral'
+    ]);
+    const intKeys = new Set(['dtm']);
+
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('GSec Report');
     sheet.columns = EXPORT_COLUMNS.map(col => ({ header: col.label, key: col.key }));
-    sheet.addRows(processedData);
+
+    const excelRows = processedData.map(row => {
+      const next = { ...row };
+      for (const k of numeric2dpKeys) next[k] = toExcelNumber(next[k]);
+      for (const k of numeric4dpKeys) next[k] = toExcelNumber(next[k]);
+      for (const k of intKeys) {
+        const n = toExcelNumber(next[k]);
+        next[k] = n === null ? null : Math.trunc(n);
+      }
+      return next;
+    });
+
+    sheet.addRows(excelRows);
+
+    // Apply number formats so values remain numeric (AutoSum works) but display nicely
+    for (const k of numeric2dpKeys) {
+      const col = sheet.getColumn(k);
+      if (col) col.numFmt = '#,##0.00';
+    }
+    for (const k of numeric4dpKeys) {
+      const col = sheet.getColumn(k);
+      if (col) col.numFmt = '#,##0.0000';
+    }
+    for (const k of intKeys) {
+      const col = sheet.getColumn(k);
+      if (col) col.numFmt = '0';
+    }
+
     return workbook.xlsx.writeBuffer();
   }
   if (format === 'pdf') {
@@ -335,13 +416,35 @@ exports.exportPortfolio = async (format, data) => {
   }
 
   if (format === 'excel') {
+    const numeric2dpKeys = new Set([
+      'face_value',
+      'clean_price',
+      'dirty_price',
+      'settlement_amount',
+      'maturity_amount',
+      'amount'
+    ]);
+
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('Portfolio Report');
     sheet.columns = PORTFOLIO_EXPORT_COLUMNS.map(col => ({
       header: col.label,
       key: col.key
     }));
-    sheet.addRows(processedData);
+
+    const excelRows = processedData.map(row => {
+      const next = { ...row };
+      for (const k of numeric2dpKeys) next[k] = toExcelNumber(next[k]);
+      return next;
+    });
+
+    sheet.addRows(excelRows);
+
+    for (const k of numeric2dpKeys) {
+      const col = sheet.getColumn(k);
+      if (col) col.numFmt = '#,##0.00';
+    }
+
     return workbook.xlsx.writeBuffer();
   }
 
@@ -432,6 +535,286 @@ exports.exportPortfolio = async (format, data) => {
         const pdfData = Buffer.concat(buffers);
         resolve(pdfData);
       });
+    });
+  }
+
+  throw new Error('Unsupported export format');
+};
+
+// Repo report export (Excel/CSV/PDF)
+exports.exportRepo = async (format, data) => {
+  const processedData = preprocessRepoExportData(data);
+
+  if (format === 'csv') {
+    const parser = new Parser({
+      fields: REPO_EXPORT_COLUMNS.map(col => ({ label: col.label, value: col.key }))
+    });
+    return parser.parse(processedData);
+  }
+
+  if (format === 'excel') {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Repo Report');
+    sheet.columns = REPO_EXPORT_COLUMNS.map(col => ({
+      header: col.label,
+      key: col.key
+    }));
+
+    const numeric2dpKeys = new Set(['principal_amount', 'rate', 'interest_amount', 'maturity_amount', 'face_value_as_per_counterparty']);
+    const intKeys = new Set(['tenor']);
+
+    const excelRows = processedData.map(row => {
+      const next = { ...row };
+      for (const k of numeric2dpKeys) next[k] = toExcelNumber(next[k]);
+      for (const k of intKeys) {
+        const n = toExcelNumber(next[k]);
+        next[k] = n === null ? null : Math.trunc(n);
+      }
+      return next;
+    });
+
+    sheet.addRows(excelRows);
+
+    for (const k of numeric2dpKeys) {
+      const col = sheet.getColumn(k);
+      if (col) col.numFmt = '#,##0.00';
+    }
+    for (const k of intKeys) {
+      const col = sheet.getColumn(k);
+      if (col) col.numFmt = '0';
+    }
+
+    return workbook.xlsx.writeBuffer();
+  }
+
+  if (format === 'pdf') {
+    const doc = new PDFDocument({ margin: 30, size: 'A4', layout: 'landscape' });
+    const buffers = [];
+    doc.on('data', buffers.push.bind(buffers));
+    doc.on('end', () => {});
+
+    doc.fontSize(20).font('Helvetica-Bold').text('Repo Report', { align: 'center' });
+    doc.moveDown(1);
+
+    const columns = REPO_EXPORT_COLUMNS.map(col => ({
+      key: col.key,
+      label: col.label,
+      width: ['principal_amount', 'rate', 'tenor', 'interest_amount', 'maturity_amount', 'face_value_as_per_counterparty'].includes(col.key)
+        ? 70
+        : 80,
+      align: ['principal_amount', 'rate', 'tenor', 'interest_amount', 'maturity_amount', 'face_value_as_per_counterparty'].includes(col.key)
+        ? 'right'
+        : 'left'
+    }));
+
+    const maxWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+    const totalWidth = columns.reduce((sum, col) => sum + col.width, 0);
+    if (totalWidth > maxWidth) {
+      const scale = maxWidth / totalWidth;
+      columns.forEach(col => {
+        col.width = Math.floor(col.width * scale);
+      });
+    }
+
+    const rowHeight = 20;
+    const cellPadding = 4;
+    const startX = doc.page.margins.left;
+
+    function drawHeader(y) {
+      const headerWidth = columns.reduce((sum, col) => sum + col.width, 0);
+      doc.rect(startX, y, headerWidth, rowHeight).fillAndStroke('#f0f0f0', '#000000');
+      doc.fillColor('#000000').fontSize(9).font('Helvetica-Bold');
+
+      let x = startX;
+      columns.forEach(col => {
+        doc.text(col.label, x + cellPadding, y + 5, {
+          width: col.width - 2 * cellPadding,
+          align: col.align
+        });
+        x += col.width;
+      });
+      return y + rowHeight;
+    }
+
+    function drawRows(startY) {
+      let y = startY;
+      processedData.forEach((row, index) => {
+        if (y + rowHeight > doc.page.height - doc.page.margins.bottom) {
+          doc.addPage();
+          y = drawHeader(doc.page.margins.top);
+        }
+
+        const rowWidth = columns.reduce((sum, col) => sum + col.width, 0);
+        if (index % 2 === 1) {
+          doc.rect(startX, y, rowWidth, rowHeight).fill('#f8f8f8');
+        }
+
+        doc.font('Helvetica').fontSize(8).fillColor('#000000');
+        let x = startX;
+        columns.forEach(col => {
+          const text = row[col.key] !== undefined ? String(row[col.key]) : '';
+          doc.text(text, x + cellPadding, y + 5, {
+            width: col.width - 2 * cellPadding,
+            align: col.align
+          });
+          x += col.width;
+        });
+
+        doc.rect(startX, y, rowWidth, rowHeight).stroke('#cccccc');
+        y += rowHeight;
+      });
+    }
+
+    const headerY = drawHeader(doc.page.margins.top);
+    drawRows(headerY);
+
+    doc.end();
+    return await new Promise(resolve => {
+      doc.on('end', () => {
+        const pdfData = Buffer.concat(buffers);
+        resolve(pdfData);
+      });
+    });
+  }
+
+  throw new Error('Unsupported export format');
+};
+
+// Mark to Market report export columns
+const MARK_TO_MARKET_EXPORT_COLUMNS = [
+  { key: 'series', label: 'Series' },
+  { key: 'isin', label: 'ISIN' },
+  { key: 'isin_issuer', label: 'ISIN Issuer' },
+  { key: 'maturity_date', label: 'Maturity Date' },
+  { key: 'buying_price', label: 'Buying Price' },
+  { key: 'selling_price', label: 'Selling Price' },
+  { key: 'average_price', label: 'Average Price' },
+  { key: 'buying_yield', label: 'Buying Yield (%)' },
+  { key: 'selling_yield', label: 'Selling Yield (%)' },
+  { key: 'average_yield', label: 'Average Yield (%)' },
+  { key: 'unrealized_gain', label: 'Unrealized Gain' },
+  { key: 'last_updated', label: 'Last Updated' },
+  { key: 'excel_source', label: 'Source' }
+];
+
+function preprocessMarkToMarketData(data) {
+  return (data || []).map(row => {
+    const mapped = {};
+    MARK_TO_MARKET_EXPORT_COLUMNS.forEach(col => {
+      let val = row[col.key];
+      if (col.key === 'maturity_date' || col.key === 'last_updated') {
+        val = formatDate(val);
+      }
+      mapped[col.key] = val !== undefined && val !== null ? val : '';
+    });
+    return mapped;
+  });
+}
+
+exports.exportMarkToMarket = async (format, data) => {
+  const processedData = preprocessMarkToMarketData(data);
+
+  if (format === 'csv') {
+    const parser = new Parser({
+      fields: MARK_TO_MARKET_EXPORT_COLUMNS.map(col => ({ label: col.label, value: col.key }))
+    });
+    return parser.parse(processedData);
+  }
+
+  if (format === 'excel') {
+    const numeric4dpKeys = new Set(['buying_price', 'selling_price', 'average_price', 'unrealized_gain']);
+    const numeric2dpKeys = new Set(['buying_yield', 'selling_yield', 'average_yield']);
+
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Mark to Market Report');
+    sheet.columns = MARK_TO_MARKET_EXPORT_COLUMNS.map(col => ({ header: col.label, key: col.key }));
+
+    const excelRows = processedData.map(row => {
+      const next = { ...row };
+      for (const k of numeric4dpKeys) next[k] = toExcelNumber(next[k]);
+      for (const k of numeric2dpKeys) next[k] = toExcelNumber(next[k]);
+      return next;
+    });
+
+    sheet.addRows(excelRows);
+
+    for (const k of numeric4dpKeys) {
+      const col = sheet.getColumn(k);
+      if (col) col.numFmt = '#,##0.0000';
+    }
+    for (const k of numeric2dpKeys) {
+      const col = sheet.getColumn(k);
+      if (col) col.numFmt = '#,##0.00';
+    }
+
+    return workbook.xlsx.writeBuffer();
+  }
+
+  if (format === 'pdf') {
+    const doc = new PDFDocument({ margin: 30, size: 'A4', layout: 'landscape' });
+    const buffers = [];
+    doc.on('data', buffers.push.bind(buffers));
+
+    doc.fontSize(20).font('Helvetica-Bold').text('Mark to Market Report', { align: 'center' });
+    doc.moveDown(1);
+
+    const columns = MARK_TO_MARKET_EXPORT_COLUMNS.map(col => ({
+      key: col.key,
+      label: col.label,
+      width: 70,
+      align: ['buying_price', 'selling_price', 'average_price', 'buying_yield', 'selling_yield', 'average_yield', 'unrealized_gain'].includes(col.key) ? 'right' : 'left'
+    }));
+
+    const maxWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+    const totalWidth = columns.reduce((sum, col) => sum + col.width, 0);
+    if (totalWidth > maxWidth) {
+      const scale = maxWidth / totalWidth;
+      columns.forEach(col => { col.width = Math.floor(col.width * scale); });
+    }
+
+    const rowHeight = 20;
+    const cellPadding = 4;
+    const startX = doc.page.margins.left;
+
+    function drawHeader(y) {
+      const headerWidth = columns.reduce((sum, col) => sum + col.width, 0);
+      doc.rect(startX, y, headerWidth, rowHeight).fillAndStroke('#f0f0f0', '#000000');
+      doc.fillColor('#000000').fontSize(9).font('Helvetica-Bold');
+      let x = startX;
+      columns.forEach(col => {
+        doc.text(col.label, x + cellPadding, y + 5, { width: col.width - 2 * cellPadding, align: col.align });
+        x += col.width;
+      });
+      return y + rowHeight;
+    }
+
+    function drawRows(startY) {
+      let y = startY;
+      processedData.forEach((row, index) => {
+        if (y + rowHeight > doc.page.height - doc.page.margins.bottom) {
+          doc.addPage();
+          y = drawHeader(doc.page.margins.top);
+        }
+        const rowWidth = columns.reduce((sum, col) => sum + col.width, 0);
+        if (index % 2 === 1) doc.rect(startX, y, rowWidth, rowHeight).fill('#f8f8f8');
+        doc.font('Helvetica').fontSize(8).fillColor('#000000');
+        let x = startX;
+        columns.forEach(col => {
+          const text = row[col.key] !== undefined ? String(row[col.key]) : '';
+          doc.text(text, x + cellPadding, y + 5, { width: col.width - 2 * cellPadding, align: col.align });
+          x += col.width;
+        });
+        doc.rect(startX, y, rowWidth, rowHeight).stroke('#cccccc');
+        y += rowHeight;
+      });
+    }
+
+    const headerY = drawHeader(doc.page.margins.top);
+    drawRows(headerY);
+
+    doc.end();
+    return await new Promise(resolve => {
+      doc.on('end', () => resolve(Buffer.concat(buffers)));
     });
   }
 

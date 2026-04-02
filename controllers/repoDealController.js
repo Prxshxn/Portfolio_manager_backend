@@ -77,6 +77,13 @@ const mapRepoUpdatePayloadToColumns = (payload = {}) => {
   if (normalized.face_value_adjustment !== undefined) normalized.face_value_adjustment = parseFloat(normalized.face_value_adjustment);
   if (normalized.face_value_as_per_counterparty !== undefined) normalized.face_value_as_per_counterparty = parseFloat(normalized.face_value_as_per_counterparty);
 
+  // Recalculate daily_accrual when interest or tenor changes
+  const interestAmt = parseFloat(normalized.interest_amount || payload.interestAmount);
+  const tenorVal = parseFloat(normalized.tenor || payload.tenor);
+  if (interestAmt && tenorVal && tenorVal > 0) {
+    normalized.daily_accrual = Math.floor((interestAmt / tenorVal) * 100000000) / 100000000;
+  }
+
   return normalized;
 };
 
@@ -602,13 +609,88 @@ const repoDealController = {
         });
       }
 
-      await RepoDeal.updateApprovalStatus(parseInt(id), {
+      const approvalResult = await RepoDeal.updateApprovalStatus(parseInt(id), {
         action,
         comment,
         userId: user.id
       });
 
       const updatedDeal = await RepoDeal.getById(parseInt(id));
+
+      // Post purchase ledger entry on final approval (Repo and Reverse Repo deals)
+      if (approvalResult && approvalResult.approval_status === 'final_approved') {
+        try {
+          const db = require('../config/db');
+          const ledgerController = require('./ledgerController');
+          const accountMapping = require('../services/accountMappingService');
+
+          // Check if ledger entries already exist for this deal
+          const [ledgerRows] = await db.query(
+            'SELECT COUNT(*) as cnt FROM ledger_entries WHERE deal_number = ?',
+            [String(updatedDeal.id)]
+          );
+
+          if (ledgerRows[0].cnt === 0 && (updatedDeal.deal_type === 'Repo' || updatedDeal.deal_type === 'Reverse Repo')) {
+            // Resolve settlement bank from settlement_mode
+            let bankAccount = null;
+            if (updatedDeal.settlement_mode) {
+              try {
+                const [settlementAccount] = await db.query(
+                  'SELECT ledger_account_code FROM settlement_accounts WHERE bank_payment_code = ? LIMIT 1',
+                  [updatedDeal.settlement_mode]
+                );
+                if (settlementAccount && settlementAccount.length > 0 && settlementAccount[0].ledger_account_code) {
+                  bankAccount = settlementAccount[0].ledger_account_code;
+                }
+              } catch (settlementError) {
+                console.error('Error fetching settlement account for repo deal:', settlementError);
+              }
+            }
+
+            if (!bankAccount) {
+              console.error(`No settlement bank account resolved for repo deal ${updatedDeal.id}, settlement_mode: ${updatedDeal.settlement_mode}`);
+            } else {
+              const valueDate = updatedDeal.value_date
+                ? new Date(updatedDeal.value_date).toISOString().slice(0, 10)
+                : new Date().toISOString().slice(0, 10);
+
+              let drAccount;
+              let crAccount;
+              let description;
+
+              if (updatedDeal.deal_type === 'Repo') {
+                // Asset-side Repo: DR Reverse Repo asset, CR Bank
+                drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REPO_REVERSE_REPO_ASSET);
+                crAccount = bankAccount;
+                description = `Repo Purchase - Deal ${updatedDeal.id}`;
+              } else {
+                // Reverse Repo (borrowing): DR Bank, CR Repo liability
+                drAccount = bankAccount;
+                crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REVERSE_REPO_LIABILITY);
+                description = `Reverse Repo Borrowing - Deal ${updatedDeal.id}`;
+              }
+
+              const ledgerResult = await ledgerController.postLedgerEntry({
+                date: valueDate,
+                dr_account: drAccount,
+                cr_account: crAccount,
+                amount: Number(updatedDeal.principal_amount),
+                deal_id: String(updatedDeal.id),
+                description
+              });
+
+              if (!ledgerResult.success) {
+                console.error('Failed to post repo purchase ledger entry:', ledgerResult.error);
+              } else {
+                console.log(`Successfully created purchase ledger entries for ${updatedDeal.deal_type} deal ${updatedDeal.id}`);
+              }
+            }
+          }
+        } catch (ledgerError) {
+          console.error('Error creating ledger entries for repo deal:', ledgerError);
+        }
+      }
+
       return res.json({
         success: true,
         message: 'Repo approval updated successfully',
@@ -748,6 +830,26 @@ const repoDealController = {
 
     } catch (error) {
       console.error('Error fetching repo deals summary:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Internal server error',
+        error: error.message
+      });
+    }
+  },
+
+  // Backfill ledger entries for approved repo deals that are missing them
+  backfillLedger: async (req, res) => {
+    try {
+      const { dealId } = req.query;
+      const result = await RepoDeal.backfillLedgerEntries(dealId ? parseInt(dealId) : null);
+      res.json({
+        success: true,
+        message: result.message,
+        data: result
+      });
+    } catch (error) {
+      console.error('Error backfilling repo ledger entries:', error);
       res.status(500).json({
         success: false,
         message: 'Internal server error',

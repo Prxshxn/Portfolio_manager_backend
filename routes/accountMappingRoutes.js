@@ -214,7 +214,11 @@ router.get('/keys/all', async (req, res) => {
         MM_LENDING_INTEREST_ASSET: 'Money Market Lending Interest Asset',
         MM_LENDING_INTEREST_INCOME: 'Money Market Lending Interest Income',
         MM_BORROWING_INTEREST_EXPENSE: 'Money Market Borrowing Interest Expense',
-        MM_BORROWING_INTEREST_LIABILITY: 'Money Market Borrowing Interest Liability'
+        MM_BORROWING_INTEREST_LIABILITY: 'Money Market Borrowing Interest Liability',
+        REPO_REVERSE_REPO_ASSET: 'Reverse Repo with Banks and Other Financial Institutes (131-101-410-206-44)',
+        REPO_INTEREST_INCOME: 'Interest Received on R/Repo with Banks and Other Financial Institutes (467-101-190-440-44)',
+        REVERSE_REPO_LIABILITY: 'Repo with Banks and Other Financial Institutes (249-101-330-308-44)',
+        REVERSE_REPO_INTEREST_EXPENSE: 'Interest Paid on Repo with Banks and Other Financial Institutes (669-101-240-752-44)'
       }
     });
   } catch (error) {
