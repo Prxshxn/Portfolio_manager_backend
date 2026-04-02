@@ -149,44 +149,46 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
       }
     }
 
-    // Fixed Deposit per-day accrual posting
-    console.log('--- Fixed Deposit EOD posting block reached ---');
-    const [fdDeals] = await db.query(
-      `SELECT id, request_no, daily_accrual, maturity_date FROM fixed_deposit_requests 
-       WHERE status = 'Approved' AND daily_accrual IS NOT NULL AND daily_accrual > 0 AND maturity_date >= ?`,
-      [systemDay]
-    );
-    console.log('Fixed Deposit deals to post:', fdDeals.length);
-    let fdPostedCount = 0;
-    for (const deal of fdDeals) {
-      try {
-        const amount = Number(deal.daily_accrual);
-        if (isNaN(amount) || amount === 0) {
-          console.warn('Skipping FD request due to invalid daily_accrual:', deal.request_no, deal.daily_accrual);
-          continue;
-        }
-        console.log('Posting FD ledger for request:', deal.request_no, amount);
-        const drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.FD_ACCRUAL_ASSET);
-        const crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.FD_ACCRUAL_INCOME);
-        await postLedgerEntry({
-          date: systemDay,
-          dr_account: drAccount,
-          cr_account: crAccount,
-          amount,
-          deal_id: deal.request_no,
-          description: `Fixed Deposit Daily Accrual for Request ${deal.request_no}`
-        });
-        fdPostedCount++;
-      } catch (err) {
-        console.error('Failed to post FD ledger for request:', deal.request_no, err);
-      }
-    }
+    // Fixed Deposit per-day accrual posting (temporarily disabled – FD table has no daily_accrual column)
+    // console.log('--- Fixed Deposit EOD posting block reached ---');
+    // const [fdDeals] = await db.query(
+    //   `SELECT id, request_no, daily_accrual, maturity_date FROM fixed_deposit_requests 
+    //    WHERE status = 'Approved' AND daily_accrual IS NOT NULL AND daily_accrual > 0 AND maturity_date >= ?`,
+    //   [systemDay]
+    // );
+    // console.log('Fixed Deposit deals to post:', fdDeals.length);
+    // let fdPostedCount = 0;
+    // for (const deal of fdDeals) {
+    //   try {
+    //     const amount = Number(deal.daily_accrual);
+    //     if (isNaN(amount) || amount === 0) {
+    //       console.warn('Skipping FD request due to invalid daily_accrual:', deal.request_no, deal.daily_accrual);
+    //       continue;
+    //     }
+    //     console.log('Posting FD ledger for request:', deal.request_no, amount);
+    //     const drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.FD_ACCRUAL_ASSET);
+    //     const crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.FD_ACCRUAL_INCOME);
+    //     await postLedgerEntry({
+    //       date: systemDay,
+    //       dr_account: drAccount,
+    //       cr_account: crAccount,
+    //       amount,
+    //       deal_id: deal.request_no,
+    //       description: `Fixed Deposit Daily Accrual for Request ${deal.request_no}`
+    //     });
+    //     fdPostedCount++;
+    //   } catch (err) {
+    //     console.error('Failed to post FD ledger for request:', deal.request_no, err);
+    //   }
+    // }
 
     // --- Repo Deal EOD Processing ---
     console.log('--- Repo Deal EOD posting block reached ---');
     let repoAccrualCount = 0;
     let repoMaturityCount = 0;
     let repoBackfillCount = 0;
+    // Fixed deposit EOD block is currently disabled, so keep count at 0
+    const fdPostedCount = 0;
 
     // Backfill: post purchase entries for final_approved repo deals missing ledger entries
     try {
