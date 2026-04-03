@@ -45,7 +45,7 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     
     // Build query with filters - only include Buy transactions from GSEC deals
     // Note: remaining_face_value is computed, not a column, so we calculate it later
-    let sql = `SELECT g.id, g.portfolio, g.deal_number, g.face_value, g.value_date, g.maturity_date, g.isin_number as isin, g.coupon_interest, g.clean_price, g.yield, g.counterparty_id, g.transaction_type, 
+    let sql = `SELECT g.id, g.portfolio, g.deal_number, g.face_value, g.value_date, g.maturity_date, g.isin_number as isin, g.coupon_interest, g.clean_price, g.dirty_price, g.yield, g.counterparty_id, g.transaction_type, 
                COALESCE(
                  corp.short_name,
                  ind.short_name,
@@ -155,326 +155,207 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     });
   }
 
-  // Calculate repo_collateral for each deal and derive remaining face value for display
+  // Fallback: allocate "unlinked" sells (missing/invalid buy_deal_number) using FIFO per ISIN/portfolio.
+  // This makes the report resilient when sell rows do not correctly reference a buy deal_number.
+  // Primary linkage remains buy_deal_number; fallback is only for sells not linked to any buy in `rows`.
+  if (rows.length) {
+    const uniqueIsinsForAllocation = [...new Set(rows.map(r => r.isin).filter(Boolean))];
+    if (uniqueIsinsForAllocation.length) {
+      const ph = uniqueIsinsForAllocation.map(() => '?').join(',');
+      let sellAllocSql = `
+        SELECT id, portfolio, isin_number AS isin, face_value, TRIM(buy_deal_number) AS buy_deal_number, value_date
+        FROM gsec
+        WHERE transaction_type = 'Sell' AND isin_number IN (${ph})
+      `;
+      const sellAllocParams = [...uniqueIsinsForAllocation];
+      if (portfolio) {
+        sellAllocSql += ' AND portfolio = ?';
+        sellAllocParams.push(portfolio);
+      }
+      if (asAtDate) {
+        sellAllocSql += ' AND DATE(value_date) <= DATE(?)';
+        sellAllocParams.push(asAtDate);
+      }
+      sellAllocSql += ' ORDER BY DATE(value_date), id';
+
+      const [sellAllocRows] = await db.query(sellAllocSql, sellAllocParams);
+
+      // Build FIFO buy lists per (portfolio|isin)
+      const buyDealsByKey = {};
+      rows.forEach(b => {
+        const dealNo = (b.deal_number || '').trim();
+        if (!dealNo || !b.isin) return;
+        const key = `${String(b.portfolio || '').trim()}|${String(b.isin).trim()}`;
+        if (!buyDealsByKey[key]) buyDealsByKey[key] = [];
+        buyDealsByKey[key].push({
+          deal_number: dealNo,
+          face_value: Number(b.face_value) || 0,
+          value_date: b.value_date,
+          id: Number(b.id) || 0
+        });
+      });
+      Object.keys(buyDealsByKey).forEach(key => {
+        buyDealsByKey[key].sort((a, b) => {
+          const ad = a.value_date ? String(a.value_date) : '';
+          const bd = b.value_date ? String(b.value_date) : '';
+          if (ad !== bd) return ad.localeCompare(bd);
+          return (a.id || 0) - (b.id || 0);
+        });
+      });
+
+      const buyDealSet = new Set(dealNumbers.map(d => d.trim()));
+
+      for (const s of sellAllocRows) {
+        const linkedDeal = (s.buy_deal_number || '').trim();
+        // If sell is properly linked to a buy deal in this report, it was already counted in the grouped sell query above.
+        if (linkedDeal && buyDealSet.has(linkedDeal)) continue;
+
+        const sellKey = `${String(s.portfolio || '').trim()}|${String(s.isin || '').trim()}`;
+        const fifoBuys = buyDealsByKey[sellKey];
+        if (!fifoBuys || !fifoBuys.length) continue;
+
+        let remainingToAllocate = Number(s.face_value) || 0;
+        if (remainingToAllocate <= 0) continue;
+
+        for (const b of fifoBuys) {
+          if (remainingToAllocate <= 0) break;
+          const alreadySold = Number(soldByDeal[b.deal_number] || 0);
+          const maxSellable = Math.max(0, (Number(b.face_value) || 0) - alreadySold);
+          if (maxSellable <= 0) continue;
+          const alloc = Math.min(maxSellable, remainingToAllocate);
+          soldByDeal[b.deal_number] = alreadySold + alloc;
+          remainingToAllocate -= alloc;
+        }
+      }
+    }
+  }
+
+  // ── ONE-TIME schema checks (avoid repeating inside loops) ──
+  let hasPortfolioColumn = false;
+  let hasTransactionTypeColumn = false;
+  try {
+    const [schemaCols] = await db.query(`
+      SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'buyback_deals'
+        AND COLUMN_NAME IN ('leg1_portfolio', 'leg1_transaction_type')
+    `);
+    const colSet = new Set(schemaCols.map(r => r.COLUMN_NAME));
+    hasPortfolioColumn = colSet.has('leg1_portfolio');
+    hasTransactionTypeColumn = colSet.has('leg1_transaction_type');
+  } catch (_) { /* leave both false */ }
+
+  // ── BATCH repo_collateral by unique ISIN (2 queries total, not 2×N) ──
+  const uniqueIsins = [...new Set(rows.map(r => r.isin).filter(Boolean))];
+  const repoCollateralByIsin = {};
+  if (uniqueIsins.length) {
+    const ph = uniqueIsins.map(() => '?').join(',');
+    const [childRows] = await db.query(`
+      SELECT rdi.isin_number, COALESCE(SUM(rdi.face_value), 0) AS rc
+      FROM repo_deal_isins rdi JOIN repo_deals rd ON rd.id = rdi.repo_deal_id
+      WHERE rdi.isin_number IN (${ph}) AND rd.status IN ('Active','Pending')
+      GROUP BY rdi.isin_number`, uniqueIsins);
+    childRows.forEach(r => { repoCollateralByIsin[r.isin_number] = Number(r.rc) || 0; });
+
+    const [legacyRows] = await db.query(`
+      SELECT rd.isin_number, COALESCE(SUM(rd.face_value), 0) AS rc
+      FROM repo_deals rd LEFT JOIN repo_deal_isins rdi ON rdi.repo_deal_id = rd.id
+      WHERE rdi.id IS NULL AND rd.isin_number IN (${ph}) AND rd.status IN ('Active','Pending')
+      GROUP BY rd.isin_number`, uniqueIsins);
+    legacyRows.forEach(r => {
+      repoCollateralByIsin[r.isin_number] = (repoCollateralByIsin[r.isin_number] || 0) + (Number(r.rc) || 0);
+    });
+  }
+
+  // ── BATCH buyback deductions for ALL deal numbers in one query ──
+  const allDealNumbers = rows.map(r => (r.deal_number || '').trim()).filter(Boolean);
+  const buybackByDealBatch = {};
+  if (allDealNumbers.length) {
+    const ph = allDealNumbers.map(() => '?').join(',');
+    let bbSql = `SELECT leg1_face_value, source_buy_deal_number, leg1_isin
+      FROM buyback_deals WHERE deal_status = 'Approved'`;
+    const bbParams = [];
+    if (hasTransactionTypeColumn) bbSql += ` AND leg1_transaction_type = 'Sell'`;
+    if (asAtDate) { bbSql += ` AND DATE(approved_at) <= DATE(?)`; bbParams.push(asAtDate); }
+    bbSql += ` AND (source_buy_deal_number IN (${ph}) OR source_buy_deal_number IS NULL)`;
+    bbParams.push(...allDealNumbers);
+    if (hasPortfolioColumn && portfolio) { bbSql += ` AND leg1_portfolio = ?`; bbParams.push(portfolio); }
+    const [bbRows] = await db.query(bbSql, bbParams);
+    bbRows.forEach(r => {
+      const key = (r.source_buy_deal_number || '').trim();
+      if (key) buybackByDealBatch[key] = (buybackByDealBatch[key] || 0) + (Number(r.leg1_face_value) || 0);
+    });
+  }
+
+  // ── Per-row calculations (no DB queries inside) ──
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
-    
-    // Calculate repo_collateral for this ISIN
-    // New: support multi-ISIN allocations via repo_deal_isins, while remaining backward compatible
-    const [repoChildRows] = await db.query(`
-      SELECT COALESCE(SUM(rdi.face_value), 0) AS repo_collateral
-      FROM repo_deal_isins rdi
-      JOIN repo_deals rd ON rd.id = rdi.repo_deal_id
-      WHERE rdi.isin_number = ? AND rd.status IN ('Active', 'Pending')
-    `, [row.isin]);
+    row.repo_collateral = repoCollateralByIsin[row.isin] || 0;
 
-    // Legacy fallback: deals that still store a single ISIN directly on repo_deals and have no child rows
-    const [repoLegacyRows] = await db.query(`
-      SELECT COALESCE(SUM(rd.face_value), 0) AS repo_collateral
-      FROM repo_deals rd
-      LEFT JOIN repo_deal_isins rdi ON rdi.repo_deal_id = rd.id
-      WHERE rdi.id IS NULL AND rd.isin_number = ? AND rd.status IN ('Active', 'Pending')
-    `, [row.isin]);
-
-    row.repo_collateral = Number(repoChildRows?.[0]?.repo_collateral || 0) + Number(repoLegacyRows?.[0]?.repo_collateral || 0);
-    
-    // Use the remaining_face_value from database (which includes buyback deductions)
-    // Only fall back to dynamic calculation if remaining_face_value is null/undefined
-    // Normalize deal_number by trimming for lookup
     const normalizedDealNumber = (row.deal_number || '').trim();
     const soldAgainstThisDeal = Number(soldByDeal[normalizedDealNumber] || 0);
     const originalFace = Number(row.face_value) || 0;
-    // remaining_face_value is computed, not a column, so always use 0
-    const dbRemainingFaceValue = 0;
-    
-    console.log(`Deal ${row.deal_number}: originalFace=${originalFace}, dbRemainingFaceValue=${dbRemainingFaceValue}, soldAgainstThisDeal=${soldAgainstThisDeal}`);
-    
-    // Calculate buyback deductions with backdating support
-    let buybackDeduction = 0;
-    if (asAtDate) {
-      // Check if leg1_portfolio column exists in buyback_deals table
-      let hasPortfolioColumn = false;
-      try {
-        const [schemaCheck] = await db.query(`
-          SELECT COLUMN_NAME 
-          FROM INFORMATION_SCHEMA.COLUMNS 
-          WHERE TABLE_SCHEMA = DATABASE() 
-          AND TABLE_NAME = 'buyback_deals' 
-          AND COLUMN_NAME = 'leg1_portfolio'
-        `);
-        hasPortfolioColumn = schemaCheck.length > 0;
-      } catch (schemaError) {
-        console.warn('[GSEC Report] Could not check schema, assuming leg1_portfolio does not exist');
-      }
-      
-      // Build query conditionally based on whether portfolio column exists
-      let buybackSql = `
-        SELECT leg1_face_value, source_buy_deal_number
-        FROM buyback_deals 
-        WHERE leg1_isin = ?`;
-      const buybackParams = [row.isin];
-      
-      if (hasPortfolioColumn && row.portfolio) {
-        buybackSql += ' AND leg1_portfolio = ?';
-        buybackParams.push(row.portfolio);
-      }
-      
-      // Check if leg1_transaction_type column exists
-      let hasTransactionTypeColumn = false;
-      try {
-        const [txTypeCheck] = await db.query(`
-          SELECT COLUMN_NAME 
-          FROM INFORMATION_SCHEMA.COLUMNS 
-          WHERE TABLE_SCHEMA = DATABASE() 
-          AND TABLE_NAME = 'buyback_deals' 
-          AND COLUMN_NAME = 'leg1_transaction_type'
-        `);
-        hasTransactionTypeColumn = txTypeCheck.length > 0;
-      } catch (schemaError) {
-        console.warn('[GSEC Report] Could not check leg1_transaction_type schema');
-      }
-      
-      if (hasTransactionTypeColumn) {
-        buybackSql += ` AND leg1_transaction_type = 'Sell'`;
-      }
-      
-      buybackSql += ` AND deal_status = 'Approved'
-        AND DATE(approved_at) <= ?
-        AND (source_buy_deal_number = ? OR source_buy_deal_number IS NULL)`;
-      buybackParams.push(asAtDate, row.deal_number);
-      
-      const [buybackRows] = await db.query(buybackSql, buybackParams);
-      
-      buybackRows.forEach(buybackRow => {
-        // If source_buy_deal_number matches this deal, or if it's null (chronological deduction)
-        if (buybackRow.source_buy_deal_number === row.deal_number || !buybackRow.source_buy_deal_number) {
-          buybackDeduction += Number(buybackRow.leg1_face_value) || 0;
-        }
-      });
-      
-      console.log(`Deal ${row.deal_number}: buybackDeduction=${buybackDeduction} for asAtDate=${asAtDate}`);
-    } else {
-      // For no asAtDate, calculate buyback deductions dynamically to ensure accuracy
-      // Check if leg1_portfolio column exists
-      let hasPortfolioColumn = false;
-      try {
-        const [schemaCheck] = await db.query(`
-          SELECT COLUMN_NAME 
-          FROM INFORMATION_SCHEMA.COLUMNS 
-          WHERE TABLE_SCHEMA = DATABASE() 
-          AND TABLE_NAME = 'buyback_deals' 
-          AND COLUMN_NAME = 'leg1_portfolio'
-        `);
-        hasPortfolioColumn = schemaCheck.length > 0;
-      } catch (schemaError) {
-        console.warn('[GSEC Report] Could not check schema, assuming leg1_portfolio does not exist');
-      }
-      
-      // Build query conditionally
-      let buybackSql = `
-        SELECT leg1_face_value, source_buy_deal_number
-        FROM buyback_deals 
-        WHERE leg1_isin = ?`;
-      const buybackParams = [row.isin];
-      
-      if (hasPortfolioColumn && row.portfolio) {
-        buybackSql += ' AND leg1_portfolio = ?';
-        buybackParams.push(row.portfolio);
-      }
-      
-      // Check if leg1_transaction_type column exists
-      let hasTransactionTypeColumn = false;
-      try {
-        const [txTypeCheck] = await db.query(`
-          SELECT COLUMN_NAME 
-          FROM INFORMATION_SCHEMA.COLUMNS 
-          WHERE TABLE_SCHEMA = DATABASE() 
-          AND TABLE_NAME = 'buyback_deals' 
-          AND COLUMN_NAME = 'leg1_transaction_type'
-        `);
-        hasTransactionTypeColumn = txTypeCheck.length > 0;
-      } catch (schemaError) {
-        console.warn('[GSEC Report] Could not check leg1_transaction_type schema');
-      }
-      
-      if (hasTransactionTypeColumn) {
-        buybackSql += ` AND leg1_transaction_type = 'Sell'`;
-      }
-      
-      buybackSql += ` AND deal_status = 'Approved'
-        AND (source_buy_deal_number = ? OR source_buy_deal_number IS NULL)`;
-      buybackParams.push(row.deal_number);
-      
-      const [buybackRows] = await db.query(buybackSql, buybackParams);
-      
-      buybackRows.forEach(buybackRow => {
-        // If source_buy_deal_number matches this deal, or if it's null (chronological deduction)
-        if (buybackRow.source_buy_deal_number === row.deal_number || !buybackRow.source_buy_deal_number) {
-          buybackDeduction += Number(buybackRow.leg1_face_value) || 0;
-        }
-      });
-      
-      console.log(`Deal ${row.deal_number}: buybackDeduction=${buybackDeduction} (no asAtDate, calculated dynamically)`);
-    }
+    const buybackDeduction = Number(buybackByDealBatch[normalizedDealNumber] || 0);
 
-    // Calculate final remaining face value
-    const today = new Date().toISOString().split('T')[0];
-    const isCurrentDate = asAtDate === today;
-    
-    console.log(`[DEBUG] Deal ${row.deal_number}: asAtDate=${asAtDate}, today=${today}, isCurrentDate=${isCurrentDate}`);
-    
-    if (asAtDate) {
-      // ALWAYS calculate dynamically for historical dates
-      // The database remaining_face_value might include future transactions
-      // We need to recalculate based on the asAtDate
-      row.remaining_face_value_report = Math.max(0, originalFace - soldAgainstThisDeal - buybackDeduction);
-      console.log(`[DEBUG] Calculated for asAtDate ${asAtDate}: ${originalFace} - ${soldAgainstThisDeal} - ${buybackDeduction} = ${row.remaining_face_value_report}`);
-    } else {
-      // For no asAtDate, calculate dynamically to ensure sell and buyback deductions are included
-      // Use database value as fallback only if it's more accurate (but still calculate to be safe)
-      const calculatedRemaining = Math.max(0, originalFace - soldAgainstThisDeal - buybackDeduction);
-      // Prefer calculated value, but use database value if it's valid and close (within tolerance)
-      row.remaining_face_value_report = calculatedRemaining;
-      console.log(`[DEBUG] No asAtDate: calculated=${calculatedRemaining}, dbRemainingFaceValue=${dbRemainingFaceValue}, using calculated`);
-    }
-    
-    console.log(`Deal ${row.deal_number}: final remaining_face_value_report=${row.remaining_face_value_report}`);
-
-    // No sell_back calculation - sell transactions are handled in separate report
+    row.remaining_face_value_report = Math.max(0, originalFace - soldAgainstThisDeal - buybackDeduction);
     row.sell_back = 0;
   }
 
-  // Get all unique ISINs from the current page results
-  const uniqueIsins = [...new Set(rows.map(row => row.isin))];
-
-  // Calculate balance for each ISIN across ALL records (not just current page)
+  // ── BATCH ISIN balance + WAP (one query for buys, one for sells, one for buyback) ──
   const isinBalances = {};
   const isinWapMap = {};
-  
-  for (const isin of uniqueIsins) {
-      // Query all Buy records for this ISIN to calculate correct balance
-      let balanceSql = `SELECT face_value, clean_price FROM gsec WHERE isin_number = ? AND transaction_type = 'Buy'`;
-    const balanceParams = [isin];
-    
-    // Apply the same filters as the main query for GSEC deals
-    if (portfolio) {
-      balanceSql += ' AND portfolio = ?';
-      balanceParams.push(portfolio);
-    }
-    if (valueDate) {
-      balanceSql += ' AND value_date = ?';
-      balanceParams.push(valueDate);
-    }
-    if (maturityDate) {
-      balanceSql += ' AND maturity_date = ?';
-      balanceParams.push(maturityDate);
-    }
+
+  if (uniqueIsins.length) {
+    const ph = uniqueIsins.map(() => '?').join(',');
+
+    // Buy totals per ISIN
+    let buySql = `SELECT isin_number, SUM(face_value) AS total_fv, SUM(face_value * clean_price) AS sum_fvcp
+      FROM gsec WHERE isin_number IN (${ph}) AND transaction_type = 'Buy'`;
+    const buyParams = [...uniqueIsins];
+    if (portfolio) { buySql += ' AND portfolio = ?'; buyParams.push(portfolio); }
+    if (valueDate) { buySql += ' AND value_date = ?'; buyParams.push(valueDate); }
+    if (maturityDate) { buySql += ' AND maturity_date = ?'; buyParams.push(maturityDate); }
+    if (asAtDate) { buySql += ' AND value_date <= ?'; buyParams.push(asAtDate); }
+    buySql += ' GROUP BY isin_number';
+    const [buyAggRows] = await db.query(buySql, buyParams);
+    buyAggRows.forEach(r => {
+      isinBalances[r.isin_number] = Number(r.total_fv) || 0;
+      isinWapMap[r.isin_number] = { sumFV: Number(r.total_fv) || 0, sumFVCP: Number(r.sum_fvcp) || 0 };
+    });
+
+    // Sell totals per ISIN
+    let sellSql = `SELECT isin_number, COALESCE(SUM(face_value), 0) AS sold
+      FROM gsec WHERE isin_number IN (${ph}) AND transaction_type = 'Sell'`;
+    const sellParams = [...uniqueIsins];
+    if (portfolio) { sellSql += ' AND portfolio = ?'; sellParams.push(portfolio); }
+    if (valueDate) { sellSql += ' AND value_date = ?'; sellParams.push(valueDate); }
+    if (maturityDate) { sellSql += ' AND maturity_date = ?'; sellParams.push(maturityDate); }
+    if (asAtDate) { sellSql += ' AND DATE(value_date) <= DATE(?)'; sellParams.push(asAtDate); }
+    sellSql += ' GROUP BY isin_number';
+    const [sellAggRows] = await db.query(sellSql, sellParams);
+    sellAggRows.forEach(r => {
+      isinBalances[r.isin_number] = Math.max(0, (isinBalances[r.isin_number] || 0) - (Number(r.sold) || 0));
+    });
+
+    // Buyback deductions per ISIN (single batched query)
     if (asAtDate) {
-      balanceSql += ' AND value_date <= ?';
-      balanceParams.push(asAtDate);
-    }
-    
-    const [balanceRows] = await db.query(balanceSql, balanceParams);
-    
-      // Calculate balance for this ISIN (start with Buy totals)
-    isinBalances[isin] = 0;
-    isinWapMap[isin] = { sumFV: 0, sumFVCP: 0 };
-    
-    balanceRows.forEach(balanceRow => {
-        // Only Buy transactions contribute to initial balance
-        isinBalances[isin] += Number(balanceRow.face_value);
-
-        // Aggregate for WAP calculation
-        const fv = Number(balanceRow.face_value) || 0;
-        const cp = Number(balanceRow.clean_price) || 0;
-        isinWapMap[isin].sumFV += fv;
-        isinWapMap[isin].sumFVCP += fv * cp;
+      let bbIsinSql = `SELECT leg1_isin, COALESCE(SUM(leg1_face_value), 0) AS bb
+        FROM buyback_deals WHERE leg1_isin IN (${ph}) AND deal_status = 'Approved'`;
+      const bbIsinParams = [...uniqueIsins];
+      if (hasTransactionTypeColumn) bbIsinSql += ` AND leg1_transaction_type = 'Sell'`;
+      bbIsinSql += ` AND approved_at <= ?`; bbIsinParams.push(asAtDate);
+      if (hasPortfolioColumn && portfolio) { bbIsinSql += ' AND leg1_portfolio = ?'; bbIsinParams.push(portfolio); }
+      bbIsinSql += ' GROUP BY leg1_isin';
+      const [bbIsinRows] = await db.query(bbIsinSql, bbIsinParams);
+      bbIsinRows.forEach(r => {
+        isinBalances[r.leg1_isin] = Math.max(0, (isinBalances[r.leg1_isin] || 0) - (Number(r.bb) || 0));
       });
-
-      // Subtract normal Sell transactions for this ISIN from balance
-      let sellSql = `SELECT COALESCE(SUM(face_value), 0) AS sold FROM gsec WHERE isin_number = ? AND transaction_type = 'Sell'`;
-      const sellParams = [isin];
-      if (portfolio) {
-        sellSql += ' AND portfolio = ?';
-        sellParams.push(portfolio);
-      }
-      if (valueDate) {
-        sellSql += ' AND value_date = ?';
-        sellParams.push(valueDate);
-      }
-      if (maturityDate) {
-        sellSql += ' AND maturity_date = ?';
-        sellParams.push(maturityDate);
-      }
-      if (asAtDate) {
-        console.log(`[GSEC Report] Filtering ISIN balance sells for asAtDate: ${asAtDate}`);
-        sellSql += ' AND DATE(value_date) <= DATE(?)';
-        sellParams.push(asAtDate);
-      }
-      
-      // Don't filter by status in ISIN balance calculation - count all sells
-      // The date filter (DATE(value_date) <= DATE(asAtDate)) is what matters
-
-      const [sellAggRows] = await db.query(sellSql, sellParams);
-      const totalSoldForIsin = Number(sellAggRows?.[0]?.sold || 0);
-      isinBalances[isin] = Math.max(0, Number(isinBalances[isin]) - totalSoldForIsin);
-
-      // Subtract buyback deductions for this ISIN with backdating support
-      if (asAtDate) {
-        // Check if leg1_portfolio column exists
-        let hasPortfolioColumn = false;
-        try {
-          const [schemaCheck] = await db.query(`
-            SELECT COLUMN_NAME 
-            FROM INFORMATION_SCHEMA.COLUMNS 
-            WHERE TABLE_SCHEMA = DATABASE() 
-            AND TABLE_NAME = 'buyback_deals' 
-            AND COLUMN_NAME = 'leg1_portfolio'
-          `);
-          hasPortfolioColumn = schemaCheck.length > 0;
-        } catch (schemaError) {
-          console.warn('[GSEC Report] Could not check schema for ISIN balance, assuming leg1_portfolio does not exist');
-        }
-        
-        // Check if leg1_transaction_type column exists
-        let hasTransactionTypeColumn = false;
-        try {
-          const [txTypeCheck] = await db.query(`
-            SELECT COLUMN_NAME 
-            FROM INFORMATION_SCHEMA.COLUMNS 
-            WHERE TABLE_SCHEMA = DATABASE() 
-            AND TABLE_NAME = 'buyback_deals' 
-            AND COLUMN_NAME = 'leg1_transaction_type'
-          `);
-          hasTransactionTypeColumn = txTypeCheck.length > 0;
-        } catch (schemaError) {
-          console.warn('[GSEC Report] Could not check leg1_transaction_type schema for ISIN balance');
-        }
-        
-        let buybackSql = `
-          SELECT COALESCE(SUM(leg1_face_value), 0) AS buyback_deduction
-          FROM buyback_deals 
-          WHERE leg1_isin = ?`;
-        const buybackParams = [isin];
-        
-        if (hasTransactionTypeColumn) {
-          buybackSql += ` AND leg1_transaction_type = 'Sell'`;
-        }
-        
-        buybackSql += ` AND deal_status = 'Approved' AND approved_at <= ?`;
-        buybackParams.push(asAtDate);
-        
-        if (hasPortfolioColumn && portfolio) {
-          buybackSql += ' AND leg1_portfolio = ?';
-          buybackParams.push(portfolio);
-        }
-        
-        const [buybackRows] = await db.query(buybackSql, buybackParams);
-        const totalBuybackDeduction = Number(buybackRows?.[0]?.buyback_deduction || 0);
-        isinBalances[isin] = Math.max(0, Number(isinBalances[isin]) - totalBuybackDeduction);
-      }
-      // For current date, buyback deductions are already included in the database remaining_face_value
+    }
   }
+  // Fill defaults for ISINs with no buy data
+  uniqueIsins.forEach(isin => {
+    if (!(isin in isinBalances)) isinBalances[isin] = 0;
+    if (!(isin in isinWapMap)) isinWapMap[isin] = { sumFV: 0, sumFVCP: 0 };
+  });
 
   // Helper to safely parse ISO date strings
   function safeParseISO(val) {
@@ -531,6 +412,7 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       isin: row.isin,
       coupon_interest: formatPrice(row.coupon_interest, 4),
       clean_price: formatPrice(row.clean_price, 4),
+      dirty_price: formatPrice(row.dirty_price, 4),
       yield: formatPercentage(row.yield, 4),
       dtm: dtm ? dtm.toLocaleString('en-US') : '',
       balance: formatPrice(isinBalances[row.isin], 4),
@@ -622,26 +504,97 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
         soldByDeal[trimmedKey] = Number(row.total_sold) || 0;
       });
     }
+
+    // Same fallback as main table: allocate unlinked sells FIFO per ISIN/portfolio
+    // so total balance matches deal-level rows even when sell rows are not linked correctly.
+    if (balanceRows.length) {
+      const [isinRows] = await db.query(
+        `SELECT DISTINCT isin_number FROM gsec WHERE transaction_type = 'Buy'` +
+          (portfolio ? ' AND portfolio = ?' : '') +
+          (isin ? ' AND isin_number = ?' : '') +
+          (valueDate ? ' AND value_date = ?' : '') +
+          (maturityDate ? ' AND maturity_date = ?' : '') +
+          (asAtDate ? ' AND value_date <= ?' : ''),
+        balanceParams
+      );
+      const uniqueIsinsForAllocation = [...new Set(isinRows.map(r => r.isin_number).filter(Boolean))];
+      if (uniqueIsinsForAllocation.length) {
+        const ph = uniqueIsinsForAllocation.map(() => '?').join(',');
+        let sellAllocSql = `
+          SELECT id, portfolio, isin_number AS isin, face_value, TRIM(buy_deal_number) AS buy_deal_number, value_date
+          FROM gsec
+          WHERE transaction_type = 'Sell' AND isin_number IN (${ph})
+        `;
+        const sellAllocParams = [...uniqueIsinsForAllocation];
+        if (portfolio) { sellAllocSql += ' AND portfolio = ?'; sellAllocParams.push(portfolio); }
+        if (asAtDate) { sellAllocSql += ' AND DATE(value_date) <= DATE(?)'; sellAllocParams.push(asAtDate); }
+        sellAllocSql += ' ORDER BY DATE(value_date), id';
+
+        const [sellAllocRows] = await db.query(sellAllocSql, sellAllocParams);
+
+        // Need buy lists for FIFO allocation: fetch buy deal meta for these ISINs in this filtered scope.
+        const buyDealsByKey = {};
+        const buyMetaSql =
+          `SELECT id, portfolio, deal_number, isin_number AS isin, face_value, value_date
+           FROM gsec
+           WHERE transaction_type = 'Buy' AND isin_number IN (${ph})` +
+          (portfolio ? ' AND portfolio = ?' : '') +
+          (isin ? ' AND isin_number = ?' : '') +
+          (valueDate ? ' AND value_date = ?' : '') +
+          (maturityDate ? ' AND maturity_date = ?' : '') +
+          (asAtDate ? ' AND value_date <= ?' : '') +
+          ' ORDER BY DATE(value_date), id';
+
+        const buyMetaParams = [...uniqueIsinsForAllocation];
+        if (portfolio) buyMetaParams.push(portfolio);
+        if (isin) buyMetaParams.push(isin);
+        if (valueDate) buyMetaParams.push(valueDate);
+        if (maturityDate) buyMetaParams.push(maturityDate);
+        if (asAtDate) buyMetaParams.push(asAtDate);
+
+        const [buyMetaRows] = await db.query(buyMetaSql, buyMetaParams);
+        buyMetaRows.forEach(b => {
+          const dealNo = (b.deal_number || '').trim();
+          if (!dealNo || !b.isin) return;
+          const key = `${String(b.portfolio || '').trim()}|${String(b.isin).trim()}`;
+          if (!buyDealsByKey[key]) buyDealsByKey[key] = [];
+          buyDealsByKey[key].push({
+            deal_number: dealNo,
+            face_value: Number(b.face_value) || 0,
+            value_date: b.value_date,
+            id: Number(b.id) || 0
+          });
+        });
+
+        const buyDealSet = new Set(dealNumbers.map(d => d.trim()));
+        for (const s of sellAllocRows) {
+          const linkedDeal = (s.buy_deal_number || '').trim();
+          if (linkedDeal && buyDealSet.has(linkedDeal)) continue;
+
+          const sellKey = `${String(s.portfolio || '').trim()}|${String(s.isin || '').trim()}`;
+          const fifoBuys = buyDealsByKey[sellKey];
+          if (!fifoBuys || !fifoBuys.length) continue;
+
+          let remainingToAllocate = Number(s.face_value) || 0;
+          if (remainingToAllocate <= 0) continue;
+
+          for (const b of fifoBuys) {
+            if (remainingToAllocate <= 0) break;
+            const alreadySold = Number(soldByDeal[b.deal_number] || 0);
+            const maxSellable = Math.max(0, (Number(b.face_value) || 0) - alreadySold);
+            if (maxSellable <= 0) continue;
+            const alloc = Math.min(maxSellable, remainingToAllocate);
+            soldByDeal[b.deal_number] = alreadySold + alloc;
+            remainingToAllocate -= alloc;
+          }
+        }
+      }
+    }
     
-    // Calculate buyback deductions for historical dates
+    // Calculate buyback deductions for historical dates (reuse cached schema flags)
     const buybackByDeal = {};
     if (asAtDate && dealNumbers.length) {
       const placeholders = dealNumbers.map(() => '?').join(',');
-      // Check if leg1_transaction_type column exists
-      let hasTransactionTypeColumn = false;
-      try {
-        const [txTypeCheck] = await db.query(`
-          SELECT COLUMN_NAME 
-          FROM INFORMATION_SCHEMA.COLUMNS 
-          WHERE TABLE_SCHEMA = DATABASE() 
-          AND TABLE_NAME = 'buyback_deals' 
-          AND COLUMN_NAME = 'leg1_transaction_type'
-        `);
-        hasTransactionTypeColumn = txTypeCheck.length > 0;
-      } catch (schemaError) {
-        console.warn('[GSEC Report] Could not check leg1_transaction_type schema for total balance');
-      }
-      
       let buybackSql = `
         SELECT source_buy_deal_number, COALESCE(SUM(leg1_face_value), 0) AS total_buyback
         FROM buyback_deals
