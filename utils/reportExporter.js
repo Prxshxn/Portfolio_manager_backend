@@ -24,6 +24,7 @@ const EXPORT_COLUMNS = [
   { key: 'isin', label: 'ISIN' },
   { key: 'coupon_interest', label: 'Coupon Interest' },
   { key: 'clean_price', label: 'Clean Price' },
+  { key: 'dirty_price', label: 'Dirty Price' },
   { key: 'nvp', label: 'NVP' },
   { key: 'yield', label: 'Yield' },
   { key: 'dtm', label: 'DTM' },
@@ -74,9 +75,29 @@ const REPO_EXPORT_COLUMNS = [
   { key: 'face_value_as_per_counterparty', label: 'Face value as per counterparty' }
 ];
 
+/** Parse numbers that may include thousand separators (e.g. API-formatted strings). */
+function parseLocaleNumber(val) {
+  if (val === undefined || val === null || val === '') return NaN;
+  if (typeof val === 'number') return Number.isFinite(val) ? val : NaN;
+  const s = String(val).trim().replace(/,/g, '');
+  const n = Number(s);
+  return Number.isFinite(n) ? n : NaN;
+}
+
+function formatNumber4(val) {
+  if (val === undefined || val === null || val === '') return '';
+  const n = typeof val === 'number' ? val : parseLocaleNumber(val);
+  if (isNaN(n)) return val !== undefined && val !== null ? String(val) : '';
+  const truncated = Math.trunc(n * 10000) / 10000;
+  return new Intl.NumberFormat('en-US', {
+    minimumFractionDigits: 4,
+    maximumFractionDigits: 4
+  }).format(truncated);
+}
+
 function formatNumber2(val) {
   if (val === undefined || val === null || val === '') return '';
-  const n = Number(val);
+  const n = parseLocaleNumber(val);
   if (isNaN(n)) return val;
   // Truncate (not round) to 2 decimals
   const truncated = Math.trunc(n * 100) / 100;
@@ -98,19 +119,21 @@ function toExcelNumber(val) {
 }
 
 function preprocessExportData(data) {
-  // Compute WAP per ISIN
+  // Fallback WAP per ISIN (comma-safe) when row.wap is missing
   const isinMap = {};
   data.forEach(row => {
     const isin = row.isin;
-    const fv = Number(row.face_value) || 0;
-    const cp = Number(row.clean_price) || 0;
+    const fv = parseLocaleNumber(row.face_value);
+    const cp = parseLocaleNumber(row.clean_price);
+    const fvNum = isNaN(fv) ? 0 : fv;
+    const cpNum = isNaN(cp) ? 0 : cp;
     if (!isinMap[isin]) {
       isinMap[isin] = { sumFV: 0, sumFVCP: 0 };
     }
-    isinMap[isin].sumFV += fv;
-    isinMap[isin].sumFVCP += fv * cp;
+    isinMap[isin].sumFV += fvNum;
+    isinMap[isin].sumFVCP += fvNum * cpNum;
   });
-  // Attach WAP to each row
+
   return data.map(row => {
     const mapped = {};
     EXPORT_COLUMNS.forEach(col => {
@@ -118,29 +141,38 @@ function preprocessExportData(data) {
       if (col.key === 'value_date' || col.key === 'maturity_date') {
         val = formatDate(val);
       }
-      // Format numbers to 2 decimals with comma separators for specific fields
+      // 4 decimal places (prices / rates as returned by GSEC report API)
       if ([
         'coupon_interest',
         'yield',
         'balance',
         'available_balance',
         'clean_price',
+        'dirty_price',
         'nvp',
-        'wap',
-        'repo_collateral',
-        'sell_back'
+        'repo_collateral'
       ].includes(col.key)) {
+        val = formatNumber4(val);
+      }
+      // Currency-style 2 decimals
+      if (col.key === 'face_value' || col.key === 'sell_back') {
         val = formatNumber2(val);
       }
-      // DTM is days, so just convert to integer (no decimals or commas)
+      // DTM: integer days (handle locale-formatted integers)
       if (col.key === 'dtm') {
-        const n = Number(val);
+        const n = parseLocaleNumber(val);
         val = isNaN(n) ? val : Math.trunc(n).toString();
       }
+      // Prefer API WAP (already ISIN-weighted); fallback to recomputed map
       if (col.key === 'wap') {
-        const isin = row.isin;
-        const wap = isinMap[isin] && isinMap[isin].sumFV ? (isinMap[isin].sumFVCP / isinMap[isin].sumFV) : 0;
-        val = formatNumber2(wap);
+        const fromApi = parseLocaleNumber(row.wap);
+        if (!isNaN(fromApi) && row.wap !== undefined && row.wap !== null && row.wap !== '') {
+          val = formatNumber4(fromApi);
+        } else {
+          const m = isinMap[row.isin];
+          const wapFallback = m && m.sumFV ? m.sumFVCP / m.sumFV : 0;
+          val = formatNumber4(wapFallback);
+        }
       }
       mapped[col.key] = val !== undefined && val !== null ? val : '';
     });
@@ -215,6 +247,7 @@ exports.export = async (format, data) => {
       'balance',
       'available_balance',
       'clean_price',
+      'dirty_price',
       'nvp',
       'wap',
       'repo_collateral'
@@ -276,6 +309,7 @@ exports.export = async (format, data) => {
       { key: 'isin', label: 'ISIN', width: 80, align: 'left' },
       { key: 'coupon_interest', label: 'Coupon Interest', width: 60, align: 'right' },
       { key: 'clean_price', label: 'Clean Price', width: 50, align: 'right' },
+      { key: 'dirty_price', label: 'Dirty Price', width: 50, align: 'right' },
       { key: 'nvp', label: 'NVP', width: 50, align: 'right' },
       { key: 'yield', label: 'Yield', width: 40, align: 'right' },
       { key: 'dtm', label: 'DTM', width: 40, align: 'center' },
