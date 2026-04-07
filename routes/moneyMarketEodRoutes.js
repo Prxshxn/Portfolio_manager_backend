@@ -4,6 +4,7 @@ const { getAllDeals } = require('../models/moneyMarketDealModel');
 const { getSystemDay, setSystemDay } = require('../models/systemDayModel');
 const { checkAuth, checkAdmin } = require('../middleware/auth');
 const accountMapping = require('../services/accountMappingService');
+const { computeGsecPerDayAccrual } = require('../services/gsecCouponPeriod');
 // You may need to adjust this path to your ledger posting API
 const postLedgerEntry = require('../controllers/ledgerController').postLedgerEntry;
 console.log ("started eod page");
@@ -115,24 +116,36 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
       
       postedCount++;
     }
-    // GSec per-day accrual posting
+    // GSec per-day accrual posting (recalculate from system date + maturity; same E as Excel PRICE)
     console.log('--- GSec EOD posting block reached ---');
     const db = require('../config/database');
     const [gsecDeals] = await db.query(
-      `SELECT id, deal_number, per_day_accrual, maturity_date FROM gsec WHERE per_day_accrual IS NOT NULL AND per_day_accrual > 0 AND maturity_date >= ?`,
+      `SELECT g.id, g.deal_number, g.coupon_interest, g.maturity_date, g.face_value, g.remaining_face_value, g.isin_number,
+              im.coupon_date_1, im.coupon_date_2, im.coupon_rate
+       FROM gsec g
+       LEFT JOIN isin_master im ON g.isin_number COLLATE utf8mb4_unicode_ci = im.isin_number COLLATE utf8mb4_unicode_ci
+       WHERE g.transaction_type = 'Buy'
+         AND g.status = 'final_approved'
+         AND g.maturity_date >= ?
+         AND (g.coupon_interest IS NOT NULL AND g.coupon_interest > 0
+              OR im.coupon_rate IS NOT NULL AND im.coupon_rate > 0)`,
       [systemDay]
     );
     console.log('GSec deals to post:', gsecDeals.length, gsecDeals);
     let gsecPostedCount = 0;
     for (const deal of gsecDeals) {
       try {
-        const amount = Number(deal.per_day_accrual);
-        if (isNaN(amount) || amount === 0) {
-          console.warn('Skipping GSec deal due to invalid per_day_accrual:', deal.deal_number, deal.per_day_accrual);
+        const computed = computeGsecPerDayAccrual(deal, systemDay, 2);
+        if (!computed.ok) {
+          console.warn('Skipping GSec deal:', deal.deal_number, computed.reason);
+          // Zero out stale per_day_accrual so it doesn't mislead reports
+          if (Number(deal.per_day_accrual) > 0) {
+            await db.query('UPDATE gsec SET per_day_accrual = 0 WHERE id = ?', [deal.id]);
+          }
           continue;
         }
-        console.log('Posting GSec ledger for deal:', deal.deal_number, amount);
-        const accountMapping = require('../services/accountMappingService');
+        const { amount, E } = computed;
+        console.log('Posting GSec ledger for deal:', deal.deal_number, amount, 'E=', E, 'isin=', deal.isin_number);
         const drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_ACCRUAL_ASSET);
         const crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_ACCRUAL_INCOME);
         await postLedgerEntry({
@@ -143,11 +156,21 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
           deal_id: deal.deal_number,
           description: `GSec Daily Accrual for Deal ${deal.deal_number}`
         });
+        await db.query(
+          `UPDATE gsec SET per_day_accrual = ?, number_of_days_for_coupon_period = ? WHERE id = ?`,
+          [amount, E, deal.id]
+        );
         gsecPostedCount++;
       } catch (err) {
         console.error('Failed to post GSec ledger for deal:', deal.deal_number, err);
       }
     }
+
+    // Zero out stale per_day_accrual on Sell deals (should never accrue)
+    await db.query(
+      `UPDATE gsec SET per_day_accrual = 0
+       WHERE transaction_type = 'Sell' AND per_day_accrual IS NOT NULL AND per_day_accrual > 0`
+    );
 
     // Fixed Deposit per-day accrual posting (temporarily disabled – FD table has no daily_accrual column)
     // console.log('--- Fixed Deposit EOD posting block reached ---');
