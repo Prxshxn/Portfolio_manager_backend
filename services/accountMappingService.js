@@ -17,8 +17,8 @@ const MAPPING_KEYS = {
   // GSEC Accounts
   GSEC_ASSET_TBONDS: 'GSEC_ASSET_TBONDS',
   GSEC_DEFAULT_SETTLEMENT: 'GSEC_DEFAULT_SETTLEMENT',
-  GSEC_ACCRUAL_ASSET: 'GSEC_ACCRUAL_ASSET',
-  GSEC_ACCRUAL_INCOME: 'GSEC_ACCRUAL_INCOME', // Credit: map to 669-101-240-752-44 — Interest Paid on Repo with Banks and Other Financial Institutes (GSec accrued interest income)
+  GSEC_ACCRUAL_ASSET: 'GSEC_ACCRUAL_ASSET', // Debit: 131-101-290-218-44 — GSec Accrued Interest Receivable
+  GSEC_ACCRUAL_INCOME: 'GSEC_ACCRUAL_INCOME', // Credit: 467-101-190-470-44 — GSec Interest Income (Accrued)
   GSEC_TRADING_ACCOUNT: 'GSEC_TRADING_ACCOUNT', // Treasury Bonds - Trading A/c (131-101-350-098-44)
   GSEC_ACCRUED_INTEREST_PAID: 'GSEC_ACCRUED_INTEREST_PAID', // Accrued Coupon Interest Paid at Purchase (131-101-350-128-44)
   
@@ -48,7 +48,8 @@ const MAPPING_KEYS = {
   // Repo/Reverse Repo Accounts
   REPO_REVERSE_REPO_ASSET: 'REPO_REVERSE_REPO_ASSET',   // 131-101-410-206-44 Reverse Repo with Banks and Other Financial Institutes
   REPO_INTEREST_INCOME: 'REPO_INTEREST_INCOME',           // 467-101-190-440-44 Interest Received on R/Repo with Banks and Other Financial Institutes
-  REVERSE_REPO_LIABILITY: 'REVERSE_REPO_LIABILITY',       // 249-101-330-308-44 Repo with Banks and Other Financial Institutes (liability)
+  REVERSE_REPO_LIABILITY: 'REVERSE_REPO_LIABILITY',       // 249-101-330-308-44 Repo with Banks and Other Financial Institutes (principal borrowing CR, maturity, etc.)
+  REVERSE_REPO_INTEREST_PAYABLE: 'REVERSE_REPO_INTEREST_PAYABLE', // 249-101-330-780-44 Interest Payable Repo Borrowing (Reverse Repo daily interest accrual CR)
   REVERSE_REPO_INTEREST_EXPENSE: 'REVERSE_REPO_INTEREST_EXPENSE', // 669-101-240-752-44 Interest Paid on Repo with Banks and Other Financial Institutes
 
   // General Accounts

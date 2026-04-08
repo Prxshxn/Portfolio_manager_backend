@@ -205,9 +205,8 @@ router.get('/keys/all', async (req, res) => {
       descriptions: {
         GSEC_ASSET_TBONDS: 'GSEC Asset - Treasury Bonds',
         GSEC_DEFAULT_SETTLEMENT: 'GSEC Default Settlement Account',
-        GSEC_ACCRUAL_ASSET: 'GSEC Daily Accrual Asset',
-        GSEC_ACCRUAL_INCOME:
-          'GSec Interest Income (Accrued) — Interest Paid on Repo with Banks and Other Financial Institutes (669-101-240-752-44)',
+        GSEC_ACCRUAL_ASSET: 'GSec Accrued Interest Receivable (131-101-290-218-44)',
+        GSEC_ACCRUAL_INCOME: 'GSec Interest Income (Accrued) (467-101-190-470-44)',
         FD_ACCRUAL_ASSET: 'Fixed Deposit Daily Accrual Asset',
         FD_ACCRUAL_INCOME: 'Fixed Deposit Daily Accrual Income',
         MM_LENDING_CONTROL: 'Money Market Lending Control Account',
@@ -219,6 +218,7 @@ router.get('/keys/all', async (req, res) => {
         REPO_REVERSE_REPO_ASSET: 'Reverse Repo with Banks and Other Financial Institutes (131-101-410-206-44)',
         REPO_INTEREST_INCOME: 'Interest Received on R/Repo with Banks and Other Financial Institutes (467-101-190-440-44)',
         REVERSE_REPO_LIABILITY: 'Repo with Banks and Other Financial Institutes (249-101-330-308-44)',
+        REVERSE_REPO_INTEREST_PAYABLE: 'Interest Payable Repo Borrowing (249-101-330-780-44) — Reverse Repo daily accrual credit',
         REVERSE_REPO_INTEREST_EXPENSE: 'Interest Paid on Repo with Banks and Other Financial Institutes (669-101-240-752-44)'
       }
     });
