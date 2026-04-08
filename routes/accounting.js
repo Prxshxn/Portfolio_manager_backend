@@ -3,6 +3,17 @@ const router = express.Router();
 const db = require('../config/db');
 const auth = require('../middlewares/auth');
 
+/** Resolve pseudo chart rows (e.g. GSEC_ACCRUAL_INCOME_, GSEC_ACCRUAL_ASSET_C) via account_mappings. */
+const LEDGER_ACCOUNT_MAPPING_JOIN = `
+      LEFT JOIN account_mappings am ON am.is_active = TRUE
+        AND (
+          am.mapping_key = coa.account_code
+          OR am.mapping_key = TRIM(TRAILING '_' FROM coa.account_code)
+          OR coa.account_code REGEXP CONCAT('^', am.mapping_key, '_.*$')
+        )
+      LEFT JOIN chart_of_accounts coa_resolved
+        ON coa_resolved.account_code = am.account_code AND coa_resolved.is_active = TRUE`;
+
 // Get all account types
 router.get('/account-types', auth, async (req, res) => {
   try {
@@ -206,13 +217,17 @@ router.get('/general-ledger', auth, async (req, res) => {
     fetch('http://127.0.0.1:7242/ingest/29dc6e6a-2fb8-4497-a57e-c480a1e8f80b',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'routes/accounting.js:202',message:'Building SQL queries',data:{queryUsesTransactionId:true,countQueryUsesTransactionId:true},timestamp:Date.now(),runId:'post-fix',hypothesisId:'B'})}).catch(()=>{});
     // #endregion
     
+    // When ledger points at a chart row whose account_code is an account_mappings key
+    // (e.g. GSEC_ACCRUAL_INCOME_, GSEC_ACCRUAL_ASSET_C), show the mapped numeric code and name.
     let query = `
       SELECT le.*, 
-             coa.account_code, coa.name as account_name,
+             COALESCE(coa_resolved.account_code, coa.account_code) AS account_code,
+             COALESCE(coa_resolved.name, coa.name) AS account_name,
              at.category as account_category,
              t.transaction_code, t.description as transaction_description
       FROM ledger_entries le
       LEFT JOIN chart_of_accounts coa ON le.account_id = coa.id
+      ${LEDGER_ACCOUNT_MAPPING_JOIN}
       LEFT JOIN account_types at ON coa.account_type_id = at.id
       LEFT JOIN transactions t ON le.transaction_id = t.id
       WHERE 1=1
@@ -225,6 +240,7 @@ router.get('/general-ledger', auth, async (req, res) => {
       SELECT COUNT(*) as total 
       FROM ledger_entries le
       LEFT JOIN chart_of_accounts coa ON le.account_id = coa.id
+      ${LEDGER_ACCOUNT_MAPPING_JOIN}
       LEFT JOIN account_types at ON coa.account_type_id = at.id
       LEFT JOIN transactions t ON le.transaction_id = t.id
       WHERE 1=1

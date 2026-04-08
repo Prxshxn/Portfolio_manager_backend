@@ -4,9 +4,25 @@ const { getAllDeals } = require('../models/moneyMarketDealModel');
 const { getSystemDay, setSystemDay } = require('../models/systemDayModel');
 const { checkAuth, checkAdmin } = require('../middleware/auth');
 const accountMapping = require('../services/accountMappingService');
+const { computeGsecPerDayAccrual } = require('../services/gsecCouponPeriod');
 // You may need to adjust this path to your ledger posting API
 const postLedgerEntry = require('../controllers/ledgerController').postLedgerEntry;
 console.log ("started eod page");
+
+/** Calendar-date compare: accrue only when the deal value date is on or before the system (EOD) date. */
+function valueDateOnOrBeforeSystemDay(valueDate, systemDay) {
+  if (valueDate == null) return false;
+  const v = new Date(valueDate);
+  const s = new Date(systemDay);
+  if (Number.isNaN(v.getTime()) || Number.isNaN(s.getTime())) return false;
+  const vUtc = Date.UTC(v.getFullYear(), v.getMonth(), v.getDate());
+  const sUtc = Date.UTC(s.getFullYear(), s.getMonth(), s.getDate());
+  return vUtc <= sUtc;
+}
+
+function isLedgerPostOk(result) {
+  return result && result.success === true;
+}
 
 // POST /api/money-market/ledger-post
 router.post('/ledger-post', checkAuth, checkAdmin, async (req, res) => {
@@ -29,11 +45,22 @@ router.post('/ledger-post', checkAuth, checkAdmin, async (req, res) => {
         console.warn(`Skipping deal ${deal.id} due to missing deal_type (null or undefined).`);
         continue;
       }
+      if (!valueDateOnOrBeforeSystemDay(deal.value_date, systemDay)) {
+        console.warn(
+          'Skipping MM deal (value date missing or after system date):',
+          deal.id,
+          'value_date=',
+          deal.value_date,
+          'systemDay=',
+          systemDay
+        );
+        continue;
+      }
       const dealTypeLower = deal.deal_type.toLowerCase();
       if (dealTypeLower === 'lending') {
         const drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.MM_LENDING_INTEREST_ASSET);
         const crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.MM_LENDING_INTEREST_INCOME);
-        await postLedgerEntry({
+        const lr = await postLedgerEntry({
           date: systemDay,
           dr_account: drAccount,
           cr_account: crAccount,
@@ -41,10 +68,14 @@ router.post('/ledger-post', checkAuth, checkAdmin, async (req, res) => {
           deal_id: deal.id,
           description: 'Daily lending interest EOD',
         });
+        if (!isLedgerPostOk(lr)) {
+          console.error('MM lending ledger post failed (ledger-post):', deal.id, lr && lr.error);
+          continue;
+        }
       } else if (deal.deal_type === 'borrowing') {
         const drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.MM_BORROWING_INTEREST_EXPENSE);
         const crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.MM_BORROWING_INTEREST_LIABILITY);
-        await postLedgerEntry({
+        const lr = await postLedgerEntry({
           date: systemDay,
           dr_account: drAccount,
           cr_account: crAccount,
@@ -52,6 +83,10 @@ router.post('/ledger-post', checkAuth, checkAdmin, async (req, res) => {
           deal_id: deal.id,
           description: 'Daily borrowing interest EOD',
         });
+        if (!isLedgerPostOk(lr)) {
+          console.error('MM borrowing ledger post failed (ledger-post):', deal.id, lr && lr.error);
+          continue;
+        }
       }
       postedCount++;
     }
@@ -88,11 +123,22 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
         console.warn(`Skipping deal ${deal.id} due to missing deal_type (null or undefined).`);
         continue;
       }
+      if (!valueDateOnOrBeforeSystemDay(deal.value_date, systemDay)) {
+        console.warn(
+          'Skipping MM deal (value date missing or after system date):',
+          deal.id,
+          'value_date=',
+          deal.value_date,
+          'systemDay=',
+          systemDay
+        );
+        continue;
+      }
       const dealTypeLower = deal.deal_type.toLowerCase();
       if (dealTypeLower === 'lending') {
         const drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.MM_LENDING_INTEREST_ASSET);
         const crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.MM_LENDING_INTEREST_INCOME);
-        await postLedgerEntry({
+        const lr = await postLedgerEntry({
           date: systemDay,
           dr_account: drAccount,
           cr_account: crAccount,
@@ -100,10 +146,14 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
           deal_id: deal.id,
           description: 'Daily lending interest EOD',
         });
+        if (!isLedgerPostOk(lr)) {
+          console.error('MM lending ledger post failed:', deal.id, lr && lr.error);
+          continue;
+        }
       } else if (deal.deal_type === 'borrowing') {
         const drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.MM_BORROWING_INTEREST_EXPENSE);
         const crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.MM_BORROWING_INTEREST_LIABILITY);
-        await postLedgerEntry({
+        const lr = await postLedgerEntry({
           date: systemDay,
           dr_account: drAccount,
           cr_account: crAccount,
@@ -111,31 +161,65 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
           deal_id: deal.id,
           description: 'Daily borrowing interest EOD',
         });
+        if (!isLedgerPostOk(lr)) {
+          console.error('MM borrowing ledger post failed:', deal.id, lr && lr.error);
+          continue;
+        }
       }
       
       postedCount++;
     }
-    // GSec per-day accrual posting
+    // GSec per-day accrual posting (recalculate from system date + maturity; same E as Excel PRICE)
     console.log('--- GSec EOD posting block reached ---');
     const db = require('../config/database');
     const [gsecDeals] = await db.query(
-      `SELECT id, deal_number, per_day_accrual, maturity_date FROM gsec WHERE per_day_accrual IS NOT NULL AND per_day_accrual > 0 AND maturity_date >= ?`,
-      [systemDay]
+      `SELECT g.id, g.deal_number, g.value_date, g.coupon_interest, g.maturity_date, g.face_value, g.remaining_face_value,
+              g.isin_number, g.per_day_accrual,
+              im.coupon_date_1, im.coupon_date_2, im.coupon_rate
+       FROM gsec g
+       LEFT JOIN isin_master im ON g.isin_number COLLATE utf8mb4_unicode_ci = im.isin_number COLLATE utf8mb4_unicode_ci
+       WHERE g.transaction_type = 'Buy'
+         AND g.status = 'final_approved'
+         AND g.maturity_date >= ?
+         AND g.value_date IS NOT NULL
+         AND DATE(g.value_date) <= DATE(?)
+         AND (g.coupon_interest IS NOT NULL AND g.coupon_interest > 0
+              OR im.coupon_rate IS NOT NULL AND im.coupon_rate > 0)`,
+      [systemDay, systemDay]
     );
     console.log('GSec deals to post:', gsecDeals.length, gsecDeals);
     let gsecPostedCount = 0;
     for (const deal of gsecDeals) {
       try {
-        const amount = Number(deal.per_day_accrual);
-        if (isNaN(amount) || amount === 0) {
-          console.warn('Skipping GSec deal due to invalid per_day_accrual:', deal.deal_number, deal.per_day_accrual);
+        // Defense in depth (SQL already filters): value date must be on or before system day
+        if (!valueDateOnOrBeforeSystemDay(deal.value_date, systemDay)) {
+          console.warn(
+            'Skipping GSec deal (value date after system date):',
+            deal.deal_number,
+            'value_date=',
+            deal.value_date,
+            'systemDay=',
+            systemDay
+          );
+          if (Number(deal.per_day_accrual) > 0) {
+            await db.query('UPDATE gsec SET per_day_accrual = 0 WHERE id = ?', [deal.id]);
+          }
           continue;
         }
-        console.log('Posting GSec ledger for deal:', deal.deal_number, amount);
-        const accountMapping = require('../services/accountMappingService');
+        const computed = computeGsecPerDayAccrual(deal, systemDay, 2);
+        if (!computed.ok) {
+          console.warn('Skipping GSec deal:', deal.deal_number, computed.reason);
+          // Zero out stale per_day_accrual so it doesn't mislead reports
+          if (Number(deal.per_day_accrual) > 0) {
+            await db.query('UPDATE gsec SET per_day_accrual = 0 WHERE id = ?', [deal.id]);
+          }
+          continue;
+        }
+        const { amount, E } = computed;
+        console.log('Posting GSec ledger for deal:', deal.deal_number, amount, 'E=', E, 'isin=', deal.isin_number);
         const drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_ACCRUAL_ASSET);
         const crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_ACCRUAL_INCOME);
-        await postLedgerEntry({
+        const lr = await postLedgerEntry({
           date: systemDay,
           dr_account: drAccount,
           cr_account: crAccount,
@@ -143,11 +227,41 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
           deal_id: deal.deal_number,
           description: `GSec Daily Accrual for Deal ${deal.deal_number}`
         });
+        if (!isLedgerPostOk(lr)) {
+          console.error(
+            'GSec accrual ledger post failed; gsec row not updated:',
+            deal.deal_number,
+            lr && lr.error
+          );
+          continue;
+        }
+        await db.query(
+          `UPDATE gsec SET per_day_accrual = ?, number_of_days_for_coupon_period = ? WHERE id = ?`,
+          [amount, E, deal.id]
+        );
         gsecPostedCount++;
       } catch (err) {
         console.error('Failed to post GSec ledger for deal:', deal.deal_number, err);
       }
     }
+
+    // Clear per_day_accrual for Buy deals whose value date is still in the future (or was posted before this rule)
+    await db.query(
+      `UPDATE gsec SET per_day_accrual = 0
+       WHERE transaction_type = 'Buy'
+         AND status = 'final_approved'
+         AND value_date IS NOT NULL
+         AND DATE(value_date) > DATE(?)
+         AND per_day_accrual IS NOT NULL
+         AND per_day_accrual <> 0`,
+      [systemDay]
+    );
+
+    // Zero out stale per_day_accrual on Sell deals (should never accrue)
+    await db.query(
+      `UPDATE gsec SET per_day_accrual = 0
+       WHERE transaction_type = 'Sell' AND per_day_accrual IS NOT NULL AND per_day_accrual > 0`
+    );
 
     // Fixed Deposit per-day accrual posting (temporarily disabled – FD table has no daily_accrual column)
     // console.log('--- Fixed Deposit EOD posting block reached ---');
@@ -239,7 +353,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
             continue;
           }
 
-          await postLedgerEntry({
+          const lr = await postLedgerEntry({
             date: valueDate,
             dr_account: drAccount,
             cr_account: crAccount,
@@ -247,6 +361,10 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
             deal_id: String(deal.id),
             description
           });
+          if (!isLedgerPostOk(lr)) {
+            console.error('Repo backfill ledger post failed:', deal.id, lr && lr.error);
+            continue;
+          }
           repoBackfillCount++;
         } catch (err) {
           console.error('Failed to backfill repo deal:', deal.id, err);
@@ -276,7 +394,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
           if (deal.deal_type === 'Repo') {
             const drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REPO_REVERSE_REPO_ASSET);
             const crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REPO_INTEREST_INCOME);
-            await postLedgerEntry({
+            const lr = await postLedgerEntry({
               date: systemDay,
               dr_account: drAccount,
               cr_account: crAccount,
@@ -284,11 +402,15 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
               deal_id: String(deal.id),
               description: `Repo Daily Interest Accrual - Deal ${deal.id}`
             });
+            if (!isLedgerPostOk(lr)) {
+              console.error('Repo accrual ledger post failed:', deal.id, lr && lr.error);
+              continue;
+            }
             repoAccrualCount++;
           } else if (deal.deal_type === 'Reverse Repo') {
             const drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REVERSE_REPO_INTEREST_EXPENSE);
-            const crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REVERSE_REPO_LIABILITY);
-            await postLedgerEntry({
+            const crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REVERSE_REPO_INTEREST_PAYABLE);
+            const lr = await postLedgerEntry({
               date: systemDay,
               dr_account: drAccount,
               cr_account: crAccount,
@@ -296,6 +418,10 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
               deal_id: String(deal.id),
               description: `Reverse Repo Daily Interest Accrual - Deal ${deal.id}`
             });
+            if (!isLedgerPostOk(lr)) {
+              console.error('Reverse repo accrual ledger post failed:', deal.id, lr && lr.error);
+              continue;
+            }
             repoAccrualCount++;
           }
         } catch (err) {
@@ -359,7 +485,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
             continue;
           }
 
-          await postLedgerEntry({
+          const lr = await postLedgerEntry({
             date: systemDay,
             dr_account: drAccount,
             cr_account: crAccount,
@@ -367,6 +493,10 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
             deal_id: String(deal.id),
             description
           });
+          if (!isLedgerPostOk(lr)) {
+            console.error('Repo maturity ledger post failed:', deal.id, lr && lr.error);
+            continue;
+          }
 
           await db.query('UPDATE repo_deals SET matured = 1 WHERE id = ?', [deal.id]);
           repoMaturityCount++;

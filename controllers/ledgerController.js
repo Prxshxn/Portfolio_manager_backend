@@ -7,7 +7,14 @@ async function getAccountIdByCode(account_code) {
     [account_code]
   );
   if (rows.length === 0) throw new Error(`Account code not found: ${account_code}`);
-  return rows[0].id;
+  const id = rows[0].id;
+  if (id == null) {
+    throw new Error(
+      `chart_of_accounts.id is NULL for account_code=${account_code}. ` +
+        'Run: node migrations/20260407-fix-null-chart-of-accounts-ids.js'
+    );
+  }
+  return id;
 }
 
 exports.postLedgerEntry = async function(entry) {
@@ -20,7 +27,7 @@ exports.postLedgerEntry = async function(entry) {
     const dr_account_id = await getAccountIdByCode(dr_account);
     const cr_account_id = await getAccountIdByCode(cr_account);
     console.log('Account IDs:', { dr_account_id, cr_account_id });
-    if (!dr_account_id || !cr_account_id) {
+    if (dr_account_id == null || cr_account_id == null) {
       throw new Error(`Missing account ID(s): dr_account_id=${dr_account_id}, cr_account_id=${cr_account_id}`);
     }
 
