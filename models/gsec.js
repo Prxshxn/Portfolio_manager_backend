@@ -659,67 +659,74 @@ const Gsec = {
       });
     }
     
-    // If asAtDate is provided, calculate buyback deductions up to that date
+    // Always calculate buyback deductions (approved sell/buy legs reduce available balance)
     const buybackDeductionsByDeal = {};
-    if (asAtDate && dealNumbers.length) {
+    if (dealNumbers.length) {
+      const modalIsins = [...new Set(rows.map(r => (r.isin || '').trim()).filter(Boolean))];
       const placeholders = dealNumbers.map(() => '?').join(',');
+      const isinPh = modalIsins.length ? modalIsins.map(() => '?').join(',') : "'__none__'";
+      const effectiveCutoff = asAtDate || new Date().toISOString().split('T')[0];
       let buybackSql = `
-        SELECT source_buy_deal_number, COALESCE(SUM(leg1_face_value), 0) AS total_buyback
+        SELECT source_buy_deal_number, leg1_face_value, leg1_isin
         FROM buyback_deals
         WHERE leg1_transaction_type = 'Sell'
         AND deal_status = 'Approved'
-        AND DATE(approved_at) <= ?
-        AND (source_buy_deal_number IN (${placeholders}) OR source_buy_deal_number IS NULL)
-        GROUP BY source_buy_deal_number
+        AND DATE(approved_at) <= DATE(?)
+        AND (source_buy_deal_number IN (${placeholders}) OR (source_buy_deal_number IS NULL AND leg1_isin IN (${isinPh})))
+        ORDER BY approved_at ASC
       `;
-      const buybackParams = [asAtDate, ...dealNumbers];
+      const buybackParams = [effectiveCutoff, ...dealNumbers, ...modalIsins];
       
       const [buybackRows] = await db.query(buybackSql, buybackParams);
+
+      // Build ISIN → deal list for FIFO allocation of NULL-source buybacks
+      const modalBuysByIsin = {};
+      rows.forEach(r => {
+        const dn = (r.deal_number || '').trim();
+        const dealIsin = (r.isin || '').trim();
+        if (!dn || !dealIsin) return;
+        if (!modalBuysByIsin[dealIsin]) modalBuysByIsin[dealIsin] = [];
+        modalBuysByIsin[dealIsin].push({ deal_number: dn, face_value: Number(r.face_value) || 0 });
+      });
+
       buybackRows.forEach(row => {
-        if (row.source_buy_deal_number) {
-          buybackDeductionsByDeal[row.source_buy_deal_number] = Number(row.total_buyback) || 0;
-        } else {
-          // NULL source means chronological deduction - distribute across deals
-          const totalBuyback = Number(row.total_buyback) || 0;
-          // For simplicity, distribute evenly across all deals (you may want to implement chronological logic)
-          dealNumbers.forEach(dealNum => {
-            if (!buybackDeductionsByDeal[dealNum]) {
-              buybackDeductionsByDeal[dealNum] = totalBuyback / dealNumbers.length;
-            }
-          });
+        const key = (row.source_buy_deal_number || '').trim();
+        const amount = Number(row.leg1_face_value) || 0;
+        if (key) {
+          buybackDeductionsByDeal[key] = (buybackDeductionsByDeal[key] || 0) + amount;
+        } else if (row.leg1_isin) {
+          const candidates = modalBuysByIsin[row.leg1_isin];
+          if (!candidates) return;
+          let remaining = amount;
+          for (const c of candidates) {
+            if (remaining <= 0) break;
+            const alreadyDeducted = Number(buybackDeductionsByDeal[c.deal_number] || 0);
+            const sold = Number(soldByDeal[c.deal_number] || 0);
+            const available = Math.max(0, c.face_value - sold - alreadyDeducted);
+            if (available <= 0) continue;
+            const alloc = Math.min(remaining, available);
+            buybackDeductionsByDeal[c.deal_number] = alreadyDeducted + alloc;
+            remaining -= alloc;
+          }
         }
       });
     }
     
-    // ALWAYS use remaining_face_value from database (which includes buyback deductions)
-    // The database value is the source of truth that accounts for all deductions
     return rows.map(deal => {
       const originalFace = Number(deal.face_value) || 0;
-      const dbRemainingFaceValue = Number(deal.remaining_face_value) || 0;
-      
-      let remainingFace;
-      if (asAtDate) {
-        // For historical date reporting, calculate dynamically
       const soldAmount = Number(soldByDeal[deal.deal_number] || 0);
-        const buybackDeduction = Number(buybackDeductionsByDeal[deal.deal_number] || 0);
-        remainingFace = Math.max(0, originalFace - soldAmount - buybackDeduction);
-      } else {
-        // For current date, use database value (most accurate - includes all deductions)
-        if (dbRemainingFaceValue > 0) {
-          remainingFace = dbRemainingFaceValue;
-        } else {
-          // Fallback: calculate dynamically
-          const soldAmount = Number(soldByDeal[deal.deal_number] || 0);
-          remainingFace = Math.max(0, originalFace - soldAmount);
-        }
-      }
+      const buybackDeduction = Number(buybackDeductionsByDeal[deal.deal_number] || 0);
+
+      // Always compute dynamically: original - gsec sells - buyback sells
+      // This is the most reliable method as it doesn't depend on remaining_face_value being kept in sync.
+      const remainingFace = Math.max(0, originalFace - soldAmount - buybackDeduction);
       
       return {
         ...deal,
         face_value: originalFace.toFixed(2),
         remaining_face_value: remainingFace.toFixed(4)
       };
-    }).filter(deal => Number(deal.remaining_face_value) > 0); // Only show deals with remaining balance
+    }).filter(deal => Number(deal.remaining_face_value) > 0);
   },
 
   /**

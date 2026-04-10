@@ -131,8 +131,8 @@ const BuybackDeal = {
       leg2_face_value, leg2_yield_rate, leg2_settlement_amount, leg2_clean_price,
       leg2_dirty_price, leg2_accrued_interest, leg2_currency,
       issue_date, maturity_date, coupon_rate, coupon_date1, coupon_date2,
-      deal_status, created_by, notes
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+      deal_status, created_by, notes, source_buy_deal_number
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
     const values = [
       dealData.deal_number,
@@ -157,7 +157,8 @@ const BuybackDeal = {
       // Status and tracking
       dealData.deal_status || 'Pending_Verification',
       dealData.created_by,
-      dealData.notes || null
+      dealData.notes || null,
+      dealData.source_buy_deal_number || null
     ];
 
     const [result] = await db.query(sql, values);
