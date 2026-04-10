@@ -475,7 +475,7 @@ const buybackDealController = {
                   const [specificBuyDeals] = await db.query(`
                     SELECT * FROM gsec 
                     WHERE deal_number = ? AND transaction_type = 'Buy' 
-                    AND remaining_face_value > 0
+                    AND (remaining_face_value > 0 OR remaining_face_value IS NULL)
                   `, [sourceBuyDealNumber]);
                   
                   if (specificBuyDeals && specificBuyDeals.length > 0) {
@@ -492,7 +492,7 @@ const buybackDealController = {
                   const [chronologicalBuyDeals] = await db.query(`
                     SELECT * FROM gsec 
                     WHERE isin_number = ? AND portfolio = ? AND transaction_type = 'Buy' 
-                    AND remaining_face_value > 0
+                    AND (remaining_face_value > 0 OR remaining_face_value IS NULL)
                     ORDER BY created_at ASC
                   `, [isin, portfolio]);
                   buyDeals = chronologicalBuyDeals;
@@ -690,6 +690,124 @@ const buybackDealController = {
   deleteDeal: async (req, res) => {
     try {
       const { id } = req.params;
+      const buybackIdNum = Number(id);
+      const [buybackRows] = await db.query('SELECT * FROM buyback_deals WHERE id = ?', [id]);
+
+      if (!buybackRows || buybackRows.length === 0) {
+        return res.status(404).json({
+          success: false,
+          error: 'Buyback deal not found'
+        });
+      }
+
+      const buyback = buybackRows[0];
+
+      const [buybackLinkColRows] = await db.query(
+        `SELECT 1
+         FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE()
+           AND TABLE_NAME = 'gsec'
+           AND COLUMN_NAME = 'buyback_deal_id'
+         LIMIT 1`
+      );
+      const hasBuybackDealId = Array.isArray(buybackLinkColRows) && buybackLinkColRows.length > 0;
+
+      // If this approved buyback deducted leg1 sell from source buy deals, restore only that deducted amount.
+      if (buyback.deal_status === 'Approved' && buyback.leg1_transaction_type === 'Sell') {
+        const restoreAmount = parseFloat(buyback.leg1_face_value || 0);
+        const sourceBuyDealNumber = buyback.source_buy_deal_number;
+        const isin = buyback.leg1_isin;
+        const portfolio = buyback.leg1_portfolio;
+
+        if (restoreAmount > 0 && isin && portfolio) {
+          let candidateBuyDeals = [];
+
+          if (sourceBuyDealNumber) {
+            const [specificRows] = await db.query(
+              `SELECT *
+               FROM gsec
+               WHERE deal_number = ?
+                 AND transaction_type = 'Buy'
+               ORDER BY created_at ASC`,
+              [sourceBuyDealNumber]
+            );
+            if (specificRows && specificRows.length > 0) {
+              candidateBuyDeals = specificRows;
+            }
+          }
+
+          if (candidateBuyDeals.length === 0) {
+            const [fifoRows] = await db.query(
+              `SELECT *
+               FROM gsec
+               WHERE isin_number = ?
+                 AND portfolio = ?
+                 AND transaction_type = 'Buy'
+               ORDER BY created_at ASC`,
+              [isin, portfolio]
+            );
+            candidateBuyDeals = fifoRows || [];
+          }
+
+          let remainingToRestore = restoreAmount;
+          for (const buyDeal of candidateBuyDeals) {
+            if (remainingToRestore <= 0) break;
+
+            const maxFace = parseFloat(buyDeal.face_value || 0);
+            const currentRemaining = buyDeal.remaining_face_value === null
+              ? maxFace
+              : parseFloat(buyDeal.remaining_face_value || 0);
+
+            const roomToRestore = Math.max(0, maxFace - currentRemaining);
+            if (roomToRestore <= 0) continue;
+
+            const addBack = Math.min(remainingToRestore, roomToRestore);
+            const restoredRemaining = currentRemaining + addBack;
+            const truncatedRemaining = Math.trunc(restoredRemaining * 10000) / 10000;
+
+            await db.query(
+              'UPDATE gsec SET remaining_face_value = ? WHERE id = ?',
+              [truncatedRemaining.toFixed(4), buyDeal.id]
+            );
+
+            remainingToRestore -= addBack;
+          }
+
+          if (remainingToRestore > 0) {
+            console.warn(
+              `Could not fully restore ${remainingToRestore} for deleted buyback ${buyback.deal_number}`
+            );
+          }
+        }
+      }
+
+      // Remove/cancel auto-created leg2 GSec created for this buyback so it won't remain orphaned.
+      if (buyback.leg2_transaction_type === 'Buy') {
+        if (hasBuybackDealId) {
+          await db.query(
+            `DELETE FROM gsec
+             WHERE transaction_type = 'Buy'
+               AND buyback_deal_id = ?`,
+            [buybackIdNum]
+          );
+        } else {
+          await db.query(
+            `DELETE FROM gsec
+             WHERE transaction_type = 'Buy'
+               AND isin_number = ?
+               AND face_value = ?
+               AND value_date = ?
+               AND portfolio = ?`,
+            [
+              buyback.leg2_isin,
+              buyback.leg2_face_value,
+              buyback.leg2_value_date,
+              buyback.leg2_portfolio
+            ]
+          );
+        }
+      }
+
       const result = await BuybackDeal.delete(id);
       
       if (result.affectedRows === 0) {
