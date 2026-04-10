@@ -223,7 +223,12 @@ const BuybackDeal = {
       leg2_counterparty = ?, leg2_portfolio = ?, leg2_strategy = ?, leg2_custodian = ?,
       leg2_settlement_mode = ?, leg2_face_value = ?, leg2_yield_rate = ?, leg2_settlement_amount = ?,
       leg2_clean_price = ?, leg2_dirty_price = ?, leg2_accrued_interest = ?,
-      notes = ?, deal_status = ?, updated_at = NOW()
+      notes = ?, deal_status = ?,
+      approved_at = CASE
+        WHEN ? = 'Approved' AND approved_at IS NULL THEN NOW()
+        ELSE approved_at
+      END,
+      updated_at = NOW()
       WHERE id = ?`;
 
     const values = [
@@ -242,6 +247,7 @@ const BuybackDeal = {
       dealData.leg2.cleanPrice, dealData.leg2.dirtyPrice, dealData.leg2.accruedInterest,
       // Other
       dealData.notes,
+      dealData.deal_status || 'Pending_Verification',
       dealData.deal_status || 'Pending_Verification',
       id
     ];

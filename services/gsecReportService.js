@@ -298,26 +298,41 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       buyDealsByIsin[r.isin].push({ deal_number: dealNo, face_value: Number(r.face_value) || 0 });
     });
 
+    const allocateFIFO = (isin, amount, skipDeal) => {
+      const candidates = buyDealsByIsin[isin];
+      if (!candidates) return amount;
+      let remaining = amount;
+      for (const c of candidates) {
+        if (remaining <= 0) break;
+        if (skipDeal && c.deal_number === skipDeal) continue;
+        const alreadyDeducted = Number(buybackByDealBatch[c.deal_number] || 0);
+        const soldAgainst = Number(soldByDeal[c.deal_number] || 0);
+        const available = Math.max(0, c.face_value - soldAgainst - alreadyDeducted);
+        if (available <= 0) continue;
+        const alloc = Math.min(remaining, available);
+        buybackByDealBatch[c.deal_number] = alreadyDeducted + alloc;
+        remaining -= alloc;
+      }
+      return remaining;
+    };
+
     bbRows.forEach(r => {
       const key = (r.source_buy_deal_number || '').trim();
       const amount = Number(r.leg1_face_value) || 0;
       if (key) {
-        buybackByDealBatch[key] = (buybackByDealBatch[key] || 0) + amount;
-      } else if (r.leg1_isin) {
-        // NULL source — allocate FIFO to buy deals with matching ISIN
-        const candidates = buyDealsByIsin[r.leg1_isin];
-        if (!candidates) return;
-        let remaining = amount;
-        for (const c of candidates) {
-          if (remaining <= 0) break;
-          const alreadyDeducted = Number(buybackByDealBatch[c.deal_number] || 0);
-          const soldAgainst = Number(soldByDeal[c.deal_number] || 0);
-          const available = Math.max(0, c.face_value - soldAgainst - alreadyDeducted);
-          if (available <= 0) continue;
-          const alloc = Math.min(remaining, available);
-          buybackByDealBatch[c.deal_number] = alreadyDeducted + alloc;
-          remaining -= alloc;
+        const alreadyDeducted = Number(buybackByDealBatch[key] || 0);
+        const sourceDealInfo = buyDealsByIsin[r.leg1_isin]?.find(c => c.deal_number === key);
+        const sourceFV = sourceDealInfo ? sourceDealInfo.face_value : 0;
+        const soldAgainst = Number(soldByDeal[key] || 0);
+        const capacity = Math.max(0, sourceFV - soldAgainst - alreadyDeducted);
+        const directAlloc = Math.min(amount, capacity);
+        if (directAlloc > 0) buybackByDealBatch[key] = alreadyDeducted + directAlloc;
+        const overflow = amount - directAlloc;
+        if (overflow > 0 && r.leg1_isin) {
+          allocateFIFO(r.leg1_isin, overflow, key);
         }
+      } else if (r.leg1_isin) {
+        allocateFIFO(r.leg1_isin, amount, null);
       }
     });
   }
@@ -662,25 +677,41 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
         balBuysByIsin[r.isin].push({ deal_number: dn, face_value: Number(r.face_value) || 0 });
       });
 
+      const allocFIFO2 = (isin, amount, skipDeal) => {
+        const candidates = balBuysByIsin[isin];
+        if (!candidates) return amount;
+        let remaining = amount;
+        for (const c of candidates) {
+          if (remaining <= 0) break;
+          if (skipDeal && c.deal_number === skipDeal) continue;
+          const alreadyDeducted = Number(buybackByDeal[c.deal_number] || 0);
+          const sold = Number(soldByDeal[c.deal_number] || 0);
+          const available = Math.max(0, c.face_value - sold - alreadyDeducted);
+          if (available <= 0) continue;
+          const alloc = Math.min(remaining, available);
+          buybackByDeal[c.deal_number] = alreadyDeducted + alloc;
+          remaining -= alloc;
+        }
+        return remaining;
+      };
+
       buybackRows.forEach(row => {
         const key = (row.source_buy_deal_number || '').trim();
         const amount = Number(row.leg1_face_value) || 0;
         if (key) {
-          buybackByDeal[key] = (buybackByDeal[key] || 0) + amount;
-        } else if (row.leg1_isin) {
-          const candidates = balBuysByIsin[row.leg1_isin];
-          if (!candidates) return;
-          let remaining = amount;
-          for (const c of candidates) {
-            if (remaining <= 0) break;
-            const alreadyDeducted = Number(buybackByDeal[c.deal_number] || 0);
-            const sold = Number(soldByDeal[c.deal_number] || 0);
-            const available = Math.max(0, c.face_value - sold - alreadyDeducted);
-            if (available <= 0) continue;
-            const alloc = Math.min(remaining, available);
-            buybackByDeal[c.deal_number] = alreadyDeducted + alloc;
-            remaining -= alloc;
+          const alreadyDeducted = Number(buybackByDeal[key] || 0);
+          const sourceDealInfo = balBuysByIsin[row.leg1_isin]?.find(c => c.deal_number === key);
+          const sourceFV = sourceDealInfo ? sourceDealInfo.face_value : 0;
+          const sold = Number(soldByDeal[key] || 0);
+          const capacity = Math.max(0, sourceFV - sold - alreadyDeducted);
+          const directAlloc = Math.min(amount, capacity);
+          if (directAlloc > 0) buybackByDeal[key] = alreadyDeducted + directAlloc;
+          const overflow = amount - directAlloc;
+          if (overflow > 0 && row.leg1_isin) {
+            allocFIFO2(row.leg1_isin, overflow, key);
           }
+        } else if (row.leg1_isin) {
+          allocFIFO2(row.leg1_isin, amount, null);
         }
       });
     }

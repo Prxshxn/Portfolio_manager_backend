@@ -689,25 +689,41 @@ const Gsec = {
         modalBuysByIsin[dealIsin].push({ deal_number: dn, face_value: Number(r.face_value) || 0 });
       });
 
+      const allocModalFIFO = (isin, amount, skipDeal) => {
+        const candidates = modalBuysByIsin[isin];
+        if (!candidates) return amount;
+        let remaining = amount;
+        for (const c of candidates) {
+          if (remaining <= 0) break;
+          if (skipDeal && c.deal_number === skipDeal) continue;
+          const alreadyDeducted = Number(buybackDeductionsByDeal[c.deal_number] || 0);
+          const sold = Number(soldByDeal[c.deal_number] || 0);
+          const available = Math.max(0, c.face_value - sold - alreadyDeducted);
+          if (available <= 0) continue;
+          const alloc = Math.min(remaining, available);
+          buybackDeductionsByDeal[c.deal_number] = alreadyDeducted + alloc;
+          remaining -= alloc;
+        }
+        return remaining;
+      };
+
       buybackRows.forEach(row => {
         const key = (row.source_buy_deal_number || '').trim();
         const amount = Number(row.leg1_face_value) || 0;
         if (key) {
-          buybackDeductionsByDeal[key] = (buybackDeductionsByDeal[key] || 0) + amount;
-        } else if (row.leg1_isin) {
-          const candidates = modalBuysByIsin[row.leg1_isin];
-          if (!candidates) return;
-          let remaining = amount;
-          for (const c of candidates) {
-            if (remaining <= 0) break;
-            const alreadyDeducted = Number(buybackDeductionsByDeal[c.deal_number] || 0);
-            const sold = Number(soldByDeal[c.deal_number] || 0);
-            const available = Math.max(0, c.face_value - sold - alreadyDeducted);
-            if (available <= 0) continue;
-            const alloc = Math.min(remaining, available);
-            buybackDeductionsByDeal[c.deal_number] = alreadyDeducted + alloc;
-            remaining -= alloc;
+          const alreadyDeducted = Number(buybackDeductionsByDeal[key] || 0);
+          const srcInfo = modalBuysByIsin[row.leg1_isin]?.find(c => c.deal_number === key);
+          const srcFV = srcInfo ? srcInfo.face_value : 0;
+          const sold = Number(soldByDeal[key] || 0);
+          const capacity = Math.max(0, srcFV - sold - alreadyDeducted);
+          const directAlloc = Math.min(amount, capacity);
+          if (directAlloc > 0) buybackDeductionsByDeal[key] = alreadyDeducted + directAlloc;
+          const overflow = amount - directAlloc;
+          if (overflow > 0 && row.leg1_isin) {
+            allocModalFIFO(row.leg1_isin, overflow, key);
           }
+        } else if (row.leg1_isin) {
+          allocModalFIFO(row.leg1_isin, amount, null);
         }
       });
     }
