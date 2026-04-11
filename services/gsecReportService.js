@@ -233,16 +233,18 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
   // ── ONE-TIME schema checks (avoid repeating inside loops) ──
   let hasPortfolioColumn = false;
   let hasTransactionTypeColumn = false;
+  let hasSellDealAllocationsColumn = false;
   try {
     const [schemaCols] = await db.query(`
       SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'buyback_deals'
-        AND COLUMN_NAME IN ('leg1_portfolio', 'leg1_transaction_type')
+        AND COLUMN_NAME IN ('leg1_portfolio', 'leg1_transaction_type', 'sell_deal_allocations')
     `);
     const colSet = new Set(schemaCols.map(r => r.COLUMN_NAME));
     hasPortfolioColumn = colSet.has('leg1_portfolio');
     hasTransactionTypeColumn = colSet.has('leg1_transaction_type');
-  } catch (_) { /* leave both false */ }
+    hasSellDealAllocationsColumn = colSet.has('sell_deal_allocations');
+  } catch (_) { /* leave all false */ }
 
   // ── BATCH repo_collateral by unique ISIN (2 queries total, not 2×N) ──
   const uniqueIsins = [...new Set(rows.map(r => r.isin).filter(Boolean))];
@@ -277,7 +279,7 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     const uniqueIsinsForBB = [...new Set(rows.map(r => r.isin).filter(Boolean))];
     const ph = allDealNumbers.map(() => '?').join(',');
     const isinPh = uniqueIsinsForBB.map(() => '?').join(',');
-    let bbSql = `SELECT leg1_face_value, source_buy_deal_number, leg1_isin
+    let bbSql = `SELECT leg1_face_value, source_buy_deal_number, leg1_isin${hasSellDealAllocationsColumn ? ', sell_deal_allocations' : ''}
       FROM buyback_deals WHERE deal_status = 'Approved'`;
     const bbParams = [];
     if (hasTransactionTypeColumn) bbSql += ` AND leg1_transaction_type = 'Sell'`;
@@ -317,22 +319,44 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     };
 
     bbRows.forEach(r => {
-      const key = (r.source_buy_deal_number || '').trim();
       const amount = Number(r.leg1_face_value) || 0;
-      if (key) {
-        const alreadyDeducted = Number(buybackByDealBatch[key] || 0);
-        const sourceDealInfo = buyDealsByIsin[r.leg1_isin]?.find(c => c.deal_number === key);
-        const sourceFV = sourceDealInfo ? sourceDealInfo.face_value : 0;
-        const soldAgainst = Number(soldByDeal[key] || 0);
-        const capacity = Math.max(0, sourceFV - soldAgainst - alreadyDeducted);
-        const directAlloc = Math.min(amount, capacity);
-        if (directAlloc > 0) buybackByDealBatch[key] = alreadyDeducted + directAlloc;
-        const overflow = amount - directAlloc;
-        if (overflow > 0 && r.leg1_isin) {
-          allocateFIFO(r.leg1_isin, overflow, key);
+
+      // Prefer precise per-deal allocations stored during deal creation
+      let allocations = null;
+      if (r.sell_deal_allocations) {
+        try {
+          allocations = typeof r.sell_deal_allocations === 'string'
+            ? JSON.parse(r.sell_deal_allocations)
+            : r.sell_deal_allocations;
+        } catch (_) { allocations = null; }
+      }
+
+      if (Array.isArray(allocations) && allocations.length > 0) {
+        allocations.forEach(a => {
+          const dealNo = (a.deal_number || '').trim();
+          const alloc = Number(a.amountToSell) || 0;
+          if (dealNo && alloc > 0) {
+            buybackByDealBatch[dealNo] = (Number(buybackByDealBatch[dealNo] || 0)) + alloc;
+          }
+        });
+      } else {
+        // Fallback: old source_buy_deal_number + FIFO logic
+        const key = (r.source_buy_deal_number || '').trim();
+        if (key) {
+          const alreadyDeducted = Number(buybackByDealBatch[key] || 0);
+          const sourceDealInfo = buyDealsByIsin[r.leg1_isin]?.find(c => c.deal_number === key);
+          const sourceFV = sourceDealInfo ? sourceDealInfo.face_value : 0;
+          const soldAgainst = Number(soldByDeal[key] || 0);
+          const capacity = Math.max(0, sourceFV - soldAgainst - alreadyDeducted);
+          const directAlloc = Math.min(amount, capacity);
+          if (directAlloc > 0) buybackByDealBatch[key] = alreadyDeducted + directAlloc;
+          const overflow = amount - directAlloc;
+          if (overflow > 0 && r.leg1_isin) {
+            allocateFIFO(r.leg1_isin, overflow, key);
+          }
+        } else if (r.leg1_isin) {
+          allocateFIFO(r.leg1_isin, amount, null);
         }
-      } else if (r.leg1_isin) {
-        allocateFIFO(r.leg1_isin, amount, null);
       }
     });
   }
@@ -652,7 +676,7 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       const placeholders = dealNumbers.map(() => '?').join(',');
       const isinPh = balanceIsins.map(() => '?').join(',');
       let buybackSql = `
-        SELECT source_buy_deal_number, leg1_face_value, leg1_isin
+        SELECT source_buy_deal_number, leg1_face_value, leg1_isin${hasSellDealAllocationsColumn ? ', sell_deal_allocations' : ''}
         FROM buyback_deals
         WHERE`;
       
@@ -696,22 +720,44 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       };
 
       buybackRows.forEach(row => {
-        const key = (row.source_buy_deal_number || '').trim();
         const amount = Number(row.leg1_face_value) || 0;
-        if (key) {
-          const alreadyDeducted = Number(buybackByDeal[key] || 0);
-          const sourceDealInfo = balBuysByIsin[row.leg1_isin]?.find(c => c.deal_number === key);
-          const sourceFV = sourceDealInfo ? sourceDealInfo.face_value : 0;
-          const sold = Number(soldByDeal[key] || 0);
-          const capacity = Math.max(0, sourceFV - sold - alreadyDeducted);
-          const directAlloc = Math.min(amount, capacity);
-          if (directAlloc > 0) buybackByDeal[key] = alreadyDeducted + directAlloc;
-          const overflow = amount - directAlloc;
-          if (overflow > 0 && row.leg1_isin) {
-            allocFIFO2(row.leg1_isin, overflow, key);
+
+        // Prefer precise per-deal allocations stored during deal creation
+        let allocations = null;
+        if (row.sell_deal_allocations) {
+          try {
+            allocations = typeof row.sell_deal_allocations === 'string'
+              ? JSON.parse(row.sell_deal_allocations)
+              : row.sell_deal_allocations;
+          } catch (_) { allocations = null; }
+        }
+
+        if (Array.isArray(allocations) && allocations.length > 0) {
+          allocations.forEach(a => {
+            const dealNo = (a.deal_number || '').trim();
+            const alloc = Number(a.amountToSell) || 0;
+            if (dealNo && alloc > 0) {
+              buybackByDeal[dealNo] = (Number(buybackByDeal[dealNo] || 0)) + alloc;
+            }
+          });
+        } else {
+          // Fallback: old source_buy_deal_number + FIFO logic
+          const key = (row.source_buy_deal_number || '').trim();
+          if (key) {
+            const alreadyDeducted = Number(buybackByDeal[key] || 0);
+            const sourceDealInfo = balBuysByIsin[row.leg1_isin]?.find(c => c.deal_number === key);
+            const sourceFV = sourceDealInfo ? sourceDealInfo.face_value : 0;
+            const sold = Number(soldByDeal[key] || 0);
+            const capacity = Math.max(0, sourceFV - sold - alreadyDeducted);
+            const directAlloc = Math.min(amount, capacity);
+            if (directAlloc > 0) buybackByDeal[key] = alreadyDeducted + directAlloc;
+            const overflow = amount - directAlloc;
+            if (overflow > 0 && row.leg1_isin) {
+              allocFIFO2(row.leg1_isin, overflow, key);
+            }
+          } else if (row.leg1_isin) {
+            allocFIFO2(row.leg1_isin, amount, null);
           }
-        } else if (row.leg1_isin) {
-          allocFIFO2(row.leg1_isin, amount, null);
         }
       });
     }

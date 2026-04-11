@@ -2,7 +2,10 @@ const db = require('../config/db');
 
 let buybackDealsColumnSetPromise = null;
 
-const getBuybackDealsColumnSet = async () => {
+const getBuybackDealsColumnSet = async (forceRefresh = false) => {
+  if (forceRefresh) {
+    buybackDealsColumnSetPromise = null;
+  }
   if (!buybackDealsColumnSetPromise) {
     buybackDealsColumnSetPromise = db
       .query(
@@ -49,11 +52,22 @@ const BuybackDeal = {
   create: async (dealData) => {
     // Some environments might have older buyback schemas.
     // Ensure required INSERT columns exist (idempotent) so create won't crash.
-    const cols = await getBuybackDealsColumnSet();
+    // Force refresh because schema may have changed after process boot.
+    const cols = await getBuybackDealsColumnSet(true);
     const ensureColumnExists = async (column, definition) => {
       if (cols.has(column)) return;
       // Add as NULL-safe columns to avoid breaking existing rows.
-      await db.query(`ALTER TABLE buyback_deals ADD COLUMN ${column} ${definition}`);
+      try {
+        await db.query(`ALTER TABLE buyback_deals ADD COLUMN ${column} ${definition}`);
+      } catch (err) {
+        // Concurrent requests can race on ALTER TABLE; treat duplicate field as success.
+        if (err && err.code === 'ER_DUP_FIELDNAME') {
+          cols.add(column);
+          return;
+        }
+        throw err;
+      }
+      cols.add(column);
     };
 
     const requiredColumnDefinitions = {
@@ -112,7 +126,9 @@ const BuybackDeal = {
       deal_status:
         "ENUM('Draft', 'Pending_Verification', 'Verified', 'Pending_Final_Approval', 'Approved', 'Rejected', 'Settled') NULL DEFAULT 'Draft'",
       created_by: 'INT NULL',
-      notes: 'TEXT NULL'
+      notes: 'TEXT NULL',
+      // Stores JSON array [{deal_number, amountToSell}] for every buy deal selected at creation time
+      sell_deal_allocations: 'JSON NULL'
     };
 
     for (const [column, definition] of Object.entries(requiredColumnDefinitions)) {
@@ -131,8 +147,8 @@ const BuybackDeal = {
       leg2_face_value, leg2_yield_rate, leg2_settlement_amount, leg2_clean_price,
       leg2_dirty_price, leg2_accrued_interest, leg2_currency,
       issue_date, maturity_date, coupon_rate, coupon_date1, coupon_date2,
-      deal_status, created_by, notes, source_buy_deal_number
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+      deal_status, created_by, notes, source_buy_deal_number, sell_deal_allocations
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
     const values = [
       dealData.deal_number,
@@ -158,7 +174,10 @@ const BuybackDeal = {
       dealData.deal_status || 'Pending_Verification',
       dealData.created_by,
       dealData.notes || null,
-      dealData.source_buy_deal_number || null
+      dealData.source_buy_deal_number || null,
+      dealData.sell_deal_allocations != null
+        ? JSON.stringify(dealData.sell_deal_allocations)
+        : null
     ];
 
     const [result] = await db.query(sql, values);

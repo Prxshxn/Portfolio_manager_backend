@@ -118,7 +118,14 @@ const buybackDealController = {
         deal_status: 'Pending_Verification',
         created_by: req.user?.id || 1, // TODO: Get from auth middleware
         notes: req.body.notes || null,
-        source_buy_deal_number: source_buy_deal_number || null
+        source_buy_deal_number: source_buy_deal_number || null,
+        // Persist per-deal allocations so approval can deduct exact amounts from each buy deal
+        sell_deal_allocations: Array.isArray(sellDeals) && sellDeals.length > 0
+          ? sellDeals.map(d => ({
+              deal_number: d.deal_number || d.buy_deal_number,
+              amountToSell: Number(d.amountToSell) || 0
+            }))
+          : null
       };
 
       const result = await BuybackDeal.create(dealData);
@@ -460,72 +467,125 @@ const buybackDealController = {
             // If this is a sell transaction, deduct from original buy deals
             if (buybackDeal.leg1_transaction_type === 'Sell') {
               console.log('Processing face value deduction for approved buyback deal:', buybackDeal.deal_number);
-              
-              const sellAmount = parseFloat(buybackDeal.leg1_face_value || 0);
+
               const isin = buybackDeal.leg1_isin;
               const portfolio = buybackDeal.leg1_portfolio;
-              const sourceBuyDealNumber = buybackDeal.source_buy_deal_number;
-              
-              if (sellAmount > 0 && isin && portfolio) {
-                let buyDeals = [];
-                
-                // If we have a specific source buy deal number, deduct from that deal
-                if (sourceBuyDealNumber) {
-                  console.log(`Deducting from specific buy deal: ${sourceBuyDealNumber}`);
-                  const [specificBuyDeals] = await db.query(`
-                    SELECT * FROM gsec 
-                    WHERE deal_number = ? AND transaction_type = 'Buy' 
-                    AND (remaining_face_value > 0 OR remaining_face_value IS NULL)
-                  `, [sourceBuyDealNumber]);
-                  
-                  if (specificBuyDeals && specificBuyDeals.length > 0) {
-                    buyDeals = specificBuyDeals;
-                    console.log(`Found specific buy deal: ${sourceBuyDealNumber} with remaining: ${specificBuyDeals[0].remaining_face_value}`);
-                  } else {
-                    console.warn(`Specific buy deal ${sourceBuyDealNumber} not found or has no remaining balance`);
+
+              // Parse per-deal allocations saved at deal creation time
+              let allocations = null;
+              if (buybackDeal.sell_deal_allocations) {
+                try {
+                  allocations = typeof buybackDeal.sell_deal_allocations === 'string'
+                    ? JSON.parse(buybackDeal.sell_deal_allocations)
+                    : buybackDeal.sell_deal_allocations;
+                } catch (parseErr) {
+                  console.warn('Failed to parse sell_deal_allocations, falling back to legacy logic:', parseErr.message);
+                }
+              }
+
+              if (allocations && Array.isArray(allocations) && allocations.length > 0) {
+                // --- New path: deduct exact allocated amount from each individual buy deal ---
+                console.log(`Using stored allocations for deduction (${allocations.length} deal(s)):`, allocations);
+
+                for (const alloc of allocations) {
+                  const allocDealNumber = alloc.deal_number;
+                  const allocAmount = parseFloat(alloc.amountToSell || 0);
+
+                  if (!allocDealNumber || allocAmount <= 0) continue;
+
+                  const [rows] = await db.query(
+                    `SELECT id, deal_number, face_value, remaining_face_value
+                     FROM gsec
+                     WHERE deal_number = ? AND transaction_type = 'Buy'
+                     LIMIT 1`,
+                    [allocDealNumber]
+                  );
+
+                  if (!rows || rows.length === 0) {
+                    console.warn(`Buy deal ${allocDealNumber} not found for allocated deduction`);
+                    continue;
                   }
-                }
-                
-                // If no specific deal or specific deal not found, fall back to chronological order
-                if (buyDeals.length === 0) {
-                  console.log('Falling back to chronological order for deduction');
-                  const [chronologicalBuyDeals] = await db.query(`
-                    SELECT * FROM gsec 
-                    WHERE isin_number = ? AND portfolio = ? AND transaction_type = 'Buy' 
-                    AND (remaining_face_value > 0 OR remaining_face_value IS NULL)
-                    ORDER BY created_at ASC
-                  `, [isin, portfolio]);
-                  buyDeals = chronologicalBuyDeals;
-                }
-                
-                console.log(`Found ${buyDeals.length} buy deals for deduction`);
-                
-                let remainingToDeduct = sellAmount;
-                
-                for (const buyDeal of buyDeals) {
-                  if (remainingToDeduct <= 0) break;
-                  
-                  const availableToDeduct = parseFloat(buyDeal.remaining_face_value || buyDeal.face_value || 0);
-                  const deductAmount = Math.min(remainingToDeduct, availableToDeduct);
-                  
-                  if (deductAmount > 0) {
-                    const newRemaining = availableToDeduct - deductAmount;
-                    const truncatedRemaining = Math.trunc(newRemaining * 10000) / 10000;
-                    
-                    // Update the remaining face value
-                    await db.query(
-                      'UPDATE gsec SET remaining_face_value = ? WHERE id = ?', 
-                      [truncatedRemaining.toFixed(4), buyDeal.id]
+
+                  const buyDeal = rows[0];
+                  const available = parseFloat(
+                    buyDeal.remaining_face_value !== null && buyDeal.remaining_face_value !== undefined
+                      ? buyDeal.remaining_face_value
+                      : buyDeal.face_value || 0
+                  );
+                  const deductAmount = Math.min(allocAmount, available);
+                  const newRemaining = Math.trunc((available - deductAmount) * 10000) / 10000;
+
+                  await db.query(
+                    'UPDATE gsec SET remaining_face_value = ? WHERE id = ?',
+                    [newRemaining.toFixed(4), buyDeal.id]
+                  );
+
+                  console.log(
+                    `Deducted ${deductAmount} from buy deal ${allocDealNumber} (id=${buyDeal.id}). New remaining: ${newRemaining}`
+                  );
+
+                  if (allocAmount > available + 0.0001) {
+                    console.warn(
+                      `Allocation for ${allocDealNumber} (${allocAmount}) exceeded available balance (${available}). Deducted max: ${deductAmount}`
                     );
-                    
-                    console.log(`Deducted ${deductAmount} from buy deal ${buyDeal.deal_number}. New remaining: ${truncatedRemaining}`);
-                    
-                    remainingToDeduct -= deductAmount;
                   }
                 }
-                
-                if (remainingToDeduct > 0) {
-                  console.warn(`Could not fully deduct ${remainingToDeduct} from buyback deal ${buybackDeal.deal_number} - insufficient buy deal balances`);
+              } else {
+                // --- Legacy fallback: use source_buy_deal_number or FIFO ---
+                const sellAmount = parseFloat(buybackDeal.leg1_face_value || 0);
+                const sourceBuyDealNumber = buybackDeal.source_buy_deal_number;
+
+                if (sellAmount > 0 && isin && portfolio) {
+                  let buyDeals = [];
+
+                  if (sourceBuyDealNumber) {
+                    console.log(`Legacy: deducting from specific buy deal: ${sourceBuyDealNumber}`);
+                    const [specificBuyDeals] = await db.query(`
+                      SELECT * FROM gsec
+                      WHERE deal_number = ? AND transaction_type = 'Buy'
+                      AND (remaining_face_value > 0 OR remaining_face_value IS NULL)
+                    `, [sourceBuyDealNumber]);
+
+                    if (specificBuyDeals && specificBuyDeals.length > 0) {
+                      buyDeals = specificBuyDeals;
+                    } else {
+                      console.warn(`Specific buy deal ${sourceBuyDealNumber} not found or has no remaining balance`);
+                    }
+                  }
+
+                  if (buyDeals.length === 0) {
+                    console.log('Legacy: falling back to chronological order for deduction');
+                    const [chronologicalBuyDeals] = await db.query(`
+                      SELECT * FROM gsec
+                      WHERE isin_number = ? AND portfolio = ? AND transaction_type = 'Buy'
+                      AND (remaining_face_value > 0 OR remaining_face_value IS NULL)
+                      ORDER BY created_at ASC
+                    `, [isin, portfolio]);
+                    buyDeals = chronologicalBuyDeals;
+                  }
+
+                  let remainingToDeduct = sellAmount;
+
+                  for (const buyDeal of buyDeals) {
+                    if (remainingToDeduct <= 0) break;
+
+                    const availableToDeduct = parseFloat(buyDeal.remaining_face_value || buyDeal.face_value || 0);
+                    const deductAmount = Math.min(remainingToDeduct, availableToDeduct);
+
+                    if (deductAmount > 0) {
+                      const newRemaining = Math.trunc((availableToDeduct - deductAmount) * 10000) / 10000;
+                      await db.query(
+                        'UPDATE gsec SET remaining_face_value = ? WHERE id = ?',
+                        [newRemaining.toFixed(4), buyDeal.id]
+                      );
+                      console.log(`Legacy deducted ${deductAmount} from buy deal ${buyDeal.deal_number}. New remaining: ${newRemaining}`);
+                      remainingToDeduct -= deductAmount;
+                    }
+                  }
+
+                  if (remainingToDeduct > 0) {
+                    console.warn(`Could not fully deduct ${remainingToDeduct} from buyback deal ${buybackDeal.deal_number} - insufficient buy deal balances`);
+                  }
                 }
               }
             }
@@ -712,71 +772,120 @@ const buybackDealController = {
       );
       const hasBuybackDealId = Array.isArray(buybackLinkColRows) && buybackLinkColRows.length > 0;
 
-      // If this approved buyback deducted leg1 sell from source buy deals, restore only that deducted amount.
+      // If this approved buyback deducted from source buy deals, restore those amounts on delete.
       if (buyback.deal_status === 'Approved' && buyback.leg1_transaction_type === 'Sell') {
-        const restoreAmount = parseFloat(buyback.leg1_face_value || 0);
-        const sourceBuyDealNumber = buyback.source_buy_deal_number;
-        const isin = buyback.leg1_isin;
-        const portfolio = buyback.leg1_portfolio;
+        // Parse per-deal allocations stored at creation time
+        let allocations = null;
+        if (buyback.sell_deal_allocations) {
+          try {
+            allocations = typeof buyback.sell_deal_allocations === 'string'
+              ? JSON.parse(buyback.sell_deal_allocations)
+              : buyback.sell_deal_allocations;
+          } catch (parseErr) {
+            console.warn('Failed to parse sell_deal_allocations for restore, using legacy logic:', parseErr.message);
+          }
+        }
 
-        if (restoreAmount > 0 && isin && portfolio) {
-          let candidateBuyDeals = [];
+        if (allocations && Array.isArray(allocations) && allocations.length > 0) {
+          // --- New path: restore exact allocated amount to each buy deal ---
+          console.log(`Restoring allocations for deleted buyback ${buyback.deal_number} (${allocations.length} deal(s))`);
 
-          if (sourceBuyDealNumber) {
-            const [specificRows] = await db.query(
-              `SELECT *
+          for (const alloc of allocations) {
+            const allocDealNumber = alloc.deal_number;
+            const allocAmount = parseFloat(alloc.amountToSell || 0);
+
+            if (!allocDealNumber || allocAmount <= 0) continue;
+
+            const [rows] = await db.query(
+              `SELECT id, deal_number, face_value, remaining_face_value
                FROM gsec
-               WHERE deal_number = ?
-                 AND transaction_type = 'Buy'
-               ORDER BY created_at ASC`,
-              [sourceBuyDealNumber]
+               WHERE deal_number = ? AND transaction_type = 'Buy'
+               LIMIT 1`,
+              [allocDealNumber]
             );
-            if (specificRows && specificRows.length > 0) {
-              candidateBuyDeals = specificRows;
+
+            if (!rows || rows.length === 0) {
+              console.warn(`Buy deal ${allocDealNumber} not found for restore`);
+              continue;
             }
-          }
 
-          if (candidateBuyDeals.length === 0) {
-            const [fifoRows] = await db.query(
-              `SELECT *
-               FROM gsec
-               WHERE isin_number = ?
-                 AND portfolio = ?
-                 AND transaction_type = 'Buy'
-               ORDER BY created_at ASC`,
-              [isin, portfolio]
-            );
-            candidateBuyDeals = fifoRows || [];
-          }
-
-          let remainingToRestore = restoreAmount;
-          for (const buyDeal of candidateBuyDeals) {
-            if (remainingToRestore <= 0) break;
-
+            const buyDeal = rows[0];
             const maxFace = parseFloat(buyDeal.face_value || 0);
-            const currentRemaining = buyDeal.remaining_face_value === null
+            const currentRemaining = buyDeal.remaining_face_value === null || buyDeal.remaining_face_value === undefined
               ? maxFace
               : parseFloat(buyDeal.remaining_face_value || 0);
 
             const roomToRestore = Math.max(0, maxFace - currentRemaining);
-            if (roomToRestore <= 0) continue;
-
-            const addBack = Math.min(remainingToRestore, roomToRestore);
-            const restoredRemaining = currentRemaining + addBack;
-            const truncatedRemaining = Math.trunc(restoredRemaining * 10000) / 10000;
+            const addBack = Math.min(allocAmount, roomToRestore);
+            const restoredRemaining = Math.trunc((currentRemaining + addBack) * 10000) / 10000;
 
             await db.query(
               'UPDATE gsec SET remaining_face_value = ? WHERE id = ?',
-              [truncatedRemaining.toFixed(4), buyDeal.id]
+              [restoredRemaining.toFixed(4), buyDeal.id]
             );
 
-            remainingToRestore -= addBack;
+            console.log(
+              `Restored ${addBack} to buy deal ${allocDealNumber} (id=${buyDeal.id}). New remaining: ${restoredRemaining}`
+            );
           }
+        } else {
+          // --- Legacy fallback: use source_buy_deal_number or FIFO ---
+          const restoreAmount = parseFloat(buyback.leg1_face_value || 0);
+          const sourceBuyDealNumber = buyback.source_buy_deal_number;
+          const isin = buyback.leg1_isin;
+          const portfolio = buyback.leg1_portfolio;
 
-          if (remainingToRestore > 0) {
-            console.warn(
-              `Could not fully restore ${remainingToRestore} for deleted buyback ${buyback.deal_number}`
-            );
+          if (restoreAmount > 0 && isin && portfolio) {
+            let candidateBuyDeals = [];
+
+            if (sourceBuyDealNumber) {
+              const [specificRows] = await db.query(
+                `SELECT * FROM gsec
+                 WHERE deal_number = ? AND transaction_type = 'Buy'
+                 ORDER BY created_at ASC`,
+                [sourceBuyDealNumber]
+              );
+              if (specificRows && specificRows.length > 0) {
+                candidateBuyDeals = specificRows;
+              }
+            }
+
+            if (candidateBuyDeals.length === 0) {
+              const [fifoRows] = await db.query(
+                `SELECT * FROM gsec
+                 WHERE isin_number = ? AND portfolio = ? AND transaction_type = 'Buy'
+                 ORDER BY created_at ASC`,
+                [isin, portfolio]
+              );
+              candidateBuyDeals = fifoRows || [];
+            }
+
+            let remainingToRestore = restoreAmount;
+            for (const buyDeal of candidateBuyDeals) {
+              if (remainingToRestore <= 0) break;
+
+              const maxFace = parseFloat(buyDeal.face_value || 0);
+              const currentRemaining = buyDeal.remaining_face_value === null
+                ? maxFace
+                : parseFloat(buyDeal.remaining_face_value || 0);
+
+              const roomToRestore = Math.max(0, maxFace - currentRemaining);
+              if (roomToRestore <= 0) continue;
+
+              const addBack = Math.min(remainingToRestore, roomToRestore);
+              const restoredRemaining = Math.trunc((currentRemaining + addBack) * 10000) / 10000;
+
+              await db.query(
+                'UPDATE gsec SET remaining_face_value = ? WHERE id = ?',
+                [restoredRemaining.toFixed(4), buyDeal.id]
+              );
+
+              remainingToRestore -= addBack;
+            }
+
+            if (remainingToRestore > 0) {
+              console.warn(`Could not fully restore ${remainingToRestore} for deleted buyback ${buyback.deal_number}`);
+            }
           }
         }
       }
