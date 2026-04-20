@@ -131,7 +131,41 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
     const systemDay = systemDayObj.system_date;
     const deals = await getAllDeals();
     console.log('Deals to process:', deals.length);
+    const db = require('../config/database');
+    let mmPostingEnabled = true;
+    let mmLendingDrId = null;
+    let mmLendingCrId = null;
+    let mmBorrowingDrId = null;
+    let mmBorrowingCrId = null;
+    let mmAlreadyPosted = new Set();
+    try {
+      const mmLendingDrCode = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.MM_LENDING_INTEREST_ASSET);
+      const mmLendingCrCode = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.MM_LENDING_INTEREST_INCOME);
+      const mmBorrowingDrCode = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.MM_BORROWING_INTEREST_EXPENSE);
+      const mmBorrowingCrCode = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.MM_BORROWING_INTEREST_LIABILITY);
+      mmLendingDrId = await resolveAccountIdByCode(db, mmLendingDrCode);
+      mmLendingCrId = await resolveAccountIdByCode(db, mmLendingCrCode);
+      mmBorrowingDrId = await resolveAccountIdByCode(db, mmBorrowingDrCode);
+      mmBorrowingCrId = await resolveAccountIdByCode(db, mmBorrowingCrCode);
+      const [mmAlreadyPostedRows] = await db.query(
+        `SELECT deal_number, description
+         FROM ledger_entries
+         WHERE DATE(entry_date) = DATE(?)
+           AND (description = 'Daily lending interest EOD' OR description = 'Daily borrowing interest EOD')`,
+        [systemDay]
+      );
+      mmAlreadyPosted = new Set(
+        (mmAlreadyPostedRows || []).map((r) => {
+          const kind = r.description === 'Daily lending interest EOD' ? 'lending' : 'borrowing';
+          return `${String(r.deal_number)}:${kind}`;
+        })
+      );
+    } catch (err) {
+      mmPostingEnabled = false;
+      console.warn('MM mappings are not configured. Skipping MM postings this run:', err.message);
+    }
     let postedCount = 0;
+    let mmSkippedAlreadyPosted = 0;
     for (const deal of deals) {
       let amount = Number(deal.per_day_interest);
       if (isNaN(amount) || amount === undefined) {
@@ -161,30 +195,38 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
       }
       const dealTypeLower = deal.deal_type.toLowerCase();
       if (dealTypeLower === 'lending') {
-        const drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.MM_LENDING_INTEREST_ASSET);
-        const crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.MM_LENDING_INTEREST_INCOME);
-        const lr = await postLedgerEntry({
+        if (!mmPostingEnabled) continue;
+        const key = `${String(deal.id)}:lending`;
+        if (mmAlreadyPosted.has(key)) {
+          mmSkippedAlreadyPosted++;
+          continue;
+        }
+        const lr = await postLedgerEntryDirect(db, {
           date: systemDay,
-          dr_account: drAccount,
-          cr_account: crAccount,
+          drAccountId: mmLendingDrId,
+          crAccountId: mmLendingCrId,
           amount,
-          deal_id: deal.id,
-          description: 'Daily lending interest EOD',
+          dealId: deal.id,
+          description: 'Daily lending interest EOD'
         });
         if (!isLedgerPostOk(lr)) {
           console.error('MM lending ledger post failed:', deal.id, lr && lr.error);
           continue;
         }
-      } else if (deal.deal_type === 'borrowing') {
-        const drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.MM_BORROWING_INTEREST_EXPENSE);
-        const crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.MM_BORROWING_INTEREST_LIABILITY);
-        const lr = await postLedgerEntry({
+      } else if (dealTypeLower === 'borrowing') {
+        if (!mmPostingEnabled) continue;
+        const key = `${String(deal.id)}:borrowing`;
+        if (mmAlreadyPosted.has(key)) {
+          mmSkippedAlreadyPosted++;
+          continue;
+        }
+        const lr = await postLedgerEntryDirect(db, {
           date: systemDay,
-          dr_account: drAccount,
-          cr_account: crAccount,
+          drAccountId: mmBorrowingDrId,
+          crAccountId: mmBorrowingCrId,
           amount,
-          deal_id: deal.id,
-          description: 'Daily borrowing interest EOD',
+          dealId: deal.id,
+          description: 'Daily borrowing interest EOD'
         });
         if (!isLedgerPostOk(lr)) {
           console.error('MM borrowing ledger post failed:', deal.id, lr && lr.error);
@@ -194,9 +236,9 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
       
       postedCount++;
     }
+    console.log(`MM posting summary: posted=${postedCount}, already_posted_skipped=${mmSkippedAlreadyPosted}`);
     // GSec per-day accrual posting (recalculate from system date + maturity; same E as Excel PRICE)
     console.log('--- GSec EOD posting block reached ---');
-    const db = require('../config/database');
     const [gsecDeals] = await db.query(
       `SELECT g.id, g.deal_number, g.value_date, g.coupon_interest, g.maturity_date, g.face_value, g.remaining_face_value,
               g.isin_number, g.per_day_accrual,
@@ -428,6 +470,17 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
         [systemDay, systemDay]
       );
       console.log('Repo deals for daily accrual:', repoAccrualDeals.length);
+      const [repoAccrualAlreadyRows] = await db.query(
+        `SELECT deal_number, description
+         FROM ledger_entries
+         WHERE DATE(entry_date) = DATE(?)
+           AND (description LIKE 'Repo Daily Interest Accrual - Deal %'
+                OR description LIKE 'Reverse Repo Daily Interest Accrual - Deal %')`,
+        [systemDay]
+      );
+      const repoAccrualAlready = new Set(
+        (repoAccrualAlreadyRows || []).map((r) => `${String(r.deal_number)}|${String(r.description)}`)
+      );
 
       for (const deal of repoAccrualDeals) {
         try {
@@ -435,6 +488,11 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
           if (isNaN(amount) || amount === 0) continue;
 
           if (deal.deal_type === 'Repo') {
+            const description = `Repo Daily Interest Accrual - Deal ${deal.id}`;
+            const key = `${String(deal.id)}|${description}`;
+            if (repoAccrualAlready.has(key)) {
+              continue;
+            }
             const drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REPO_REVERSE_REPO_ASSET);
             const crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REPO_INTEREST_INCOME);
             const lr = await postLedgerEntry({
@@ -443,14 +501,20 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
               cr_account: crAccount,
               amount,
               deal_id: String(deal.id),
-              description: `Repo Daily Interest Accrual - Deal ${deal.id}`
+              description
             });
             if (!isLedgerPostOk(lr)) {
               console.error('Repo accrual ledger post failed:', deal.id, lr && lr.error);
               continue;
             }
+            repoAccrualAlready.add(key);
             repoAccrualCount++;
           } else if (deal.deal_type === 'Reverse Repo') {
+            const description = `Reverse Repo Daily Interest Accrual - Deal ${deal.id}`;
+            const key = `${String(deal.id)}|${description}`;
+            if (repoAccrualAlready.has(key)) {
+              continue;
+            }
             const drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REVERSE_REPO_INTEREST_EXPENSE);
             const crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REVERSE_REPO_INTEREST_PAYABLE);
             const lr = await postLedgerEntry({
@@ -459,12 +523,13 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
               cr_account: crAccount,
               amount,
               deal_id: String(deal.id),
-              description: `Reverse Repo Daily Interest Accrual - Deal ${deal.id}`
+              description
             });
             if (!isLedgerPostOk(lr)) {
               console.error('Reverse repo accrual ledger post failed:', deal.id, lr && lr.error);
               continue;
             }
+            repoAccrualAlready.add(key);
             repoAccrualCount++;
           }
         } catch (err) {
@@ -490,6 +555,17 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
         [tomorrowStr]
       );
       console.log('Repo deals maturing tomorrow:', maturingRepoDeals.length);
+      const [repoMaturityAlreadyRows] = await db.query(
+        `SELECT deal_number, description
+         FROM ledger_entries
+         WHERE DATE(entry_date) = DATE(?)
+           AND (description LIKE 'Repo Maturity - Deal %'
+                OR description LIKE 'Reverse Repo Maturity - Deal %')`,
+        [systemDay]
+      );
+      const repoMaturityAlready = new Set(
+        (repoMaturityAlreadyRows || []).map((r) => `${String(r.deal_number)}|${String(r.description)}`)
+      );
 
       for (const deal of maturingRepoDeals) {
         try {
@@ -527,6 +603,12 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
             console.warn(`Skipping maturity entry for repo deal ${deal.id}: unsupported deal_type=${deal.deal_type}`);
             continue;
           }
+          const maturityKey = `${String(deal.id)}|${description}`;
+          if (repoMaturityAlready.has(maturityKey)) {
+            // If already posted previously (e.g., prior timed-out attempt), only mark matured.
+            await db.query('UPDATE repo_deals SET matured = 1 WHERE id = ?', [deal.id]);
+            continue;
+          }
 
           const lr = await postLedgerEntry({
             date: systemDay,
@@ -542,6 +624,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
           }
 
           await db.query('UPDATE repo_deals SET matured = 1 WHERE id = ?', [deal.id]);
+          repoMaturityAlready.add(maturityKey);
           repoMaturityCount++;
         } catch (err) {
           console.error('Failed to post repo maturity for deal:', deal.id, err);
