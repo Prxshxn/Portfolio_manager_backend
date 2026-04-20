@@ -662,18 +662,32 @@ const Gsec = {
     // Always calculate buyback deductions (approved sell/buy legs reduce available balance)
     const buybackDeductionsByDeal = {};
     if (dealNumbers.length) {
+      // Detect whether sell_deal_allocations column exists so we can honour
+      // the precise per-deal amounts stored at buyback creation time.
+      let hasSellDealAllocationsColumn = false;
+      try {
+        const [allocCols] = await db.query(`
+          SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME = 'buyback_deals'
+            AND COLUMN_NAME = 'sell_deal_allocations'
+          LIMIT 1
+        `);
+        hasSellDealAllocationsColumn = Array.isArray(allocCols) && allocCols.length > 0;
+      } catch (_) { /* leave false */ }
+
       const modalIsins = [...new Set(rows.map(r => (r.isin || '').trim()).filter(Boolean))];
       const placeholders = dealNumbers.map(() => '?').join(',');
       const isinPh = modalIsins.length ? modalIsins.map(() => '?').join(',') : "'__none__'";
       const effectiveCutoff = asAtDate || new Date().toISOString().split('T')[0];
       let buybackSql = `
-        SELECT source_buy_deal_number, leg1_face_value, leg1_isin
+        SELECT source_buy_deal_number, leg1_face_value, leg1_isin${hasSellDealAllocationsColumn ? ', sell_deal_allocations' : ''}
         FROM buyback_deals
         WHERE leg1_transaction_type = 'Sell'
         AND deal_status = 'Approved'
-        AND DATE(approved_at) <= DATE(?)
+        AND DATE(COALESCE(approved_at, updated_at, created_at)) <= DATE(?)
         AND (source_buy_deal_number IN (${placeholders}) OR (source_buy_deal_number IS NULL AND leg1_isin IN (${isinPh})))
-        ORDER BY approved_at ASC
+        ORDER BY COALESCE(approved_at, updated_at, created_at) ASC
       `;
       const buybackParams = [effectiveCutoff, ...dealNumbers, ...modalIsins];
       
@@ -707,7 +721,36 @@ const Gsec = {
         return remaining;
       };
 
-      buybackRows.forEach(row => {
+      // Two-pass processing (mirrors services/gsecReportService.js):
+      // Pass 1 uses precise per-deal amounts from sell_deal_allocations.
+      // Pass 2 uses source_buy_deal_number + FIFO fallback for rows without allocations.
+      const parseBBAllocs = (r) => {
+        if (!r.sell_deal_allocations) return null;
+        try {
+          const a = typeof r.sell_deal_allocations === 'string'
+            ? JSON.parse(r.sell_deal_allocations)
+            : r.sell_deal_allocations;
+          return Array.isArray(a) && a.length > 0 ? a : null;
+        } catch (_) { return null; }
+      };
+
+      const bbWithAllocs = [];
+      const bbWithoutAllocs = [];
+      for (const row of buybackRows) {
+        (parseBBAllocs(row) ? bbWithAllocs : bbWithoutAllocs).push(row);
+      }
+
+      for (const row of bbWithAllocs) {
+        parseBBAllocs(row).forEach(a => {
+          const dealNo = (a.deal_number || '').trim();
+          const alloc = Number(a.amountToSell) || 0;
+          if (dealNo && alloc > 0) {
+            buybackDeductionsByDeal[dealNo] = (Number(buybackDeductionsByDeal[dealNo] || 0)) + alloc;
+          }
+        });
+      }
+
+      bbWithoutAllocs.forEach(row => {
         const key = (row.source_buy_deal_number || '').trim();
         const amount = Number(row.leg1_face_value) || 0;
         if (key) {

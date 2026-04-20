@@ -6,6 +6,8 @@ const buybackReportService = require('../services/buybackReportService');
 router.get('/', async (req, res) => {
   try {
     const { asAtDate, portfolio, isin, valueDate, maturityDate, format, page = 1, pageSize = 20 } = req.query;
+    const pageNumber = Number(page);
+    const pageSizeNumber = Number(pageSize);
 
     const result = await buybackReportService.getBuybackReport({
       asAtDate,
@@ -13,14 +15,15 @@ router.get('/', async (req, res) => {
       isin,
       valueDate,
       maturityDate,
-      page: Number(page),
-      pageSize: Number(pageSize)
+      // Downloads should not be truncated by pagination defaults.
+      page: format ? undefined : pageNumber,
+      pageSize: format ? undefined : pageSizeNumber
     });
 
     // Handle export formats
     if (format === 'csv' || format === 'excel' || format === 'pdf') {
       const reportExporter = require('../utils/reportExporter');
-      const fileBuffer = await reportExporter.export(format, result.data);
+      const fileBuffer = await reportExporter.exportBuyback(format, result.data);
       res.setHeader('Content-Disposition', `attachment; filename=buyback_report.${format === 'excel' ? 'xlsx' : format}`);
       res.setHeader('Content-Type', reportExporter.getMimeType(format));
       return res.send(fileBuffer);
@@ -31,8 +34,8 @@ router.get('/', async (req, res) => {
       success: true, 
       data: result.data, 
       total: result.total, 
-      page: Number(page), 
-      pageSize: Number(pageSize),
+      page: pageNumber, 
+      pageSize: pageSizeNumber,
       totalPortfolioBalance: result.totalPortfolioBalance
     });
   } catch (error) {
