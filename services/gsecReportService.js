@@ -275,11 +275,11 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     const bbParams = [];
     if (hasTransactionTypeColumn) bbSql += ` AND leg1_transaction_type = 'Sell'`;
     const bbCutoffDate = asAtDate || new Date().toISOString().split('T')[0];
-    bbSql += ` AND DATE(approved_at) <= DATE(?)`; bbParams.push(bbCutoffDate);
+    bbSql += ` AND DATE(COALESCE(approved_at, updated_at, created_at)) <= DATE(?)`; bbParams.push(bbCutoffDate);
     bbSql += ` AND (source_buy_deal_number IN (${ph}) OR (source_buy_deal_number IS NULL AND leg1_isin IN (${isinPh})))`;
     bbParams.push(...allDealNumbers, ...uniqueIsinsForBB);
     if (hasPortfolioColumn && portfolio) { bbSql += ` AND leg1_portfolio = ?`; bbParams.push(portfolio); }
-    bbSql += ` ORDER BY approved_at ASC`;
+    bbSql += ` ORDER BY COALESCE(approved_at, updated_at, created_at) ASC`;
     const [bbRows] = await db.query(bbSql, bbParams);
 
     // Build ISIN → buy deals (FIFO by value_date) for allocating NULL-source buybacks
@@ -417,7 +417,7 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       FROM buyback_deals WHERE leg1_isin IN (${ph}) AND deal_status = 'Approved'`;
     const bbIsinParams = [...uniqueIsins];
     if (hasTransactionTypeColumn) bbIsinSql += ` AND leg1_transaction_type = 'Sell'`;
-    bbIsinSql += ` AND DATE(approved_at) <= DATE(?)`;
+    bbIsinSql += ` AND DATE(COALESCE(approved_at, updated_at, created_at)) <= DATE(?)`;
     bbIsinParams.push(effectiveAsAtDate);
     if (hasPortfolioColumn && portfolio) { bbIsinSql += ' AND leg1_portfolio = ?'; bbIsinParams.push(portfolio); }
     bbIsinSql += ' GROUP BY leg1_isin';
@@ -666,9 +666,9 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       }
       
       buybackSql += ` deal_status = 'Approved'
-        AND DATE(approved_at) <= DATE(?)
+        AND DATE(COALESCE(approved_at, updated_at, created_at)) <= DATE(?)
         AND (source_buy_deal_number IN (${placeholders}) OR (source_buy_deal_number IS NULL AND leg1_isin IN (${isinPh})))
-        ORDER BY approved_at ASC
+        ORDER BY COALESCE(approved_at, updated_at, created_at) ASC
       `;
       const buybackParams = [bbCutoff, ...dealNumbers, ...balanceIsins];
       const [buybackRows] = await db.query(buybackSql, buybackParams);

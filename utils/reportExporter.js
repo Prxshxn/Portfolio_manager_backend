@@ -58,6 +58,22 @@ const PORTFOLIO_EXPORT_COLUMNS = [
   { key: 'currency', label: 'Currency' }
 ];
 
+// Buyback AST report export columns (one row per deal)
+const BUYBACK_EXPORT_COLUMNS = [
+  { key: 'portfolio', label: 'Portfolio' },
+  { key: 'counterparty', label: 'Counterparty' },
+  { key: 'deal_number', label: 'Deal Number' },
+  { key: 'isin', label: 'ISIN' },
+  { key: 'face_value', label: 'Face Value' },
+  { key: 'value_date', label: 'Value Date (1st Leg)' },
+  { key: 'maturity_date', label: 'Maturity Date (2nd Leg)' },
+  { key: 'settlement_value', label: 'Settlement Value' },
+  { key: 'maturity_value', label: 'Maturity Value' },
+  { key: 'rate', label: 'Rate' },
+  { key: 'dtm', label: 'DTM' },
+  { key: 'transaction_type', label: 'Transaction Type' }
+];
+
 // Repo + Reverse Repo report export columns
 const REPO_EXPORT_COLUMNS = [
   { key: 'deal_type', label: 'Deal Type' },
@@ -208,6 +224,37 @@ function preprocessPortfolioExportData(data) {
         } else {
           val = formatNumber2(val);
         }
+      }
+
+      mapped[col.key] = val !== undefined && val !== null ? val : '';
+    });
+
+    return mapped;
+  });
+}
+
+function preprocessBuybackExportData(data) {
+  return (data || []).map(row => {
+    const mapped = {};
+
+    BUYBACK_EXPORT_COLUMNS.forEach(col => {
+      let val = row[col.key];
+
+      if (['value_date', 'maturity_date'].includes(col.key)) {
+        val = formatDate(val);
+      }
+
+      if (['face_value', 'settlement_value', 'maturity_value'].includes(col.key)) {
+        val = formatNumber2(val);
+      }
+
+      if (col.key === 'rate') {
+        val = formatNumber4(val);
+      }
+
+      if (col.key === 'dtm') {
+        const n = parseLocaleNumber(val);
+        val = isNaN(n) ? val : Math.trunc(n).toString();
       }
 
       mapped[col.key] = val !== undefined && val !== null ? val : '';
@@ -520,6 +567,148 @@ exports.exportPortfolio = async (format, data) => {
       doc.rect(startX, y, headerWidth, rowHeight).fillAndStroke('#f0f0f0', '#000000');
       doc.fillColor('#000000').fontSize(9).font('Helvetica-Bold');
 
+      let x = startX;
+      columns.forEach(col => {
+        doc.text(col.label, x + cellPadding, y + 5, {
+          width: col.width - 2 * cellPadding,
+          align: col.align
+        });
+        x += col.width;
+      });
+      return y + rowHeight;
+    }
+
+    function drawRows(startY) {
+      let y = startY;
+      processedData.forEach((row, index) => {
+        if (y + rowHeight > doc.page.height - doc.page.margins.bottom) {
+          doc.addPage();
+          y = drawHeader(doc.page.margins.top);
+        }
+
+        const rowWidth = columns.reduce((sum, col) => sum + col.width, 0);
+        if (index % 2 === 1) {
+          doc.rect(startX, y, rowWidth, rowHeight).fill('#f8f8f8');
+        }
+
+        doc.font('Helvetica').fontSize(8).fillColor('#000000');
+        let x = startX;
+        columns.forEach(col => {
+          const text = row[col.key] !== undefined ? String(row[col.key]) : '';
+          doc.text(text, x + cellPadding, y + 5, {
+            width: col.width - 2 * cellPadding,
+            align: col.align
+          });
+          x += col.width;
+        });
+
+        doc.rect(startX, y, rowWidth, rowHeight).stroke('#cccccc');
+        y += rowHeight;
+      });
+    }
+
+    const headerY = drawHeader(doc.page.margins.top);
+    drawRows(headerY);
+
+    doc.end();
+    return await new Promise(resolve => {
+      doc.on('end', () => {
+        const pdfData = Buffer.concat(buffers);
+        resolve(pdfData);
+      });
+    });
+  }
+
+  throw new Error('Unsupported export format');
+};
+
+// Buyback AST report export (Excel/CSV/PDF) – one row per deal
+exports.exportBuyback = async (format, data) => {
+  const processedData = preprocessBuybackExportData(data);
+
+  if (format === 'csv') {
+    const parser = new Parser({
+      fields: BUYBACK_EXPORT_COLUMNS.map(col => ({ label: col.label, value: col.key }))
+    });
+    return parser.parse(processedData);
+  }
+
+  if (format === 'excel') {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Buyback AST Report');
+    sheet.columns = BUYBACK_EXPORT_COLUMNS.map(col => ({
+      header: col.label,
+      key: col.key
+    }));
+
+    const numeric2dpKeys = new Set(['face_value', 'settlement_value', 'maturity_value']);
+    const numeric4dpKeys = new Set(['rate']);
+    const intKeys = new Set(['dtm']);
+
+    const excelRows = processedData.map(row => {
+      const next = { ...row };
+      for (const k of numeric2dpKeys) next[k] = toExcelNumber(next[k]);
+      for (const k of numeric4dpKeys) next[k] = toExcelNumber(next[k]);
+      for (const k of intKeys) {
+        const n = toExcelNumber(next[k]);
+        next[k] = n === null ? null : Math.trunc(n);
+      }
+      return next;
+    });
+
+    sheet.addRows(excelRows);
+
+    for (const k of numeric2dpKeys) {
+      const col = sheet.getColumn(k);
+      if (col) col.numFmt = '#,##0.00';
+    }
+    for (const k of numeric4dpKeys) {
+      const col = sheet.getColumn(k);
+      if (col) col.numFmt = '#,##0.0000';
+    }
+    for (const k of intKeys) {
+      const col = sheet.getColumn(k);
+      if (col) col.numFmt = '0';
+    }
+
+    return workbook.xlsx.writeBuffer();
+  }
+
+  if (format === 'pdf') {
+    const doc = new PDFDocument({ margin: 30, size: 'A4', layout: 'landscape' });
+    const buffers = [];
+    doc.on('data', buffers.push.bind(buffers));
+    doc.on('end', () => {});
+
+    doc.fontSize(20).font('Helvetica-Bold').text('Buyback AST Report', { align: 'center' });
+    doc.moveDown(1);
+
+    const columns = BUYBACK_EXPORT_COLUMNS.map(col => ({
+      key: col.key,
+      label: col.label,
+      width: ['portfolio', 'counterparty', 'deal_number', 'isin'].includes(col.key) ? 90 : 75,
+      align: ['face_value', 'settlement_value', 'maturity_value', 'rate', 'dtm'].includes(col.key)
+        ? 'right'
+        : 'left'
+    }));
+
+    const maxWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+    const totalWidth = columns.reduce((sum, col) => sum + col.width, 0);
+    if (totalWidth > maxWidth) {
+      const scale = maxWidth / totalWidth;
+      columns.forEach(col => {
+        col.width = Math.floor(col.width * scale);
+      });
+    }
+
+    const rowHeight = 20;
+    const cellPadding = 4;
+    const startX = doc.page.margins.left;
+
+    function drawHeader(y) {
+      const headerWidth = columns.reduce((sum, col) => sum + col.width, 0);
+      doc.rect(startX, y, headerWidth, rowHeight).fillAndStroke('#f0f0f0', '#000000');
+      doc.fillColor('#000000').fontSize(8).font('Helvetica-Bold');
       let x = startX;
       columns.forEach(col => {
         doc.text(col.label, x + cellPadding, y + 5, {
