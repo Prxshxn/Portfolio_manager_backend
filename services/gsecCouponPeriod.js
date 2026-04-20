@@ -60,7 +60,10 @@ function getCouponPeriodLengthDays(settlementDate, maturityDate, frequency = 2) 
  */
 const ISIN_COUPON_SCHEDULE_OVERRIDE = {
   LKB00931E153: { coupon_date_1: '11-01', coupon_date_2: '05-01' },
-  LKB01534I155: { coupon_date_1: '10-15', coupon_date_2: '04-15' },
+  // Finance policy: LKB01534I155 must use coupon dates 15-Mar / 15-Sep (E=184).
+  // The maturity is 2034-09-15 and the maturity-based rollback gives 15-Mar / 15-Sep.
+  // We pin it explicitly so the value cannot regress if isin_master ever drifts.
+  LKB01534I155: { coupon_date_1: '03-15', coupon_date_2: '09-15' },
   LKB00529L150: { coupon_date_1: '12-15', coupon_date_2: '06-15' }
 };
 

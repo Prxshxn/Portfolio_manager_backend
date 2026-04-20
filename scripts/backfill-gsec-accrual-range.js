@@ -10,6 +10,7 @@
  *   node scripts/backfill-gsec-accrual-range.js --execute              # actually post
  *   node scripts/backfill-gsec-accrual-range.js --from=2026-04-05
  *   node scripts/backfill-gsec-accrual-range.js --deals=20251111/GSEC/0001,20251028/GSEC/0002
+ *   node scripts/backfill-gsec-accrual-range.js --to=2026-04-16          # override end date (default: system day)
  *   node scripts/backfill-gsec-accrual-range.js --execute --from=2026-04-01 --deals=20251111/GSEC/0001
  */
 
@@ -42,26 +43,31 @@ function parseArgs() {
   const args = process.argv.slice(2);
   const execute = args.includes('--execute');
   let from = DEFAULT_FROM;
+  let to = null;
   let dealFilter = null;
   for (const a of args) {
     if (a.startsWith('--from=')) {
       from = a.slice('--from='.length).trim();
     }
+    if (a.startsWith('--to=')) {
+      to = a.slice('--to='.length).trim();
+    }
     if (a.startsWith('--deals=')) {
       dealFilter = a.slice('--deals='.length).trim().split(',').map(s => s.trim()).filter(Boolean);
     }
   }
-  return { execute, from, dealFilter };
+  return { execute, from, to, dealFilter };
 }
 
 async function main() {
-  const { execute, from, dealFilter } = parseArgs();
+  const { execute, from, to, dealFilter } = parseArgs();
 
   const sd = await getSystemDay();
   const systemDay = (sd && sd.system_date && toYmd(sd.system_date)) || new Date().toISOString().slice(0, 10);
+  const endDate = to || systemDay;
 
   console.log(`=== GSec Accrual Range Backfill ===`);
-  console.log(`from=${from}  systemDay=${systemDay}  execute=${execute}  deals=${dealFilter ? dealFilter.join(',') : 'all'}\n`);
+  console.log(`from=${from}  to=${endDate}  systemDay=${systemDay}  execute=${execute}  deals=${dealFilter ? dealFilter.join(',') : 'all'}\n`);
 
   let sql = `
     SELECT g.id, g.deal_number, g.value_date, g.coupon_interest, g.maturity_date,
@@ -104,8 +110,8 @@ async function main() {
     }
 
     const startDate = valueDate > from ? valueDate : from;
-    if (startDate > systemDay) {
-      console.log(`SKIP ${deal.deal_number}: start date ${startDate} > system day ${systemDay}`);
+    if (startDate > endDate) {
+      console.log(`SKIP ${deal.deal_number}: start date ${startDate} > end date ${endDate}`);
       continue;
     }
 
@@ -129,7 +135,7 @@ async function main() {
     let dealAmount = 0;
     let currentDate = startDate;
 
-    while (currentDate <= systemDay) {
+    while (currentDate <= endDate) {
       if (currentDate > maturityDate) break;
 
       if (postedDates.has(currentDate)) {
@@ -171,7 +177,7 @@ async function main() {
     const alreadyLabel = dealSkipped > 0 ? `  already_posted=${dealSkipped}` : '';
     const failLabel = dealFailed > 0 ? `  FAILED=${dealFailed}` : '';
     console.log(
-      `${deal.deal_number}  value_date=${valueDate}  range=${startDate}..${systemDay}` +
+      `${deal.deal_number}  value_date=${valueDate}  range=${startDate}..${endDate}` +
       `  ${execute ? 'posted' : 'would_post'}=${dealPosted}${alreadyLabel}${failLabel}` +
       `  amount=${dealAmount.toFixed(8)}`
     );

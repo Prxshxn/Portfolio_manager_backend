@@ -86,15 +86,6 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     // Add ordering
     sql += ` ORDER BY g.isin_number, g.maturity_date, g.id`;
 
-    // Pagination - only apply if page and pageSize are provided
-    if (page && pageSize) {
-      const pageSizeNum = parseInt(pageSize, 10);
-      const pageNum = parseInt(page, 10);
-      const offset = (pageNum - 1) * pageSizeNum;
-      sql += ' LIMIT ? OFFSET ?';
-      params.push(pageSizeNum, offset);
-    }
-
     console.log(`[GSEC Report] SQL Query: ${sql}`);
     console.log(`[GSEC Report] Params:`, params);
 
@@ -453,8 +444,11 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
   // This ensures NVP is calculated to the asAtDate (historical date) when viewing past reports
   const valueDateForNVP = asAtDate || new Date().toISOString().split('T')[0];
 
+  // Hide deals that have zero remaining face value as at report date.
+  const visibleRows = rows.filter(row => Number(row.remaining_face_value_report ?? row.face_value ?? 0) > 0);
+
   // Format results
-  const data = rows.map(row => {
+  const data = visibleRows.map(row => {
     const maturityDateObj = safeParseISO(row.maturity_date);
     const asAtDateObj = safeParseISO(asAtDate);
     let dtm = '';
@@ -517,26 +511,6 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       transaction_type: row.transaction_type || ''
     };
   });
-
-  // Get total count for pagination - only count Buy transactions
-  let countParams = [];
-  if (portfolio) countParams.push(portfolio);
-  if (isin) countParams.push(isin);
-  if (valueDate) countParams.push(valueDate);
-  if (maturityDate) countParams.push(maturityDate);
-  if (asAtDate) countParams.push(asAtDate);
-  
-  // Count query - only Buy transactions from GSEC
-  let countSql = `SELECT COUNT(*) as count FROM gsec g 
-    LEFT JOIN isin_master im ON g.isin_number COLLATE utf8mb4_unicode_ci = im.isin_number COLLATE utf8mb4_unicode_ci
-    WHERE g.transaction_type = 'Buy'` +
-    (portfolio ? ' AND g.portfolio = ?' : '') +
-    (isin ? ' AND g.isin_number = ?' : '') +
-    (valueDate ? ' AND g.value_date = ?' : '') +
-    (maturityDate ? ' AND g.maturity_date = ?' : '') +
-    (asAtDate ? ' AND g.value_date <= ?' : '');
-  
-  const [[{ count }]] = await db.query(countSql, countParams);
 
   // Calculate total portfolio balance when portfolio filter is applied
   let totalPortfolioBalance = null;
@@ -791,7 +765,16 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     console.log(`Portfolio ${portfolio} total balance: ${totalPortfolioBalance}`);
   }
 
-  return { data, total: count, totalPortfolioBalance };
+  const total = data.length;
+  let paginatedData = data;
+  if (page && pageSize) {
+    const pageSizeNum = parseInt(pageSize, 10);
+    const pageNum = parseInt(page, 10);
+    const offset = (pageNum - 1) * pageSizeNum;
+    paginatedData = data.slice(offset, offset + pageSizeNum);
+  }
+
+  return { data: paginatedData, total, totalPortfolioBalance };
   } catch (error) {
     console.error('[GSEC Report Service] Error:', error);
     console.error('[GSEC Report Service] Error message:', error.message);
