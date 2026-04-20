@@ -89,6 +89,7 @@ const BuybackDeal = {
       leg1_brokerage: 'DECIMAL(8,4) NULL DEFAULT 0.0000',
       leg1_interest_rate: 'DECIMAL(8,4) NULL DEFAULT 0.0000',
       leg1_face_value: 'DECIMAL(18,2) NULL',
+      leg1_adjusted_face_value: 'DECIMAL(18,2) NULL',
       leg1_yield_rate: 'DECIMAL(10,6) NULL',
       leg1_settlement_amount: 'DECIMAL(18,2) NULL',
       leg1_clean_price: 'DECIMAL(10,4) NULL',
@@ -108,6 +109,7 @@ const BuybackDeal = {
       leg2_custodian: 'VARCHAR(100) NULL',
       leg2_settlement_mode: "ENUM('RTGS', 'CEFT', 'SLIPS', 'Cheque', 'Other') NULL DEFAULT 'RTGS'",
       leg2_face_value: 'DECIMAL(18,2) NULL',
+      leg2_adjusted_face_value: 'DECIMAL(18,2) NULL',
       leg2_yield_rate: 'DECIMAL(10,6) NULL',
       leg2_settlement_amount: 'DECIMAL(18,2) NULL',
       leg2_clean_price: 'DECIMAL(10,4) NULL',
@@ -135,20 +137,20 @@ const BuybackDeal = {
       await ensureColumnExists(column, definition);
     }
 
-    const sql = `INSERT INTO buyback_deals (
+    const insertColumnsSql = `INSERT INTO buyback_deals (
       deal_number,
       leg1_trade_date, leg1_value_date, leg1_transaction_type, leg1_trade_type, leg1_isin,
       leg1_counterparty, leg1_broker, leg1_portfolio, leg1_strategy, leg1_custodian,
-      leg1_settlement_mode, leg1_brokerage, leg1_interest_rate, leg1_face_value,
+      leg1_settlement_mode, leg1_brokerage, leg1_interest_rate, leg1_face_value, leg1_adjusted_face_value,
       leg1_yield_rate, leg1_settlement_amount, leg1_clean_price, leg1_dirty_price,
       leg1_accrued_interest, leg1_currency,
       leg2_trade_date, leg2_value_date, leg2_transaction_type, leg2_trade_type, leg2_isin,
       leg2_counterparty, leg2_portfolio, leg2_strategy, leg2_custodian, leg2_settlement_mode,
-      leg2_face_value, leg2_yield_rate, leg2_settlement_amount, leg2_clean_price,
+      leg2_face_value, leg2_adjusted_face_value, leg2_yield_rate, leg2_settlement_amount, leg2_clean_price,
       leg2_dirty_price, leg2_accrued_interest, leg2_currency,
       issue_date, maturity_date, coupon_rate, coupon_date1, coupon_date2,
       deal_status, created_by, notes, source_buy_deal_number, sell_deal_allocations
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+    )`;
 
     const values = [
       dealData.deal_number,
@@ -157,14 +159,14 @@ const BuybackDeal = {
       dealData.leg1.tradeType, dealData.leg1.isin, dealData.leg1.counterparty,
       dealData.leg1.broker, dealData.leg1.portfolio, dealData.leg1.strategy,
       dealData.leg1.custodian, dealData.leg1.settlementMode, dealData.leg1.brokerage,
-      dealData.leg1.interestRate, dealData.leg1.faceValue, dealData.leg1.yield,
+      dealData.leg1.interestRate, dealData.leg1.faceValue, dealData.leg1.adjustedFaceValue, dealData.leg1.yield,
       dealData.leg1.settlementAmount, dealData.leg1.cleanPrice, dealData.leg1.dirtyPrice,
       dealData.leg1.accruedInterest, dealData.leg1.currency,
       // Leg 2
       dealData.leg2.tradeDate, dealData.leg2.valueDate, dealData.leg2.transactionType,
       dealData.leg2.tradeType, dealData.leg2.isin, dealData.leg2.counterparty,
       dealData.leg2.portfolio, dealData.leg2.strategy, dealData.leg2.custodian,
-      dealData.leg2.settlementMode, dealData.leg2.faceValue, dealData.leg2.yield,
+      dealData.leg2.settlementMode, dealData.leg2.faceValue, dealData.leg2.adjustedFaceValue, dealData.leg2.yield,
       dealData.leg2.settlementAmount, dealData.leg2.cleanPrice, dealData.leg2.dirtyPrice,
       dealData.leg2.accruedInterest, dealData.leg2.currency,
       // ISIN metadata
@@ -180,6 +182,8 @@ const BuybackDeal = {
         : null
     ];
 
+    const placeholders = new Array(values.length).fill('?').join(', ');
+    const sql = `${insertColumnsSql} VALUES (${placeholders})`;
     const [result] = await db.query(sql, values);
     return result;
   },
@@ -236,11 +240,11 @@ const BuybackDeal = {
       leg1_trade_date = ?, leg1_value_date = ?, leg1_transaction_type = ?, leg1_isin = ?,
       leg1_counterparty = ?, leg1_broker = ?, leg1_portfolio = ?, leg1_strategy = ?,
       leg1_custodian = ?, leg1_settlement_mode = ?, leg1_brokerage = ?, leg1_interest_rate = ?,
-      leg1_face_value = ?, leg1_yield_rate = ?, leg1_settlement_amount = ?, leg1_clean_price = ?,
+      leg1_face_value = ?, leg1_adjusted_face_value = ?, leg1_yield_rate = ?, leg1_settlement_amount = ?, leg1_clean_price = ?,
       leg1_dirty_price = ?, leg1_accrued_interest = ?,
       leg2_trade_date = ?, leg2_value_date = ?, leg2_transaction_type = ?, leg2_isin = ?,
       leg2_counterparty = ?, leg2_portfolio = ?, leg2_strategy = ?, leg2_custodian = ?,
-      leg2_settlement_mode = ?, leg2_face_value = ?, leg2_yield_rate = ?, leg2_settlement_amount = ?,
+      leg2_settlement_mode = ?, leg2_face_value = ?, leg2_adjusted_face_value = ?, leg2_yield_rate = ?, leg2_settlement_amount = ?,
       leg2_clean_price = ?, leg2_dirty_price = ?, leg2_accrued_interest = ?,
       notes = ?, deal_status = ?,
       approved_at = CASE
@@ -256,13 +260,13 @@ const BuybackDeal = {
       dealData.leg1.isin, dealData.leg1.counterparty, dealData.leg1.broker,
       dealData.leg1.portfolio, dealData.leg1.strategy, dealData.leg1.custodian,
       dealData.leg1.settlementMode, dealData.leg1.brokerage, dealData.leg1.interestRate,
-      dealData.leg1.faceValue, dealData.leg1.yield, dealData.leg1.settlementAmount,
+      dealData.leg1.faceValue, dealData.leg1.adjustedFaceValue, dealData.leg1.yield, dealData.leg1.settlementAmount,
       dealData.leg1.cleanPrice, dealData.leg1.dirtyPrice, dealData.leg1.accruedInterest,
       // Leg 2
       dealData.leg2.tradeDate, dealData.leg2.valueDate, dealData.leg2.transactionType,
       dealData.leg2.isin, dealData.leg2.counterparty, dealData.leg2.portfolio,
       dealData.leg2.strategy, dealData.leg2.custodian, dealData.leg2.settlementMode,
-      dealData.leg2.faceValue, dealData.leg2.yield, dealData.leg2.settlementAmount,
+      dealData.leg2.faceValue, dealData.leg2.adjustedFaceValue, dealData.leg2.yield, dealData.leg2.settlementAmount,
       dealData.leg2.cleanPrice, dealData.leg2.dirtyPrice, dealData.leg2.accruedInterest,
       // Other
       dealData.notes,
