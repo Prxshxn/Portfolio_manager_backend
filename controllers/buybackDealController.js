@@ -82,6 +82,7 @@ const buybackDealController = {
           brokerage: sanitizeNumeric(leg1.brokerage) || 0,
           interestRate: sanitizeNumeric(leg1.interestRate) || 0,
           faceValue: sanitizeNumeric(leg1.faceValue),
+          adjustedFaceValue: sanitizeNumeric(leg1.adjustedFaceValue),
           yield: sanitizeNumeric(leg1.yield),
           settlementAmount: sanitizeNumeric(leg1.settlementAmount),
           cleanPrice: sanitizeNumeric(leg1.cleanPrice),
@@ -101,6 +102,7 @@ const buybackDealController = {
           custodian: leg2.custodian,
           settlementMode: leg2.settlementMode,
           faceValue: sanitizeNumeric(leg2.faceValue),
+          adjustedFaceValue: sanitizeNumeric(leg2.adjustedFaceValue),
           yield: sanitizeNumeric(leg2.yield),
           settlementAmount: sanitizeNumeric(leg2.settlementAmount),
           cleanPrice: sanitizeNumeric(leg2.cleanPrice),
@@ -276,7 +278,12 @@ const buybackDealController = {
           const [buybackDeals] = await db.query('SELECT * FROM buyback_deals WHERE id = ?', [id]);
           if (buybackDeals && buybackDeals.length > 0) {
             const bb = buybackDeals[0];
-            if (bb.leg2_transaction_type === 'Buy' && bb.leg2_isin && bb.leg2_face_value) {
+            const bbLeg2EffectiveFace = parseFloat(
+              bb.leg2_adjusted_face_value !== null && bb.leg2_adjusted_face_value !== undefined
+                ? bb.leg2_adjusted_face_value
+                : bb.leg2_face_value
+            );
+            if (bb.leg2_transaction_type === 'Buy' && bb.leg2_isin && bbLeg2EffectiveFace > 0) {
               const [gsecRows] = hasBuybackDealId
                 ? await db.query(
                     `SELECT id, deal_number FROM gsec
@@ -297,7 +304,7 @@ const buybackDealController = {
                        AND status = 'final_approved'
                      ORDER BY created_at DESC
                      LIMIT 1`,
-                    [bb.leg2_isin, bb.leg2_face_value, bb.leg2_value_date, bb.leg2_portfolio]
+                    [bb.leg2_isin, bbLeg2EffectiveFace, bb.leg2_value_date, bb.leg2_portfolio]
                   );
               if (gsecRows && gsecRows.length > 0) {
                 const gsecId = gsecRows[0].id;
@@ -324,9 +331,14 @@ const buybackDealController = {
           const [buybackDeals] = await db.query('SELECT * FROM buyback_deals WHERE id = ?', [id]);
           if (buybackDeals && buybackDeals.length > 0) {
             const buybackDeal = buybackDeals[0];
+            const leg2EffectiveFace = parseFloat(
+              buybackDeal.leg2_adjusted_face_value !== null && buybackDeal.leg2_adjusted_face_value !== undefined
+                ? buybackDeal.leg2_adjusted_face_value
+                : buybackDeal.leg2_face_value
+            ) || 0;
 
             // Create GSec only at final authorization for leg2 Buy, with duplicate guard
-            if (buybackDeal.leg2_transaction_type === 'Buy') {
+            if (buybackDeal.leg2_transaction_type === 'Buy' && leg2EffectiveFace > 0) {
               const [existing] = hasBuybackDealId
                 ? await db.query(
                     `SELECT id, deal_number FROM gsec
@@ -349,7 +361,7 @@ const buybackDealController = {
                      LIMIT 1`,
                     [
                       buybackDeal.leg2_isin,
-                      buybackDeal.leg2_face_value,
+                      leg2EffectiveFace,
                       buybackDeal.leg2_value_date,
                       buybackDeal.leg2_portfolio
                     ]
@@ -389,7 +401,7 @@ const buybackDealController = {
 
                   const couponRate = buybackDeal.coupon_rate || isin.coupon_rate || 0;
                   const couponInterest =
-                    (parseFloat(buybackDeal.leg2_face_value || 0) * parseFloat(couponRate || 0)) / 100;
+                    (leg2EffectiveFace * parseFloat(couponRate || 0)) / 100;
 
                   let numberOfDaysInterestAccrued = null;
                   let numberOfDaysForCouponPeriod = null;
@@ -408,7 +420,7 @@ const buybackDealController = {
                     broker: buybackDeal.leg1_broker || null,
                     dealNumber: null,
                     isin: buybackDeal.leg2_isin,
-                    faceValue: buybackDeal.leg2_face_value,
+                    faceValue: leg2EffectiveFace,
                     valueDate: buybackDeal.leg2_value_date,
                     nextCouponDate: nextCouponDate,
                     lastCouponDate: lastCouponDate,
@@ -532,7 +544,11 @@ const buybackDealController = {
                 }
               } else {
                 // --- Legacy fallback: use source_buy_deal_number or FIFO ---
-                const sellAmount = parseFloat(buybackDeal.leg1_face_value || 0);
+                const sellAmount = parseFloat(
+                  buybackDeal.leg1_adjusted_face_value !== null && buybackDeal.leg1_adjusted_face_value !== undefined
+                    ? buybackDeal.leg1_adjusted_face_value
+                    : buybackDeal.leg1_face_value || 0
+                );
                 const sourceBuyDealNumber = buybackDeal.source_buy_deal_number;
 
                 if (sellAmount > 0 && isin && portfolio) {
@@ -695,6 +711,7 @@ const buybackDealController = {
           brokerage: leg1.brokerage || 0,
           interestRate: leg1.interestRate || 0,
           faceValue: leg1.faceValue,
+          adjustedFaceValue: leg1.adjustedFaceValue,
           yield: leg1.yield,
           settlementAmount: leg1.settlementAmount,
           cleanPrice: leg1.cleanPrice,
@@ -712,6 +729,7 @@ const buybackDealController = {
           custodian: leg2.custodian,
           settlementMode: leg2.settlementMode,
           faceValue: leg2.faceValue,
+          adjustedFaceValue: leg2.adjustedFaceValue,
           yield: leg2.yield,
           settlementAmount: leg2.settlementAmount,
           cleanPrice: leg2.cleanPrice,
@@ -830,7 +848,11 @@ const buybackDealController = {
           }
         } else {
           // --- Legacy fallback: use source_buy_deal_number or FIFO ---
-          const restoreAmount = parseFloat(buyback.leg1_face_value || 0);
+          const restoreAmount = parseFloat(
+            buyback.leg1_adjusted_face_value !== null && buyback.leg1_adjusted_face_value !== undefined
+              ? buyback.leg1_adjusted_face_value
+              : buyback.leg1_face_value || 0
+          );
           const sourceBuyDealNumber = buyback.source_buy_deal_number;
           const isin = buyback.leg1_isin;
           const portfolio = buyback.leg1_portfolio;
@@ -892,6 +914,11 @@ const buybackDealController = {
 
       // Remove/cancel auto-created leg2 GSec created for this buyback so it won't remain orphaned.
       if (buyback.leg2_transaction_type === 'Buy') {
+        const leg2EffectiveFace = parseFloat(
+          buyback.leg2_adjusted_face_value !== null && buyback.leg2_adjusted_face_value !== undefined
+            ? buyback.leg2_adjusted_face_value
+            : buyback.leg2_face_value
+        ) || 0;
         if (hasBuybackDealId) {
           await db.query(
             `DELETE FROM gsec
@@ -909,7 +936,7 @@ const buybackDealController = {
                AND portfolio = ?`,
             [
               buyback.leg2_isin,
-              buyback.leg2_face_value,
+              leg2EffectiveFace,
               buyback.leg2_value_date,
               buyback.leg2_portfolio
             ]
