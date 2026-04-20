@@ -24,6 +24,31 @@ function isLedgerPostOk(result) {
   return result && result.success === true;
 }
 
+async function resolveAccountIdByCode(db, accountCode) {
+  const [rows] = await db.query(
+    'SELECT id FROM chart_of_accounts WHERE account_code = ? LIMIT 1',
+    [accountCode]
+  );
+  if (!rows || rows.length === 0) {
+    throw new Error(`Account code not found in chart_of_accounts: ${accountCode}`);
+  }
+  return rows[0].id;
+}
+
+async function postLedgerEntryDirect(db, { date, drAccountId, crAccountId, amount, dealId, description }) {
+  await db.query(
+    `INSERT INTO ledger_entries (entry_date, account_id, debit_amount, credit_amount, deal_number, description, currency)
+     VALUES (?, ?, ?, 0, ?, ?, ?)`,
+    [date, drAccountId, amount, String(dealId), description, 'LKR']
+  );
+  await db.query(
+    `INSERT INTO ledger_entries (entry_date, account_id, debit_amount, credit_amount, deal_number, description, currency)
+     VALUES (?, ?, 0, ?, ?, ?, ?)`,
+    [date, crAccountId, amount, String(dealId), description, 'LKR']
+  );
+  return { success: true };
+}
+
 // POST /api/money-market/ledger-post
 router.post('/ledger-post', checkAuth, checkAdmin, async (req, res) => {
   try {
@@ -187,8 +212,21 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
               OR im.coupon_rate IS NOT NULL AND im.coupon_rate > 0)`,
       [systemDay, systemDay]
     );
-    console.log('GSec deals to post:', gsecDeals.length, gsecDeals);
+    console.log('GSec deals to post:', gsecDeals.length);
+    const gsecDrAccountCode = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_ACCRUAL_ASSET);
+    const gsecCrAccountCode = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_ACCRUAL_INCOME);
+    const gsecDrAccountId = await resolveAccountIdByCode(db, gsecDrAccountCode);
+    const gsecCrAccountId = await resolveAccountIdByCode(db, gsecCrAccountCode);
+    const [alreadyPostedRows] = await db.query(
+      `SELECT DISTINCT deal_number
+       FROM ledger_entries
+       WHERE DATE(entry_date) = DATE(?)
+         AND description LIKE 'GSec Daily Accrual for Deal %'`,
+      [systemDay]
+    );
+    const alreadyPostedDeals = new Set((alreadyPostedRows || []).map((r) => String(r.deal_number)));
     let gsecPostedCount = 0;
+    let gsecSkippedAlreadyPosted = 0;
     for (const deal of gsecDeals) {
       try {
         // Defense in depth (SQL already filters): value date must be on or before system day
@@ -216,34 +254,39 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
           continue;
         }
         const { amount, E } = computed;
-        console.log('Posting GSec ledger for deal:', deal.deal_number, amount, 'E=', E, 'isin=', deal.isin_number);
-        const drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_ACCRUAL_ASSET);
-        const crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_ACCRUAL_INCOME);
-        const lr = await postLedgerEntry({
-          date: systemDay,
-          dr_account: drAccount,
-          cr_account: crAccount,
-          amount,
-          deal_id: deal.deal_number,
-          description: `GSec Daily Accrual for Deal ${deal.deal_number}`
-        });
-        if (!isLedgerPostOk(lr)) {
-          console.error(
-            'GSec accrual ledger post failed; gsec row not updated:',
-            deal.deal_number,
-            lr && lr.error
-          );
-          continue;
+        if (alreadyPostedDeals.has(String(deal.deal_number))) {
+          gsecSkippedAlreadyPosted++;
+        } else {
+          const lr = await postLedgerEntryDirect(db, {
+            date: systemDay,
+            drAccountId: gsecDrAccountId,
+            crAccountId: gsecCrAccountId,
+            amount,
+            dealId: deal.deal_number,
+            description: `GSec Daily Accrual for Deal ${deal.deal_number}`
+          });
+          if (!isLedgerPostOk(lr)) {
+            console.error(
+              'GSec accrual ledger post failed; gsec row not updated:',
+              deal.deal_number,
+              lr && lr.error
+            );
+            continue;
+          }
+          alreadyPostedDeals.add(String(deal.deal_number));
+          gsecPostedCount++;
         }
         await db.query(
           `UPDATE gsec SET per_day_accrual = ?, number_of_days_for_coupon_period = ? WHERE id = ?`,
           [amount, E, deal.id]
         );
-        gsecPostedCount++;
       } catch (err) {
         console.error('Failed to post GSec ledger for deal:', deal.deal_number, err);
       }
     }
+    console.log(
+      `GSec posting summary: posted=${gsecPostedCount}, already_posted_skipped=${gsecSkippedAlreadyPosted}`
+    );
 
     // Clear per_day_accrual for Buy deals whose value date is still in the future (or was posted before this rule)
     await db.query(
