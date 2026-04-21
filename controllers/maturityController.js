@@ -558,7 +558,7 @@ async function getMaturitiesWithApprovalLevel(db, productType, date) {
       principalField = 'g.face_value';
       interestField = 'g.accrued_interest';
       maturityField = 'g.settlement_amount';
-      counterpartyField = 'g.counterparty';
+      counterpartyField = "COALESCE(corp.short_name, ind.short_name, joint.short_name, CONCAT('ID:', g.counterparty_id))";
       break;
     case 'repo':
       tableName = 'repo_deals';
@@ -581,7 +581,7 @@ async function getMaturitiesWithApprovalLevel(db, productType, date) {
       ${interestField} as interest_amount,
       ${maturityField} as maturity_value,
       ${counterpartyField} as counterparty_name,
-      ${tableName === 'gsec' ? 'g.isin' : 'NULL'} as isin,
+      ${tableName === 'gsec' ? 'g.isin_number' : 'NULL'} as isin,
       ${productType === 'money_market' ? 'mmd.maturity_date' : productType === 'gsec' ? 'g.maturity_date' : 'rd.maturity_date'},
       DATEDIFF(${productType === 'money_market' ? 'mmd.maturity_date' : productType === 'gsec' ? 'g.maturity_date' : 'rd.maturity_date'}, CURDATE()) as days_to_maturity,
       ${productType === 'money_market' ? 'mmd.status' : productType === 'gsec' ? 'g.status' : 'rd.status'} as deal_status,
@@ -605,6 +605,17 @@ async function getMaturitiesWithApprovalLevel(db, productType, date) {
       LEFT JOIN counterparty_master_corporate corp ON rd.counterparty_id = corp.id
       LEFT JOIN counterparty_master_individual ind ON rd.counterparty_id = ind.id
       LEFT JOIN counterparty_master_joint joint ON rd.counterparty_id = joint.id
+    ` : ''}
+    ${productType === 'gsec' ? `
+      LEFT JOIN counterparty_master_corporate corp ON
+        (g.counterparty_id LIKE 'c%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = corp.id)
+        OR (g.counterparty_id = corp.id)
+      LEFT JOIN counterparty_master_individual ind ON
+        (g.counterparty_id LIKE 'i%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = ind.id)
+        OR (g.counterparty_id = ind.id)
+      LEFT JOIN counterparty_master_joint joint ON
+        (g.counterparty_id LIKE 'j%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = joint.id)
+        OR (g.counterparty_id = joint.id)
     ` : ''}
     LEFT JOIN maturity_processing_log mpl ON ${dealIdField} = mpl.deal_id
       AND mpl.id = (
@@ -2615,13 +2626,13 @@ MaturityController.getPrematureMaturityDeals = async (req, res) => {
         SELECT 
           g.id,
           g.deal_number,
-          g.isin,
-          g.counterparty,
+          g.isin_number as isin,
+          g.counterparty_id as counterparty,
           COALESCE(
             corp.short_name,
             ind.short_name,
             joint.short_name,
-            g.counterparty
+            CONCAT('ID:', g.counterparty_id)
           ) as counterparty_name,
           g.face_value,
           g.maturity_date,
@@ -2630,11 +2641,14 @@ MaturityController.getPrematureMaturityDeals = async (req, res) => {
           'gsec' as product_type
         FROM gsec g
         LEFT JOIN counterparty_master_corporate corp ON 
-          (g.counterparty LIKE 'c%' AND SUBSTRING(g.counterparty, 2) = corp.id)
+          (g.counterparty_id LIKE 'c%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = corp.id)
+          OR (g.counterparty_id = corp.id)
         LEFT JOIN counterparty_master_individual ind ON 
-          (g.counterparty LIKE 'i%' AND SUBSTRING(g.counterparty, 2) = ind.id)
+          (g.counterparty_id LIKE 'i%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = ind.id)
+          OR (g.counterparty_id = ind.id)
         LEFT JOIN counterparty_master_joint joint ON 
-          (g.counterparty LIKE 'j%' AND SUBSTRING(g.counterparty, 2) = joint.id)
+          (g.counterparty_id LIKE 'j%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = joint.id)
+          OR (g.counterparty_id = joint.id)
         WHERE COALESCE(g.matured, 0) = 0
           AND g.status = 'final_approved'
           AND g.transaction_type = 'Buy'
@@ -2699,13 +2713,51 @@ MaturityController.getPrematureMaturityDeals = async (req, res) => {
         LEFT JOIN counterparty_master_individual ind ON rd.counterparty_id = ind.id
         LEFT JOIN counterparty_master_joint joint ON rd.counterparty_id = joint.id
         WHERE COALESCE(rd.matured, 0) = 0
-          AND rd.status = 'Active'
+          AND rd.approval_status = 'final_approved'
         ORDER BY rd.maturity_date ASC
       `;
       const [repoRows] = await db.query(repoQuery);
       deals = deals.concat(repoRows.map(row => ({ ...row, product_type: 'repo' })));
     }
-    
+
+    // Get Buyback deals
+    if (productType === 'all' || productType === 'buyback') {
+      const buybackQuery = `
+        SELECT
+          bb.id,
+          bb.deal_number,
+          bb.leg1_isin as isin,
+          bb.leg1_counterparty as counterparty,
+          COALESCE(
+            corp.short_name,
+            ind.short_name,
+            joint.short_name,
+            CONCAT('ID:', bb.leg1_counterparty)
+          ) as counterparty_name,
+          COALESCE(bb.leg1_adjusted_face_value, bb.leg1_face_value) as face_value,
+          bb.leg2_value_date as maturity_date,
+          bb.deal_status as status,
+          DATEDIFF(bb.leg2_value_date, CURDATE()) as days_to_maturity,
+          'buyback' as product_type
+        FROM buyback_deals bb
+        LEFT JOIN counterparty_master_corporate corp ON
+          (bb.leg1_counterparty LIKE 'c%' AND CAST(SUBSTRING(bb.leg1_counterparty, 2) AS UNSIGNED) = corp.id)
+          OR (bb.leg1_counterparty = corp.id)
+        LEFT JOIN counterparty_master_individual ind ON
+          (bb.leg1_counterparty LIKE 'i%' AND CAST(SUBSTRING(bb.leg1_counterparty, 2) AS UNSIGNED) = ind.id)
+          OR (bb.leg1_counterparty = ind.id)
+        LEFT JOIN counterparty_master_joint joint ON
+          (bb.leg1_counterparty LIKE 'j%' AND CAST(SUBSTRING(bb.leg1_counterparty, 2) AS UNSIGNED) = joint.id)
+          OR (bb.leg1_counterparty = joint.id)
+        WHERE bb.deal_status = 'Approved'
+          AND bb.approved_at IS NOT NULL
+          AND DATE(bb.leg2_value_date) >= CURDATE()
+        ORDER BY bb.leg2_value_date ASC
+      `;
+      const [buybackRows] = await db.query(buybackQuery);
+      deals = deals.concat(buybackRows.map(row => ({ ...row, product_type: 'buyback' })));
+    }
+
     res.json({
       success: true,
       data: deals,
@@ -2840,7 +2892,7 @@ MaturityController.processPrematureMaturity = async (req, res) => {
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ? 
               AND COALESCE(matured, 0) = 0
-              AND status = 'Active'
+              AND approval_status = 'final_approved'
           `, [dateStr, dealId]);
           
           if (repoResult.affectedRows > 0) {
@@ -2857,7 +2909,38 @@ MaturityController.processPrematureMaturity = async (req, res) => {
             `, [dateStr, userId, `Premature maturity: Original maturity date updated to ${dateStr}`, dealId]);
           }
         }
-        
+
+        // Try Buyback if none of the above worked
+        if (!dealUpdated) {
+          const [bbResult] = await db.query(`
+            UPDATE buyback_deals
+            SET leg2_value_date = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+              AND deal_status = 'Approved'
+              AND approved_at IS NOT NULL
+          `, [dateStr, dealId]);
+
+          if (bbResult.affectedRows > 0) {
+            updatedCount++;
+            dealUpdated = true;
+            await db.query(`
+              INSERT INTO maturity_processing_log
+              (deal_id, deal_number, maturity_action, principal_amount, interest_amount, total_amount,
+               processed_date, processed_by, authorization_level, notes)
+              SELECT
+                id,
+                deal_number,
+                'premature_maturity',
+                COALESCE(leg1_adjusted_face_value, leg1_face_value),
+                0,
+                COALESCE(leg2_settlement_amount, leg1_settlement_amount, 0),
+                ?, ?, 'system', ?
+              FROM buyback_deals WHERE id = ?
+            `, [dateStr, userId, `Premature maturity: leg2_value_date updated to ${dateStr}`, dealId]);
+          }
+        }
+
         if (!dealUpdated) {
           errors.push(`Deal ID ${dealId}: Deal not found or already matured or incorrect status`);
         }
