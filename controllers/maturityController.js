@@ -2735,9 +2735,15 @@ MaturityController.getPrematureMaturityDeals = async (req, res) => {
             CONCAT('ID:', bb.leg1_counterparty)
           ) as counterparty_name,
           COALESCE(bb.leg1_adjusted_face_value, bb.leg1_face_value) as face_value,
+          bb.leg1_face_value as leg1_face_value,
           bb.leg1_value_date as leg1_value_date,
           bb.leg1_settlement_amount as leg1_settlement_amount,
           bb.leg1_interest_rate as leg1_interest_rate,
+          bb.leg2_accrued_interest as leg2_accrued_interest,
+          bb.coupon_rate as coupon_rate,
+          bb.issue_date as issue_date,
+          bb.coupon_date1 as coupon_date1,
+          bb.coupon_date2 as coupon_date2,
           bb.leg2_value_date as maturity_date,
           bb.deal_status as status,
           DATEDIFF(bb.leg2_value_date, CURDATE()) as days_to_maturity,
@@ -3004,6 +3010,49 @@ MaturityController.processBuybackPrematureMaturity = async (req, res) => {
       return Math.ceil(diffMs / (1000 * 60 * 60 * 24));
     };
 
+    const round4 = (n) => Math.round(n * 10000) / 10000;
+
+    // Mirrors calculateDirtyPriceFromSettlement in FixedIncomeBuyBackPage.js
+    const calcDirtyPricePer100 = (settlementAmount, faceValue) => {
+      const settlement = parseFloat(settlementAmount);
+      const face = parseFloat(faceValue);
+      if (!isFinite(settlement) || !isFinite(face) || face <= 0) return null;
+      return round4((settlement / face) * 100);
+    };
+
+    // Mirrors calculateAccruedInterestPer100 in FixedIncomeBuyBackPage.js
+    const calcAccruedInterestPer100 = (couponRate, valueDate, issueDate, couponDate1, couponDate2) => {
+      if (!couponRate || !valueDate || !issueDate || !couponDate1 || !couponDate2) {
+        return null;
+      }
+
+      const cr = parseFloat(couponRate) / 100;
+      const settle = new Date(valueDate);
+      const issue = new Date(issueDate);
+      if (!isFinite(cr) || isNaN(settle.getTime()) || isNaN(issue.getTime())) {
+        return null;
+      }
+
+      const frequency = 2;
+      const couponPer100 = (100 * cr) / frequency;
+      const monthsPerPeriod = 12 / frequency;
+
+      let lastCoupon = new Date(issue);
+      while (lastCoupon <= settle) {
+        lastCoupon.setMonth(lastCoupon.getMonth() + monthsPerPeriod);
+      }
+      lastCoupon.setMonth(lastCoupon.getMonth() - monthsPerPeriod);
+
+      const nextCoupon = new Date(lastCoupon);
+      nextCoupon.setMonth(nextCoupon.getMonth() + monthsPerPeriod);
+
+      const daysInPeriod = calcDaysBetween(nextCoupon, lastCoupon);
+      const daysAccrued = calcDaysBetween(settle, lastCoupon);
+      if (!daysInPeriod) return null;
+
+      return round4(couponPer100 * (daysAccrued / daysInPeriod));
+    };
+
     for (const item of deals) {
       const {
         dealId,
@@ -3028,7 +3077,9 @@ MaturityController.processBuybackPrematureMaturity = async (req, res) => {
         await connection.beginTransaction();
 
         const [rows] = await connection.query(
-          `SELECT id, deal_number, leg1_value_date, leg1_settlement_amount, deal_status, approved_at
+          `SELECT id, deal_number, leg1_value_date, leg1_settlement_amount, leg1_face_value,
+                  leg2_accrued_interest, coupon_rate, issue_date, coupon_date1, coupon_date2,
+                  deal_status, approved_at
            FROM buyback_deals
            WHERE id = ?
            FOR UPDATE`,
@@ -3061,18 +3112,50 @@ MaturityController.processBuybackPrematureMaturity = async (req, res) => {
         const interest = leg1Settlement * (rate / 100) * (days / basis);
         const newLeg2Settlement = Math.round((leg1Settlement + interest) * 100) / 100;
 
+        const dirtyPricePer100 = calcDirtyPricePer100(newLeg2Settlement, deal.leg1_face_value);
+        const computedAccrued = calcAccruedInterestPer100(
+          deal.coupon_rate,
+          leg2ValueDate,
+          deal.issue_date,
+          deal.coupon_date1,
+          deal.coupon_date2
+        );
+        const fallbackAccrued = parseFloat(deal.leg2_accrued_interest);
+        const accruedInterestPer100 = computedAccrued != null
+          ? computedAccrued
+          : (isFinite(fallbackAccrued) ? round4(fallbackAccrued) : 0);
+
+        const cleanPricePer100 = dirtyPricePer100 != null
+          ? round4(dirtyPricePer100 - accruedInterestPer100)
+          : null;
+        const finalDirtyPricePer100 = cleanPricePer100 != null
+          ? round4(cleanPricePer100 + accruedInterestPer100)
+          : null;
+
         await connection.query(
           `UPDATE buyback_deals
            SET leg1_interest_rate = ?,
                leg1_yield_rate = ?,
                leg2_value_date = ?,
                leg2_settlement_amount = ?,
+               leg2_clean_price = ?,
+               leg2_dirty_price = ?,
+               leg2_accrued_interest = ?,
                updated_at = NOW()
            WHERE id = ? AND deal_status = 'Approved' AND approved_at IS NOT NULL`,
-          [rate, rate, leg2ValueDate, newLeg2Settlement, dealId]
+          [
+            rate,
+            rate,
+            leg2ValueDate,
+            newLeg2Settlement,
+            cleanPricePer100,
+            finalDirtyPricePer100,
+            accruedInterestPer100,
+            dealId
+          ]
         );
 
-        const notes = `Premature maturity: leg1_interest_rate=${rate}, leg2_value_date=${leg2ValueDate}, days=${days}, basis=${basis}, new leg2_settlement_amount=${newLeg2Settlement.toFixed(2)}`;
+        const notes = `Premature maturity: leg1_interest_rate=${rate}, leg2_value_date=${leg2ValueDate}, days=${days}, basis=${basis}, new leg2_settlement_amount=${newLeg2Settlement.toFixed(2)}, leg2_clean_price=${cleanPricePer100 ?? 'NA'}, leg2_dirty_price=${finalDirtyPricePer100 ?? 'NA'}`;
 
         await connection.query(
           `INSERT INTO maturity_processing_log
@@ -3102,7 +3185,10 @@ MaturityController.processBuybackPrematureMaturity = async (req, res) => {
           days,
           day_count_basis: basis,
           interest: Math.round(interest * 100) / 100,
-          leg2_settlement_amount: newLeg2Settlement
+          leg2_settlement_amount: newLeg2Settlement,
+          leg2_clean_price: cleanPricePer100,
+          leg2_dirty_price: finalDirtyPricePer100,
+          leg2_accrued_interest: accruedInterestPer100
         });
       } catch (err) {
         try { await connection.rollback(); } catch (_) { /* ignore */ }
