@@ -2989,6 +2989,15 @@ MaturityController.processBuybackPrematureMaturity = async (req, res) => {
     const db = require('../config/database');
     const { deals } = req.body || {};
     const userId = req.user?.id || 1;
+    const [buybackLinkColRows] = await db.query(
+      `SELECT 1
+       FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'gsec'
+         AND COLUMN_NAME = 'buyback_deal_id'
+       LIMIT 1`
+    );
+    const hasBuybackDealId = Array.isArray(buybackLinkColRows) && buybackLinkColRows.length > 0;
 
     if (!Array.isArray(deals) || deals.length === 0) {
       return res.status(400).json({
@@ -3078,7 +3087,9 @@ MaturityController.processBuybackPrematureMaturity = async (req, res) => {
 
         const [rows] = await connection.query(
           `SELECT id, deal_number, leg1_value_date, leg1_settlement_amount, leg1_face_value,
-                  leg2_accrued_interest, coupon_rate, issue_date, coupon_date1, coupon_date2,
+                  leg2_face_value, leg2_adjusted_face_value, leg2_value_date, leg2_transaction_type,
+                  leg2_isin, leg2_portfolio, leg2_accrued_interest, leg2_yield_rate,
+                  coupon_rate, issue_date, coupon_date1, coupon_date2,
                   deal_status, approved_at
            FROM buyback_deals
            WHERE id = ?
@@ -3155,6 +3166,71 @@ MaturityController.processBuybackPrematureMaturity = async (req, res) => {
           ]
         );
 
+        // Keep linked GSEC Buy row(s) in sync with revised buyback Leg 2 values.
+        // This only applies when Leg 2 is a Buy and a corresponding GSEC buy leg was auto-created.
+        let gsecUpdatedRows = 0;
+        let gsecUpdatedDealNumbers = [];
+        if (deal.leg2_transaction_type === 'Buy') {
+          const effectiveLeg2Face = parseFloat(
+            deal.leg2_adjusted_face_value !== null && deal.leg2_adjusted_face_value !== undefined
+              ? deal.leg2_adjusted_face_value
+              : deal.leg2_face_value
+          ) || 0;
+
+          const [linkedGsecRows] = hasBuybackDealId
+            ? await connection.query(
+                `SELECT id, deal_number
+                 FROM gsec
+                 WHERE transaction_type = 'Buy'
+                   AND status = 'final_approved'
+                   AND buyback_deal_id = ?`,
+                [deal.id]
+              )
+            : await connection.query(
+                `SELECT id, deal_number
+                 FROM gsec
+                 WHERE transaction_type = 'Buy'
+                   AND status = 'final_approved'
+                   AND isin_number = ?
+                   AND portfolio = ?
+                   AND face_value = ?
+                   AND value_date = ?
+                 ORDER BY created_at DESC`,
+                [deal.leg2_isin, deal.leg2_portfolio, effectiveLeg2Face, deal.leg2_value_date]
+              );
+
+          if (Array.isArray(linkedGsecRows) && linkedGsecRows.length > 0) {
+            const gsecIds = linkedGsecRows.map(r => r.id).filter(Boolean);
+            gsecUpdatedDealNumbers = linkedGsecRows
+              .map(r => r.deal_number)
+              .filter(Boolean);
+            if (gsecIds.length > 0) {
+              const placeholders = gsecIds.map(() => '?').join(', ');
+              await connection.query(
+                `UPDATE gsec
+                 SET value_date = ?,
+                     settlement_amount = ?,
+                     clean_price = ?,
+                     dirty_price = ?,
+                     accrued_interest = ?,
+                     \`yield\` = ?,
+                     updated_at = NOW()
+                 WHERE id IN (${placeholders})`,
+                [
+                  leg2ValueDate,
+                  newLeg2Settlement,
+                  cleanPricePer100,
+                  finalDirtyPricePer100,
+                  accruedInterestPer100,
+                  rate,
+                  ...gsecIds
+                ]
+              );
+              gsecUpdatedRows = gsecIds.length;
+            }
+          }
+        }
+
         const notes = `Premature maturity: leg1_interest_rate=${rate}, leg2_value_date=${leg2ValueDate}, days=${days}, basis=${basis}, new leg2_settlement_amount=${newLeg2Settlement.toFixed(2)}, leg2_clean_price=${cleanPricePer100 ?? 'NA'}, leg2_dirty_price=${finalDirtyPricePer100 ?? 'NA'}`;
 
         await connection.query(
@@ -3188,7 +3264,12 @@ MaturityController.processBuybackPrematureMaturity = async (req, res) => {
           leg2_settlement_amount: newLeg2Settlement,
           leg2_clean_price: cleanPricePer100,
           leg2_dirty_price: finalDirtyPricePer100,
-          leg2_accrued_interest: accruedInterestPer100
+          leg2_accrued_interest: accruedInterestPer100,
+          gsec_updated_rows: gsecUpdatedRows,
+          gsec_updated_deal_numbers: gsecUpdatedDealNumbers,
+          gsec_sync_status: gsecUpdatedRows > 0
+            ? `Updated ${gsecUpdatedRows} linked GSEC buy deal(s)`
+            : 'No linked GSEC buy deal found for sync (buyback saved)'
         });
       } catch (err) {
         try { await connection.rollback(); } catch (_) { /* ignore */ }
