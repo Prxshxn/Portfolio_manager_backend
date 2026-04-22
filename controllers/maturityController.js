@@ -2735,6 +2735,9 @@ MaturityController.getPrematureMaturityDeals = async (req, res) => {
             CONCAT('ID:', bb.leg1_counterparty)
           ) as counterparty_name,
           COALESCE(bb.leg1_adjusted_face_value, bb.leg1_face_value) as face_value,
+          bb.leg1_value_date as leg1_value_date,
+          bb.leg1_settlement_amount as leg1_settlement_amount,
+          bb.leg1_interest_rate as leg1_interest_rate,
           bb.leg2_value_date as maturity_date,
           bb.deal_status as status,
           DATEDIFF(bb.leg2_value_date, CURDATE()) as days_to_maturity,
@@ -2969,6 +2972,167 @@ MaturityController.processPrematureMaturity = async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Failed to process premature maturity: ' + error.message
+    });
+  }
+};
+
+// Process premature maturity for Buyback deals with recalculated Leg 2 settlement
+// Accepts { deals: [{ dealId, leg1InterestRate, leg2ValueDate, dayCountBasis }] }
+MaturityController.processBuybackPrematureMaturity = async (req, res) => {
+  try {
+    const db = require('../config/database');
+    const { deals } = req.body || {};
+    const userId = req.user?.id || 1;
+
+    if (!Array.isArray(deals) || deals.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'deals array is required'
+      });
+    }
+
+    const results = [];
+    const errors = [];
+
+    // Mirrors calculateDaysBetween in FixedIncomeBuyBackPage.js (Math.ceil of ms diff, absolute)
+    const calcDaysBetween = (d1Str, d2Str) => {
+      if (!d1Str || !d2Str) return 0;
+      const d1 = new Date(d1Str);
+      const d2 = new Date(d2Str);
+      if (isNaN(d1.getTime()) || isNaN(d2.getTime())) return 0;
+      const diffMs = Math.abs(d2 - d1);
+      return Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+    };
+
+    for (const item of deals) {
+      const {
+        dealId,
+        leg1InterestRate,
+        leg2ValueDate,
+        dayCountBasis
+      } = item || {};
+
+      if (!dealId || leg1InterestRate === undefined || leg1InterestRate === null || !leg2ValueDate) {
+        errors.push(`Invalid payload for deal ${dealId || '(missing id)'}: dealId, leg1InterestRate, leg2ValueDate are required`);
+        continue;
+      }
+
+      const basis = parseInt(dayCountBasis) || 365;
+      if (basis !== 365 && basis !== 364) {
+        errors.push(`Deal ID ${dealId}: dayCountBasis must be 365 or 364`);
+        continue;
+      }
+
+      const connection = await db.pool.getConnection();
+      try {
+        await connection.beginTransaction();
+
+        const [rows] = await connection.query(
+          `SELECT id, deal_number, leg1_value_date, leg1_settlement_amount, deal_status, approved_at
+           FROM buyback_deals
+           WHERE id = ?
+           FOR UPDATE`,
+          [dealId]
+        );
+
+        if (!rows || rows.length === 0) {
+          await connection.rollback();
+          errors.push(`Deal ID ${dealId}: not found`);
+          continue;
+        }
+
+        const deal = rows[0];
+        if (deal.deal_status !== 'Approved' || !deal.approved_at) {
+          await connection.rollback();
+          errors.push(`Deal ID ${dealId}: only Approved deals with approved_at can be prematurely matured`);
+          continue;
+        }
+
+        const leg1Settlement = parseFloat(deal.leg1_settlement_amount);
+        const rate = parseFloat(leg1InterestRate);
+        const days = calcDaysBetween(deal.leg1_value_date, leg2ValueDate);
+
+        if (!isFinite(leg1Settlement) || !isFinite(rate)) {
+          await connection.rollback();
+          errors.push(`Deal ID ${dealId}: invalid settlement amount or rate`);
+          continue;
+        }
+
+        const interest = leg1Settlement * (rate / 100) * (days / basis);
+        const newLeg2Settlement = Math.round((leg1Settlement + interest) * 100) / 100;
+
+        await connection.query(
+          `UPDATE buyback_deals
+           SET leg1_interest_rate = ?,
+               leg1_yield_rate = ?,
+               leg2_value_date = ?,
+               leg2_settlement_amount = ?,
+               updated_at = NOW()
+           WHERE id = ? AND deal_status = 'Approved' AND approved_at IS NOT NULL`,
+          [rate, rate, leg2ValueDate, newLeg2Settlement, dealId]
+        );
+
+        const notes = `Premature maturity: leg1_interest_rate=${rate}, leg2_value_date=${leg2ValueDate}, days=${days}, basis=${basis}, new leg2_settlement_amount=${newLeg2Settlement.toFixed(2)}`;
+
+        await connection.query(
+          `INSERT INTO maturity_processing_log
+            (deal_id, deal_number, maturity_action, principal_amount, interest_amount, total_amount,
+             processed_date, processed_by, authorization_level, notes)
+           VALUES (?, ?, 'premature_maturity', ?, ?, ?, ?, ?, 'system', ?)`,
+          [
+            deal.id,
+            deal.deal_number,
+            leg1Settlement,
+            Math.round(interest * 100) / 100,
+            newLeg2Settlement,
+            leg2ValueDate,
+            userId,
+            notes
+          ]
+        );
+
+        await connection.commit();
+
+        results.push({
+          dealId,
+          deal_number: deal.deal_number,
+          leg1_settlement_amount: leg1Settlement,
+          leg1_interest_rate: rate,
+          leg2_value_date: leg2ValueDate,
+          days,
+          day_count_basis: basis,
+          interest: Math.round(interest * 100) / 100,
+          leg2_settlement_amount: newLeg2Settlement
+        });
+      } catch (err) {
+        try { await connection.rollback(); } catch (_) { /* ignore */ }
+        errors.push(`Deal ID ${dealId}: ${err.message}`);
+        console.error(`Error processing buyback premature maturity for deal ${dealId}:`, err);
+      } finally {
+        connection.release();
+      }
+    }
+
+    if (results.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'No buyback deals were updated',
+        errors
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: `Successfully recalculated and matured ${results.length} buyback deal(s)`,
+      updatedCount: results.length,
+      results,
+      errors: errors.length > 0 ? errors : undefined
+    });
+  } catch (error) {
+    console.error('Error in processBuybackPrematureMaturity:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to process buyback premature maturity: ' + error.message
     });
   }
 };
