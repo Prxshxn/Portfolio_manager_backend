@@ -585,6 +585,48 @@ router.post('/premature', MaturityController.processPrematureMaturity);
 
 /**
  * @swagger
+ * /maturity/premature/buyback:
+ *   post:
+ *     summary: Recalculate and prematurely mature buyback deals
+ *     description: Updates Leg 1 interest rate and Leg 2 value date on existing buyback deals, recalculates Leg 2 settlement amount, and logs the premature maturity event
+ *     tags: [Maturity]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - deals
+ *             properties:
+ *               deals:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   required:
+ *                     - dealId
+ *                     - leg1InterestRate
+ *                     - leg2ValueDate
+ *                   properties:
+ *                     dealId:
+ *                       type: integer
+ *                     leg1InterestRate:
+ *                       type: number
+ *                     leg2ValueDate:
+ *                       type: string
+ *                       format: date
+ *                     dayCountBasis:
+ *                       type: integer
+ *                       enum: [364, 365]
+ *                       default: 365
+ *     responses:
+ *       200:
+ *         description: Buyback deals prematurely matured
+ */
+router.post('/premature/buyback', MaturityController.processBuybackPrematureMaturity);
+
+/**
+ * @swagger
  * /maturity/pre-approval/deals:
  *   get:
  *     summary: Get deals available for pre-approval
