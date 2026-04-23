@@ -211,7 +211,8 @@ const BuybackDeal = {
 
   // Update deal status
   updateStatus: async (id, status, userId, field = 'verified_by', timestampField = 'verified_at') => {
-    const cols = await getBuybackDealsColumnSet();
+    // Refresh schema to avoid stale column cache skipping approval timestamps.
+    const cols = await getBuybackDealsColumnSet(true);
 
     const setters = ['deal_status = ?'];
     const params = [status];
