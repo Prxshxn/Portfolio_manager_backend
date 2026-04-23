@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS maturity_processing_log (
   processed_date DATE NOT NULL,
   processed_by INT NOT NULL,
   authorization_level VARCHAR(20) NOT NULL,
+  notes TEXT NULL,
   bank_account_id INT,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

@@ -750,17 +750,24 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       }
     }
     
-    let totalBalance = 0;
+    // Accumulate in integer cents so floating-point drift from summing many
+    // DECIMAL(18,2) values (e.g. a spurious trailing 0.02) never shows up in
+    // the portfolio total.
+    let totalBalanceCents = 0;
     balanceRows.forEach(balanceRow => {
-      const originalFace = Number(balanceRow.face_value) || 0;
+      const originalFaceCents = Math.round((Number(balanceRow.face_value) || 0) * 100);
       const normalizedDealNumber = (balanceRow.deal_number || '').trim();
-      const soldAgainstThisDeal = Number(soldByDeal[normalizedDealNumber] || 0);
-      const buybackDeduction = Number(buybackByDeal[normalizedDealNumber] || 0);
-      
-      const remainingFaceValue = Math.max(0, originalFace - soldAgainstThisDeal - buybackDeduction);
-      totalBalance += remainingFaceValue;
+      const soldAgainstThisDealCents = Math.round((Number(soldByDeal[normalizedDealNumber] || 0)) * 100);
+      const buybackDeductionCents = Math.round((Number(buybackByDeal[normalizedDealNumber] || 0)) * 100);
+
+      const remainingFaceValueCents = Math.max(
+        0,
+        originalFaceCents - soldAgainstThisDealCents - buybackDeductionCents
+      );
+      totalBalanceCents += remainingFaceValueCents;
     });
-    
+    const totalBalance = totalBalanceCents / 100;
+
     totalPortfolioBalance = formatPrice(totalBalance, 4);
     console.log(`Portfolio ${portfolio} total balance: ${totalPortfolioBalance}`);
   }
