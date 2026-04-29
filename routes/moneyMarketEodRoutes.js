@@ -49,6 +49,85 @@ async function postLedgerEntryDirect(db, { date, drAccountId, crAccountId, amoun
   return { success: true };
 }
 
+async function resolveSettlementAccountCode(db, settlementMode) {
+  if (settlementMode) {
+    const [settlementRows] = await db.query(
+      'SELECT ledger_account_code FROM settlement_accounts WHERE bank_payment_code = ? LIMIT 1',
+      [settlementMode]
+    );
+    if (settlementRows && settlementRows.length > 0 && settlementRows[0].ledger_account_code) {
+      return settlementRows[0].ledger_account_code;
+    }
+  }
+
+  try {
+    return await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_DEFAULT_SETTLEMENT);
+  } catch (_) {
+    return '131-101-410-164-44';
+  }
+}
+
+function computeGsecCouponSettlementAmount(deal) {
+  const remainingFace = Number(deal.remaining_face_value || deal.face_value || 0);
+  if (!Number.isFinite(remainingFace) || remainingFace <= 0) {
+    return 0;
+  }
+
+  const couponPer100 = Number(deal.coupon_amount);
+  if (Number.isFinite(couponPer100) && couponPer100 > 0) {
+    return Math.floor(((couponPer100 * remainingFace) / 100) * 100000000) / 100000000;
+  }
+
+  const couponInterest = Number(deal.coupon_interest);
+  const faceValue = Number(deal.face_value || 0);
+  if (Number.isFinite(couponInterest) && couponInterest > 0 && Number.isFinite(faceValue) && faceValue > 0) {
+    return Math.floor((couponInterest * (remainingFace / faceValue)) * 100000000) / 100000000;
+  }
+
+  const couponRate = Number(deal.coupon_rate || 0);
+  if (Number.isFinite(couponRate) && couponRate > 0) {
+    return Math.floor(((remainingFace * couponRate / 100 / 2) * 100000000)) / 100000000;
+  }
+
+  return 0;
+}
+
+async function postGsecCouponSettlementDirect(
+  db,
+  {
+    date,
+    amount,
+    dealId,
+    description,
+    drAccruedIncomeAccountId,
+    crAccruedReceivableAccountId,
+    drBankAccountId,
+    crCouponIncomeAccountId
+  }
+) {
+  await db.query(
+    `INSERT INTO ledger_entries (entry_date, account_id, debit_amount, credit_amount, deal_number, description, currency)
+     VALUES (?, ?, ?, 0, ?, ?, ?)`,
+    [date, drAccruedIncomeAccountId, amount, String(dealId), description, 'LKR']
+  );
+  await db.query(
+    `INSERT INTO ledger_entries (entry_date, account_id, debit_amount, credit_amount, deal_number, description, currency)
+     VALUES (?, ?, 0, ?, ?, ?, ?)`,
+    [date, crAccruedReceivableAccountId, amount, String(dealId), description, 'LKR']
+  );
+  await db.query(
+    `INSERT INTO ledger_entries (entry_date, account_id, debit_amount, credit_amount, deal_number, description, currency)
+     VALUES (?, ?, ?, 0, ?, ?, ?)`,
+    [date, drBankAccountId, amount, String(dealId), description, 'LKR']
+  );
+  await db.query(
+    `INSERT INTO ledger_entries (entry_date, account_id, debit_amount, credit_amount, deal_number, description, currency)
+     VALUES (?, ?, 0, ?, ?, ?, ?)`,
+    [date, crCouponIncomeAccountId, amount, String(dealId), description, 'LKR']
+  );
+  return { success: true };
+}
+
 // POST /api/money-market/ledger-post
 router.post('/ledger-post', checkAuth, checkAdmin, async (req, res) => {
   try {
@@ -328,6 +407,87 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
     }
     console.log(
       `GSec posting summary: posted=${gsecPostedCount}, already_posted_skipped=${gsecSkippedAlreadyPosted}`
+    );
+
+    // GSec coupon settlement posting on coupon date (semi-annual schedule)
+    let gsecCouponPostedCount = 0;
+    let gsecCouponSkippedAlreadyPosted = 0;
+    const gsecCouponIncomeCode = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_COUPON_INCOME);
+    const gsecCouponIncomeId = await resolveAccountIdByCode(db, gsecCouponIncomeCode);
+    const [dueCouponDeals] = await db.query(
+      `SELECT g.id, g.deal_number, g.isin_number, g.value_date, g.maturity_date, g.face_value,
+              g.remaining_face_value, g.coupon_interest, g.settlement_mode,
+              im.coupon_rate, ics.coupon_date, ics.coupon_amount
+       FROM gsec g
+       JOIN isin_coupon_schedule ics
+         ON ics.isin = g.isin_number
+        AND DATE(ics.coupon_date) = DATE(?)
+       LEFT JOIN isin_master im
+         ON g.isin_number COLLATE utf8mb4_unicode_ci = im.isin_number COLLATE utf8mb4_unicode_ci
+       WHERE g.transaction_type = 'Buy'
+         AND g.status = 'final_approved'
+         AND DATE(g.value_date) <= DATE(?)
+         AND DATE(g.maturity_date) >= DATE(?)
+         AND COALESCE(g.remaining_face_value, g.face_value, 0) > 0`,
+      [systemDay, systemDay, systemDay]
+    );
+    const [alreadyPostedCouponRows] = await db.query(
+      `SELECT deal_number, description
+       FROM ledger_entries
+       WHERE DATE(entry_date) = DATE(?)
+         AND description LIKE 'GSec Coupon Settlement %'`,
+      [systemDay]
+    );
+    const alreadyPostedCoupons = new Set(
+      (alreadyPostedCouponRows || []).map((r) => `${String(r.deal_number)}|${String(r.description)}`)
+    );
+    const settlementAccountCache = new Map();
+
+    for (const deal of dueCouponDeals) {
+      try {
+        const couponDateStr = new Date(deal.coupon_date).toISOString().slice(0, 10);
+        const description = `GSec Coupon Settlement ${deal.deal_number} ${couponDateStr}`;
+        const postingKey = `${String(deal.deal_number)}|${description}`;
+        if (alreadyPostedCoupons.has(postingKey)) {
+          gsecCouponSkippedAlreadyPosted++;
+          continue;
+        }
+
+        const amount = computeGsecCouponSettlementAmount(deal);
+        if (!Number.isFinite(amount) || amount <= 0) {
+          continue;
+        }
+
+        let bankAccountCode = settlementAccountCache.get(String(deal.settlement_mode || ''));
+        if (!bankAccountCode) {
+          bankAccountCode = await resolveSettlementAccountCode(db, deal.settlement_mode);
+          settlementAccountCache.set(String(deal.settlement_mode || ''), bankAccountCode);
+        }
+        const bankAccountId = await resolveAccountIdByCode(db, bankAccountCode);
+
+        const lr = await postGsecCouponSettlementDirect(db, {
+          date: systemDay,
+          amount,
+          dealId: deal.deal_number,
+          description,
+          drAccruedIncomeAccountId: gsecCrAccountId,
+          crAccruedReceivableAccountId: gsecDrAccountId,
+          drBankAccountId: bankAccountId,
+          crCouponIncomeAccountId: gsecCouponIncomeId
+        });
+        if (!isLedgerPostOk(lr)) {
+          console.error('GSec coupon settlement post failed:', deal.deal_number, lr && lr.error);
+          continue;
+        }
+
+        alreadyPostedCoupons.add(postingKey);
+        gsecCouponPostedCount++;
+      } catch (err) {
+        console.error('Failed to post GSec coupon settlement for deal:', deal.deal_number, err);
+      }
+    }
+    console.log(
+      `GSec coupon settlement summary: posted=${gsecCouponPostedCount}, already_posted_skipped=${gsecCouponSkippedAlreadyPosted}`
     );
 
     // Clear per_day_accrual for Buy deals whose value date is still in the future (or was posted before this rule)
@@ -637,7 +797,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
     await setSystemDay(tomorrowStr);
     res.json({
       success: true,
-      message: `EOD complete. Posted for ${postedCount} money market deals, ${gsecPostedCount} GSec deals, ${fdPostedCount} fixed deposit deals, and ${repoAccrualCount} repo accrual + ${repoMaturityCount} repo maturity + ${repoBackfillCount} repo backfill entries.`,
+      message: `EOD complete. Posted for ${postedCount} money market deals, ${gsecPostedCount} GSec accrual deals, ${gsecCouponPostedCount} GSec coupon settlements, ${fdPostedCount} fixed deposit deals, and ${repoAccrualCount} repo accrual + ${repoMaturityCount} repo maturity + ${repoBackfillCount} repo backfill entries.`,
       next_system_day: tomorrowStr
     });
   } catch (err) {

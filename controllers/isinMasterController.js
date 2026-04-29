@@ -336,6 +336,7 @@ module.exports = {
             console.log(`Buy deal ${sell.buy_deal_number}: original=${original}, sold=${sold}, newRemaining=${newRemaining}`);
             
             await connection.query('UPDATE gsec SET remaining_face_value = ? WHERE id = ?', [newRemaining.toFixed(4), buyDeal.id]);
+            await Gsec.syncFutureCouponCashflowsForBuyDeal(sell.buy_deal_number, connection);
           } else {
             console.error(`Buy deal not found: ${sell.buy_deal_number}`);
           }

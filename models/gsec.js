@@ -1556,4 +1556,92 @@ Gsec.captureCouponCashflow = async (dealId, isin, faceValue, maturityDate, count
   }
 };
 
+// Re-sync future coupon cashflows for a Buy deal based on current remaining_face_value.
+// This keeps forecast coupon inflows aligned after partial/full pre-maturity exits.
+Gsec.syncFutureCouponCashflowsForBuyDeal = async (buyDealNumber, connection = null) => {
+  const queryFn = connection ? connection.query.bind(connection) : db.query;
+  try {
+    const [buyRows] = await queryFn(
+      `SELECT id, deal_number, isin_number, maturity_date, face_value, remaining_face_value, counterparty_id
+       FROM gsec
+       WHERE deal_number = ? AND transaction_type = 'Buy'
+       LIMIT 1`,
+      [buyDealNumber]
+    );
+    if (!buyRows || buyRows.length === 0) {
+      return 0;
+    }
+
+    const buyDeal = buyRows[0];
+    const dealId = buyDeal.id;
+    const isin = buyDeal.isin_number;
+    const maturityDate = buyDeal.maturity_date;
+    const remainingFace = Number(buyDeal.remaining_face_value || buyDeal.face_value || 0);
+
+    await queryFn(
+      `DELETE FROM cashflow_transactions
+       WHERE reference_number LIKE ?
+         AND transaction_date > CURDATE()`,
+      [`GSEC-${dealId}-COUPON-%`]
+    );
+
+    if (!Number.isFinite(remainingFace) || remainingFace <= 0) {
+      return 0;
+    }
+
+    const [couponRows] = await queryFn(
+      `SELECT coupon_date, coupon_amount
+       FROM isin_coupon_schedule
+       WHERE isin = ? AND coupon_date > CURDATE() AND coupon_date <= ?
+       ORDER BY coupon_date`,
+      [isin, maturityDate]
+    );
+    if (!couponRows || couponRows.length === 0) {
+      return 0;
+    }
+
+    const [categories] = await queryFn(
+      `SELECT id, name FROM cashflow_categories WHERE is_active = TRUE`
+    );
+    const interestCategory = (categories || []).find(
+      (c) => String(c.name || '').toLowerCase() === 'interest income'
+    );
+    if (!interestCategory) {
+      return 0;
+    }
+
+    let capturedCount = 0;
+    for (const coupon of couponRows) {
+      const couponPer100 = Number(coupon.coupon_amount || 0);
+      if (!Number.isFinite(couponPer100) || couponPer100 <= 0) {
+        continue;
+      }
+      const couponAmount = (couponPer100 * remainingFace) / 100;
+      if (!Number.isFinite(couponAmount) || couponAmount <= 0) {
+        continue;
+      }
+
+      await queryFn(
+        `INSERT INTO cashflow_transactions
+         (category_id, transaction_date, amount, flow_type, currency, description, reference_number, counterparty, status)
+         VALUES (?, ?, ?, 'inflow', 'LKR', ?, ?, ?, 'confirmed')`,
+        [
+          interestCategory.id,
+          coupon.coupon_date,
+          couponAmount,
+          `GSEC Coupon Payment - ISIN ${isin}`,
+          `GSEC-${dealId}-COUPON-${coupon.coupon_date}`,
+          buyDeal.counterparty_id
+        ]
+      );
+      capturedCount++;
+    }
+
+    return capturedCount;
+  } catch (error) {
+    console.error('Error syncing future coupon cashflow for buy deal:', buyDealNumber, error);
+    throw error;
+  }
+};
+
 module.exports = Gsec;

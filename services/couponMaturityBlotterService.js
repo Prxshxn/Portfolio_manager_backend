@@ -28,6 +28,7 @@ exports.getCouponMaturityBlotter = async (startDate, endDate, counterparty = nul
       g.transaction_type,
       g.isin,
       g.face_value,
+      g.remaining_face_value,
       g.coupon_interest,
       g.next_coupon_date,
       g.last_coupon_date,
@@ -115,6 +116,7 @@ exports.getCouponMaturityBlotter = async (startDate, endDate, counterparty = nul
   const results = rows.map((row) => {
     let couponAmount = Number(row.coupon_interest) || 0;
     const isFinalCoupon = row.is_maturity_coupon === 1;
+    const effectiveFaceValue = Math.max(0, Number(row.remaining_face_value || row.face_value) || 0);
 
     // Check if this is the final coupon (maturity date)
     if (isFinalCoupon) {
@@ -130,14 +132,14 @@ exports.getCouponMaturityBlotter = async (startDate, endDate, counterparty = nul
           // Standard 6-month period is approximately 182.5 days
           const standardPeriod = 182.5;
           // Calculate coupon amount for the actual period
-          const faceValue = Number(row.face_value) || 0;
+          const faceValue = effectiveFaceValue;
           const standardCouponAmount = (faceValue * couponRate / 100 / 2);
           couponAmount = (standardCouponAmount * daysDiff) / standardPeriod;
         }
       } else {
         // If no last coupon date, use full 6-month coupon amount
         const couponRate = Number(row.coupon_rate) || 0;
-        const faceValue = Number(row.face_value) || 0;
+        const faceValue = effectiveFaceValue;
         couponAmount = (faceValue * couponRate / 100 / 2);
       }
     } else {
@@ -147,8 +149,13 @@ exports.getCouponMaturityBlotter = async (startDate, endDate, counterparty = nul
       // If coupon_interest is not set, calculate it from coupon rate
       if (couponAmount === 0 && row.coupon_rate) {
         const couponRate = Number(row.coupon_rate) || 0;
-        const faceValue = Number(row.face_value) || 0;
+        const faceValue = effectiveFaceValue;
         couponAmount = (faceValue * couponRate / 100 / 2);
+      } else {
+        const originalFace = Number(row.face_value) || 0;
+        if (originalFace > 0 && effectiveFaceValue >= 0) {
+          couponAmount = couponAmount * (effectiveFaceValue / originalFace);
+        }
       }
     }
 
@@ -158,6 +165,7 @@ exports.getCouponMaturityBlotter = async (startDate, endDate, counterparty = nul
       transaction_type: row.transaction_type, // 'Buy' or 'Sell'
       isin: row.isin,
       face_value: Number(row.face_value) || 0,
+      remaining_face_value: effectiveFaceValue,
       coupon_amount: couponAmount,
       coupon_date: row.coupon_date || null, // The actual coupon date within the range
       next_coupon_date: row.next_coupon_date,
@@ -171,6 +179,11 @@ exports.getCouponMaturityBlotter = async (startDate, endDate, counterparty = nul
       trade_date: row.trade_date,
       coupon_rate: Number(row.coupon_rate) || 0
     };
+  }).filter((row) => {
+    if (row.transaction_type !== 'Buy') {
+      return true;
+    }
+    return Number(row.remaining_face_value || 0) > 0;
   });
 
   console.log(`[Coupon Maturity Blotter] Processed ${results.length} results`);
