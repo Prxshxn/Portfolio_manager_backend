@@ -4,7 +4,7 @@ const { getAllDeals } = require('../models/moneyMarketDealModel');
 const { getSystemDay, setSystemDay } = require('../models/systemDayModel');
 const { checkAuth, checkAdmin } = require('../middleware/auth');
 const accountMapping = require('../services/accountMappingService');
-const { computeGsecPerDayAccrual } = require('../services/gsecCouponPeriod');
+const { computeGsecPerDayAccrual, computeGsecDailyAmortization } = require('../services/gsecCouponPeriod');
 // You may need to adjust this path to your ledger posting API
 const postLedgerEntry = require('../controllers/ledgerController').postLedgerEntry;
 console.log ("started eod page");
@@ -409,6 +409,130 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
       `GSec posting summary: posted=${gsecPostedCount}, already_posted_skipped=${gsecSkippedAlreadyPosted}`
     );
 
+    // GSec daily premium / discount amortization (straight-line to maturity)
+    let gsecAmortPostedCount = 0;
+    let gsecAmortSkippedAlreadyPosted = 0;
+    let amortTradingAccountId = null;
+    let amortFaAccountId = null;
+    let amortPostingEnabled = true;
+    try {
+      const amortTradingCode = await accountMapping.getAccountCode(
+        accountMapping.MAPPING_KEYS.GSEC_AMORTISATION_TRADING
+      );
+      const amortFaCode = await accountMapping.getAccountCode(
+        accountMapping.MAPPING_KEYS.GSEC_FINANCIAL_ASSETS_AMORTISED_COST
+      );
+      amortTradingAccountId = await resolveAccountIdByCode(db, amortTradingCode);
+      amortFaAccountId = await resolveAccountIdByCode(db, amortFaCode);
+    } catch (amortMapErr) {
+      amortPostingEnabled = false;
+      console.warn(
+        'GSec amortization account mappings missing. Skipping amortization this run:',
+        amortMapErr.message
+      );
+    }
+
+    let hasPerDayAmortizationColumn = false;
+    try {
+      const [colRows] = await db.query(
+        `SELECT 1 AS ok FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE()
+           AND TABLE_NAME = 'gsec'
+           AND COLUMN_NAME = 'per_day_amortization'
+         LIMIT 1`
+      );
+      hasPerDayAmortizationColumn = Array.isArray(colRows) && colRows.length > 0;
+    } catch (_) {
+      hasPerDayAmortizationColumn = false;
+    }
+
+    const [gsecAmortDeals] = await db.query(
+      `SELECT g.id, g.deal_number, g.value_date, g.maturity_date, g.face_value,
+              g.remaining_face_value, g.clean_price
+       FROM gsec g
+       WHERE g.transaction_type = 'Buy'
+         AND g.status = 'final_approved'
+         AND g.maturity_date >= ?
+         AND g.value_date IS NOT NULL
+         AND DATE(g.value_date) <= DATE(?)
+         AND COALESCE(g.remaining_face_value, g.face_value, 0) > 0`,
+      [systemDay, systemDay]
+    );
+    const [alreadyPostedAmortRows] = await db.query(
+      `SELECT DISTINCT deal_number
+       FROM ledger_entries
+       WHERE DATE(entry_date) = DATE(?)
+         AND description LIKE 'GSec Daily Amortization for Deal %'`,
+      [systemDay]
+    );
+    const alreadyPostedAmortDeals = new Set(
+      (alreadyPostedAmortRows || []).map((r) => String(r.deal_number))
+    );
+
+    if (amortPostingEnabled) {
+      for (const deal of gsecAmortDeals) {
+        try {
+          if (!valueDateOnOrBeforeSystemDay(deal.value_date, systemDay)) {
+            continue;
+          }
+          const computed = computeGsecDailyAmortization(deal, systemDay);
+          if (!computed.ok) {
+            if (hasPerDayAmortizationColumn) {
+              await db.query('UPDATE gsec SET per_day_amortization = 0 WHERE id = ?', [deal.id]);
+            }
+            continue;
+          }
+          const { dailyAmount, scenario } = computed;
+
+          if (hasPerDayAmortizationColumn) {
+            await db.query('UPDATE gsec SET per_day_amortization = ? WHERE id = ?', [
+              dailyAmount,
+              deal.id
+            ]);
+          }
+
+          if (alreadyPostedAmortDeals.has(String(deal.deal_number))) {
+            gsecAmortSkippedAlreadyPosted++;
+            continue;
+          }
+
+          let drId;
+          let crId;
+          if (scenario === 'premium') {
+            drId = amortTradingAccountId;
+            crId = amortFaAccountId;
+          } else {
+            drId = amortFaAccountId;
+            crId = amortTradingAccountId;
+          }
+
+          const lr = await postLedgerEntryDirect(db, {
+            date: systemDay,
+            drAccountId: drId,
+            crAccountId: crId,
+            amount: dailyAmount,
+            dealId: deal.deal_number,
+            description: `GSec Daily Amortization for Deal ${deal.deal_number}`
+          });
+          if (!isLedgerPostOk(lr)) {
+            console.error(
+              'GSec amortization ledger post failed:',
+              deal.deal_number,
+              lr && lr.error
+            );
+            continue;
+          }
+          alreadyPostedAmortDeals.add(String(deal.deal_number));
+          gsecAmortPostedCount++;
+        } catch (err) {
+          console.error('Failed GSec amortization for deal:', deal.deal_number, err);
+        }
+      }
+    }
+    console.log(
+      `GSec amortization summary: posted=${gsecAmortPostedCount}, already_posted_skipped=${gsecAmortSkippedAlreadyPosted}`
+    );
+
     // GSec coupon settlement posting on coupon date (semi-annual schedule)
     let gsecCouponPostedCount = 0;
     let gsecCouponSkippedAlreadyPosted = 0;
@@ -797,7 +921,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
     await setSystemDay(tomorrowStr);
     res.json({
       success: true,
-      message: `EOD complete. Posted for ${postedCount} money market deals, ${gsecPostedCount} GSec accrual deals, ${gsecCouponPostedCount} GSec coupon settlements, ${fdPostedCount} fixed deposit deals, and ${repoAccrualCount} repo accrual + ${repoMaturityCount} repo maturity + ${repoBackfillCount} repo backfill entries.`,
+      message: `EOD complete. Posted for ${postedCount} money market deals, ${gsecPostedCount} GSec accrual deals, ${gsecAmortPostedCount} GSec amortization, ${gsecCouponPostedCount} GSec coupon settlements, ${fdPostedCount} fixed deposit deals, and ${repoAccrualCount} repo accrual + ${repoMaturityCount} repo maturity + ${repoBackfillCount} repo backfill entries.`,
       next_system_day: tomorrowStr
     });
   } catch (err) {
