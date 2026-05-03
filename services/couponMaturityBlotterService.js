@@ -26,7 +26,7 @@ exports.getCouponMaturityBlotter = async (startDate, endDate, counterparty = nul
       g.id,
       g.deal_number,
       g.transaction_type,
-      g.isin,
+      g.isin_number AS isin,
       g.face_value,
       g.remaining_face_value,
       g.coupon_interest,
@@ -52,14 +52,14 @@ exports.getCouponMaturityBlotter = async (startDate, endDate, counterparty = nul
       -- Get the actual coupon date for this deal (from schedule, maturity, or next_coupon_date)
       COALESCE(
         (SELECT DATE(ics.coupon_date) FROM isin_coupon_schedule ics 
-         WHERE ics.isin = g.isin 
+         WHERE ics.isin COLLATE utf8mb4_unicode_ci = g.isin_number COLLATE utf8mb4_unicode_ci
            AND DATE(ics.coupon_date) BETWEEN ? AND ? 
          LIMIT 1),
         CASE WHEN DATE(g.maturity_date) BETWEEN ? AND ? THEN DATE(g.maturity_date) ELSE NULL END,
         CASE WHEN DATE(g.next_coupon_date) BETWEEN ? AND ? THEN DATE(g.next_coupon_date) ELSE NULL END
       ) as coupon_date
     FROM gsec g
-    LEFT JOIN isin_master im ON g.isin = im.isin_number
+    LEFT JOIN isin_master im ON g.isin_number COLLATE utf8mb4_unicode_ci = im.isin_number COLLATE utf8mb4_unicode_ci
     LEFT JOIN counterparty_master_corporate corp ON CONCAT('c', corp.id) = g.counterparty
     LEFT JOIN counterparty_master_individual ind ON CONCAT('i', ind.id) = g.counterparty
     LEFT JOIN counterparty_master_joint joint ON CONCAT('j', joint.id) = g.counterparty
@@ -73,7 +73,7 @@ exports.getCouponMaturityBlotter = async (startDate, endDate, counterparty = nul
         EXISTS (
           SELECT 1 
           FROM isin_coupon_schedule ics 
-          WHERE ics.isin = g.isin 
+          WHERE ics.isin COLLATE utf8mb4_unicode_ci = g.isin_number COLLATE utf8mb4_unicode_ci
             AND DATE(ics.coupon_date) BETWEEN ? AND ?
         )
         OR

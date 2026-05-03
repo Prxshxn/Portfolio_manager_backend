@@ -381,7 +381,7 @@ const buybackDealController = {
                   const couponDate2 = buybackDeal.coupon_date2 || isin.coupon_date_2;
 
                   const [couponSchedule] = await db.query(
-                    'SELECT * FROM isin_coupon_schedule WHERE isin = ? ORDER BY coupon_date ASC',
+                    'SELECT * FROM isin_coupon_schedule WHERE isin COLLATE utf8mb4_unicode_ci = ? COLLATE utf8mb4_unicode_ci ORDER BY coupon_date ASC',
                     [buybackDeal.leg2_isin]
                   );
 

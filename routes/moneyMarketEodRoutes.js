@@ -581,7 +581,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
               im.coupon_rate, ics.coupon_date, ics.coupon_amount
        FROM gsec g
        JOIN isin_coupon_schedule ics
-         ON ics.isin = g.isin_number
+         ON ics.isin COLLATE utf8mb4_unicode_ci = g.isin_number COLLATE utf8mb4_unicode_ci
         AND DATE(ics.coupon_date) = DATE(?)
        LEFT JOIN isin_master im
          ON g.isin_number COLLATE utf8mb4_unicode_ci = im.isin_number COLLATE utf8mb4_unicode_ci

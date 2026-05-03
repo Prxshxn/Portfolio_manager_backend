@@ -3284,7 +3284,7 @@ MaturityController.processBuybackPrematureMaturity = async (req, res) => {
           const couponDate2 = deal.coupon_date2 || isin.coupon_date_2;
 
           const [couponSchedule] = await connection.query(
-            'SELECT * FROM isin_coupon_schedule WHERE isin = ? ORDER BY coupon_date ASC',
+            'SELECT * FROM isin_coupon_schedule WHERE isin COLLATE utf8mb4_unicode_ci = ? COLLATE utf8mb4_unicode_ci ORDER BY coupon_date ASC',
             [deal.leg2_isin]
           );
           let lastCouponDate = null;

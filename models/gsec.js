@@ -1495,7 +1495,8 @@ Gsec.captureCouponCashflow = async (dealId, isin, faceValue, maturityDate, count
     const [couponRows] = await db.query(`
       SELECT coupon_date, coupon_amount, principal
       FROM isin_coupon_schedule 
-      WHERE isin = ? AND coupon_date > CURDATE() AND coupon_date <= ?
+      WHERE isin COLLATE utf8mb4_unicode_ci = ? COLLATE utf8mb4_unicode_ci
+        AND coupon_date > CURDATE() AND coupon_date <= ?
       ORDER BY coupon_date
     `, [isin, maturityDate]);
     
@@ -1592,7 +1593,8 @@ Gsec.syncFutureCouponCashflowsForBuyDeal = async (buyDealNumber, connection = nu
     const [couponRows] = await queryFn(
       `SELECT coupon_date, coupon_amount
        FROM isin_coupon_schedule
-       WHERE isin = ? AND coupon_date > CURDATE() AND coupon_date <= ?
+       WHERE isin COLLATE utf8mb4_unicode_ci = ? COLLATE utf8mb4_unicode_ci
+         AND coupon_date > CURDATE() AND coupon_date <= ?
        ORDER BY coupon_date`,
       [isin, maturityDate]
     );
