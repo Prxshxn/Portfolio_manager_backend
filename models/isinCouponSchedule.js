@@ -15,7 +15,7 @@ const IsinCouponSchedule = {
    * @param {function} callback - Callback with (err, { previousCouponDate, nextCouponDate })
    */
   getPrevAndNextCouponDates: (isin, valueDate, callback) => {
-    const sql = `SELECT coupon_date FROM isin_coupon_schedule WHERE isin = ? ORDER BY coupon_date ASC`;
+    const sql = `SELECT coupon_date FROM isin_coupon_schedule WHERE isin COLLATE utf8mb4_unicode_ci = ? COLLATE utf8mb4_unicode_ci ORDER BY coupon_date ASC`;
     db.query(sql, [isin], (err, results) => {
       if (err) return callback(err);
       if (!results || results.length === 0) return callback(null, { previousCouponDate: null, nextCouponDate: null });
@@ -50,7 +50,7 @@ const IsinCouponSchedule = {
    * @param {function} callback - Callback with (err, [ '04/15', '10/15', ... ])
    */
   getCouponMonths: (isin, callback) => {
-    const sql = `SELECT DISTINCT coupon_date FROM isin_coupon_schedule WHERE isin = ? ORDER BY coupon_date ASC`;
+    const sql = `SELECT DISTINCT coupon_date FROM isin_coupon_schedule WHERE isin COLLATE utf8mb4_unicode_ci = ? COLLATE utf8mb4_unicode_ci ORDER BY coupon_date ASC`;
     db.query(sql, [isin], (err, results) => {
       if (err) return callback(err);
       if (!results || results.length === 0) return callback(null, []);

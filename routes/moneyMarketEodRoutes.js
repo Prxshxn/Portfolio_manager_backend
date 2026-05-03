@@ -4,7 +4,7 @@ const { getAllDeals } = require('../models/moneyMarketDealModel');
 const { getSystemDay, setSystemDay } = require('../models/systemDayModel');
 const { checkAuth, checkAdmin } = require('../middleware/auth');
 const accountMapping = require('../services/accountMappingService');
-const { computeGsecPerDayAccrual } = require('../services/gsecCouponPeriod');
+const { computeGsecPerDayAccrual, computeGsecDailyAmortization } = require('../services/gsecCouponPeriod');
 // You may need to adjust this path to your ledger posting API
 const postLedgerEntry = require('../controllers/ledgerController').postLedgerEntry;
 console.log ("started eod page");
@@ -45,6 +45,85 @@ async function postLedgerEntryDirect(db, { date, drAccountId, crAccountId, amoun
     `INSERT INTO ledger_entries (entry_date, account_id, debit_amount, credit_amount, deal_number, description, currency)
      VALUES (?, ?, 0, ?, ?, ?, ?)`,
     [date, crAccountId, amount, String(dealId), description, 'LKR']
+  );
+  return { success: true };
+}
+
+async function resolveSettlementAccountCode(db, settlementMode) {
+  if (settlementMode) {
+    const [settlementRows] = await db.query(
+      'SELECT ledger_account_code FROM settlement_accounts WHERE bank_payment_code = ? LIMIT 1',
+      [settlementMode]
+    );
+    if (settlementRows && settlementRows.length > 0 && settlementRows[0].ledger_account_code) {
+      return settlementRows[0].ledger_account_code;
+    }
+  }
+
+  try {
+    return await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_DEFAULT_SETTLEMENT);
+  } catch (_) {
+    return '131-101-410-164-44';
+  }
+}
+
+function computeGsecCouponSettlementAmount(deal) {
+  const remainingFace = Number(deal.remaining_face_value || deal.face_value || 0);
+  if (!Number.isFinite(remainingFace) || remainingFace <= 0) {
+    return 0;
+  }
+
+  const couponPer100 = Number(deal.coupon_amount);
+  if (Number.isFinite(couponPer100) && couponPer100 > 0) {
+    return Math.floor(((couponPer100 * remainingFace) / 100) * 100000000) / 100000000;
+  }
+
+  const couponInterest = Number(deal.coupon_interest);
+  const faceValue = Number(deal.face_value || 0);
+  if (Number.isFinite(couponInterest) && couponInterest > 0 && Number.isFinite(faceValue) && faceValue > 0) {
+    return Math.floor((couponInterest * (remainingFace / faceValue)) * 100000000) / 100000000;
+  }
+
+  const couponRate = Number(deal.coupon_rate || 0);
+  if (Number.isFinite(couponRate) && couponRate > 0) {
+    return Math.floor(((remainingFace * couponRate / 100 / 2) * 100000000)) / 100000000;
+  }
+
+  return 0;
+}
+
+async function postGsecCouponSettlementDirect(
+  db,
+  {
+    date,
+    amount,
+    dealId,
+    description,
+    drAccruedIncomeAccountId,
+    crAccruedReceivableAccountId,
+    drBankAccountId,
+    crCouponIncomeAccountId
+  }
+) {
+  await db.query(
+    `INSERT INTO ledger_entries (entry_date, account_id, debit_amount, credit_amount, deal_number, description, currency)
+     VALUES (?, ?, ?, 0, ?, ?, ?)`,
+    [date, drAccruedIncomeAccountId, amount, String(dealId), description, 'LKR']
+  );
+  await db.query(
+    `INSERT INTO ledger_entries (entry_date, account_id, debit_amount, credit_amount, deal_number, description, currency)
+     VALUES (?, ?, 0, ?, ?, ?, ?)`,
+    [date, crAccruedReceivableAccountId, amount, String(dealId), description, 'LKR']
+  );
+  await db.query(
+    `INSERT INTO ledger_entries (entry_date, account_id, debit_amount, credit_amount, deal_number, description, currency)
+     VALUES (?, ?, ?, 0, ?, ?, ?)`,
+    [date, drBankAccountId, amount, String(dealId), description, 'LKR']
+  );
+  await db.query(
+    `INSERT INTO ledger_entries (entry_date, account_id, debit_amount, credit_amount, deal_number, description, currency)
+     VALUES (?, ?, 0, ?, ?, ?, ?)`,
+    [date, crCouponIncomeAccountId, amount, String(dealId), description, 'LKR']
   );
   return { success: true };
 }
@@ -237,97 +316,339 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
       postedCount++;
     }
     console.log(`MM posting summary: posted=${postedCount}, already_posted_skipped=${mmSkippedAlreadyPosted}`);
-    // GSec per-day accrual posting (recalculate from system date + maturity; same E as Excel PRICE)
+    // GSec EOD: parallel DB prefetch, then daily interest accrual + premium/discount amortization in parallel
     console.log('--- GSec EOD posting block reached ---');
-    const [gsecDeals] = await db.query(
-      `SELECT g.id, g.deal_number, g.value_date, g.coupon_interest, g.maturity_date, g.face_value, g.remaining_face_value,
-              g.isin_number, g.per_day_accrual,
-              im.coupon_date_1, im.coupon_date_2, im.coupon_rate
-       FROM gsec g
-       LEFT JOIN isin_master im ON g.isin_number COLLATE utf8mb4_unicode_ci = im.isin_number COLLATE utf8mb4_unicode_ci
-       WHERE g.transaction_type = 'Buy'
-         AND g.status = 'final_approved'
-         AND g.maturity_date >= ?
-         AND g.value_date IS NOT NULL
-         AND DATE(g.value_date) <= DATE(?)
-         AND (g.coupon_interest IS NOT NULL AND g.coupon_interest > 0
-              OR im.coupon_rate IS NOT NULL AND im.coupon_rate > 0)`,
-      [systemDay, systemDay]
-    );
-    console.log('GSec deals to post:', gsecDeals.length);
-    const gsecDrAccountCode = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_ACCRUAL_ASSET);
-    const gsecCrAccountCode = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_ACCRUAL_INCOME);
-    const gsecDrAccountId = await resolveAccountIdByCode(db, gsecDrAccountCode);
-    const gsecCrAccountId = await resolveAccountIdByCode(db, gsecCrAccountCode);
-    const [alreadyPostedRows] = await db.query(
-      `SELECT DISTINCT deal_number
-       FROM ledger_entries
-       WHERE DATE(entry_date) = DATE(?)
-         AND description LIKE 'GSec Daily Accrual for Deal %'`,
-      [systemDay]
-    );
-    const alreadyPostedDeals = new Set((alreadyPostedRows || []).map((r) => String(r.deal_number)));
-    let gsecPostedCount = 0;
-    let gsecSkippedAlreadyPosted = 0;
-    for (const deal of gsecDeals) {
-      try {
-        // Defense in depth (SQL already filters): value date must be on or before system day
-        if (!valueDateOnOrBeforeSystemDay(deal.value_date, systemDay)) {
-          console.warn(
-            'Skipping GSec deal (value date after system date):',
-            deal.deal_number,
-            'value_date=',
-            deal.value_date,
-            'systemDay=',
-            systemDay
+    const [
+      [gsecDeals],
+      [gsecAmortDeals],
+      [alreadyPostedRows],
+      [alreadyPostedAmortRows],
+      [colRows]
+    ] = await Promise.all([
+      db.query(
+        `SELECT g.id, g.deal_number, g.value_date, g.coupon_interest, g.maturity_date, g.face_value, g.remaining_face_value,
+                g.isin_number, g.per_day_accrual,
+                im.coupon_date_1, im.coupon_date_2, im.coupon_rate
+         FROM gsec g
+         LEFT JOIN isin_master im ON g.isin_number COLLATE utf8mb4_unicode_ci = im.isin_number COLLATE utf8mb4_unicode_ci
+         WHERE g.transaction_type = 'Buy'
+           AND g.status = 'final_approved'
+           AND g.maturity_date >= ?
+           AND g.value_date IS NOT NULL
+           AND DATE(g.value_date) <= DATE(?)
+           AND (g.coupon_interest IS NOT NULL AND g.coupon_interest > 0
+                OR im.coupon_rate IS NOT NULL AND im.coupon_rate > 0)`,
+        [systemDay, systemDay]
+      ),
+      db.query(
+        `SELECT g.id, g.deal_number, g.value_date, g.maturity_date, g.face_value,
+                g.remaining_face_value, g.clean_price
+         FROM gsec g
+         WHERE g.transaction_type = 'Buy'
+           AND g.status = 'final_approved'
+           AND g.maturity_date >= ?
+           AND g.value_date IS NOT NULL
+           AND DATE(g.value_date) <= DATE(?)
+           AND COALESCE(g.remaining_face_value, g.face_value, 0) > 0`,
+        [systemDay, systemDay]
+      ),
+      db.query(
+        `SELECT DISTINCT deal_number
+         FROM ledger_entries
+         WHERE DATE(entry_date) = DATE(?)
+           AND description LIKE 'GSec Daily Accrual for Deal %'`,
+        [systemDay]
+      ),
+      db.query(
+        `SELECT DISTINCT deal_number
+         FROM ledger_entries
+         WHERE DATE(entry_date) = DATE(?)
+           AND description LIKE 'GSec Daily Amortization for Deal %'`,
+        [systemDay]
+      ),
+      db.query(
+        `SELECT 1 AS ok FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE()
+           AND TABLE_NAME = 'gsec'
+           AND COLUMN_NAME = 'per_day_amortization'
+         LIMIT 1`
+      )
+    ]);
+
+    console.log('GSec accrual deals loaded:', gsecDeals.length);
+    console.log('GSec amortization deals loaded:', gsecAmortDeals.length);
+
+    const hasPerDayAmortizationColumn = Array.isArray(colRows) && colRows.length > 0;
+
+    const [gsecDrAccountCode, gsecCrAccountCode] = await Promise.all([
+      accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_ACCRUAL_ASSET),
+      accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_ACCRUAL_INCOME)
+    ]);
+    const [gsecDrAccountId, gsecCrAccountId] = await Promise.all([
+      resolveAccountIdByCode(db, gsecDrAccountCode),
+      resolveAccountIdByCode(db, gsecCrAccountCode)
+    ]);
+
+    let amortTradingAccountId = null;
+    let amortFaAccountId = null;
+    let amortPostingEnabled = false;
+    try {
+      const [amortTradingCode, amortFaCode] = await Promise.all([
+        accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_AMORTISATION_TRADING),
+        accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_FINANCIAL_ASSETS_AMORTISED_COST)
+      ]);
+      amortTradingAccountId = await resolveAccountIdByCode(db, amortTradingCode);
+      amortFaAccountId = await resolveAccountIdByCode(db, amortFaCode);
+      amortPostingEnabled = true;
+    } catch (amortMapErr) {
+      console.warn(
+        'GSec amortization account mappings missing. Skipping amortization this run:',
+        amortMapErr.message
+      );
+    }
+
+    const runGsecDailyAccrualPosting = async () => {
+      const alreadyPostedDeals = new Set((alreadyPostedRows || []).map((r) => String(r.deal_number)));
+      let posted = 0;
+      let skippedAlreadyPosted = 0;
+      for (const deal of gsecDeals) {
+        try {
+          if (!valueDateOnOrBeforeSystemDay(deal.value_date, systemDay)) {
+            console.warn(
+              'Skipping GSec deal (value date after system date):',
+              deal.deal_number,
+              'value_date=',
+              deal.value_date,
+              'systemDay=',
+              systemDay
+            );
+            if (Number(deal.per_day_accrual) > 0) {
+              await db.query('UPDATE gsec SET per_day_accrual = 0 WHERE id = ?', [deal.id]);
+            }
+            continue;
+          }
+          const computed = computeGsecPerDayAccrual(deal, systemDay, 2);
+          if (!computed.ok) {
+            console.warn('Skipping GSec deal:', deal.deal_number, computed.reason);
+            if (Number(deal.per_day_accrual) > 0) {
+              await db.query('UPDATE gsec SET per_day_accrual = 0 WHERE id = ?', [deal.id]);
+            }
+            continue;
+          }
+          const { amount, E } = computed;
+          if (alreadyPostedDeals.has(String(deal.deal_number))) {
+            skippedAlreadyPosted++;
+          } else {
+            const lr = await postLedgerEntryDirect(db, {
+              date: systemDay,
+              drAccountId: gsecDrAccountId,
+              crAccountId: gsecCrAccountId,
+              amount,
+              dealId: deal.deal_number,
+              description: `GSec Daily Accrual for Deal ${deal.deal_number}`
+            });
+            if (!isLedgerPostOk(lr)) {
+              console.error(
+                'GSec accrual ledger post failed; gsec row not updated:',
+                deal.deal_number,
+                lr && lr.error
+              );
+              continue;
+            }
+            alreadyPostedDeals.add(String(deal.deal_number));
+            posted++;
+          }
+          await db.query(
+            `UPDATE gsec SET per_day_accrual = ?, number_of_days_for_coupon_period = ? WHERE id = ?`,
+            [amount, E, deal.id]
           );
-          if (Number(deal.per_day_accrual) > 0) {
-            await db.query('UPDATE gsec SET per_day_accrual = 0 WHERE id = ?', [deal.id]);
-          }
-          continue;
+        } catch (err) {
+          console.error('Failed to post GSec ledger for deal:', deal.deal_number, err);
         }
-        const computed = computeGsecPerDayAccrual(deal, systemDay, 2);
-        if (!computed.ok) {
-          console.warn('Skipping GSec deal:', deal.deal_number, computed.reason);
-          // Zero out stale per_day_accrual so it doesn't mislead reports
-          if (Number(deal.per_day_accrual) > 0) {
-            await db.query('UPDATE gsec SET per_day_accrual = 0 WHERE id = ?', [deal.id]);
+      }
+      return {
+        posted,
+        skipped_already_posted: skippedAlreadyPosted,
+        deals_loaded: gsecDeals.length
+      };
+    };
+
+    const runGsecDailyAmortizationPosting = async () => {
+      if (!amortPostingEnabled) {
+        return {
+          posted: 0,
+          skipped_already_posted: 0,
+          enabled: false,
+          deals_loaded: gsecAmortDeals.length
+        };
+      }
+      const alreadyPostedAmortDeals = new Set(
+        (alreadyPostedAmortRows || []).map((r) => String(r.deal_number))
+      );
+      let posted = 0;
+      let skippedAlreadyPosted = 0;
+      for (const deal of gsecAmortDeals) {
+        try {
+          if (!valueDateOnOrBeforeSystemDay(deal.value_date, systemDay)) {
+            continue;
           }
-          continue;
-        }
-        const { amount, E } = computed;
-        if (alreadyPostedDeals.has(String(deal.deal_number))) {
-          gsecSkippedAlreadyPosted++;
-        } else {
+          const computed = computeGsecDailyAmortization(deal, systemDay);
+          if (!computed.ok) {
+            if (hasPerDayAmortizationColumn) {
+              await db.query('UPDATE gsec SET per_day_amortization = 0 WHERE id = ?', [deal.id]);
+            }
+            continue;
+          }
+          const { dailyAmount, scenario } = computed;
+
+          if (hasPerDayAmortizationColumn) {
+            await db.query('UPDATE gsec SET per_day_amortization = ? WHERE id = ?', [
+              dailyAmount,
+              deal.id
+            ]);
+          }
+
+          if (alreadyPostedAmortDeals.has(String(deal.deal_number))) {
+            skippedAlreadyPosted++;
+            continue;
+          }
+
+          let drId;
+          let crId;
+          if (scenario === 'premium') {
+            drId = amortTradingAccountId;
+            crId = amortFaAccountId;
+          } else {
+            drId = amortFaAccountId;
+            crId = amortTradingAccountId;
+          }
+
           const lr = await postLedgerEntryDirect(db, {
             date: systemDay,
-            drAccountId: gsecDrAccountId,
-            crAccountId: gsecCrAccountId,
-            amount,
+            drAccountId: drId,
+            crAccountId: crId,
+            amount: dailyAmount,
             dealId: deal.deal_number,
-            description: `GSec Daily Accrual for Deal ${deal.deal_number}`
+            description: `GSec Daily Amortization for Deal ${deal.deal_number}`
           });
           if (!isLedgerPostOk(lr)) {
             console.error(
-              'GSec accrual ledger post failed; gsec row not updated:',
+              'GSec amortization ledger post failed:',
               deal.deal_number,
               lr && lr.error
             );
             continue;
           }
-          alreadyPostedDeals.add(String(deal.deal_number));
-          gsecPostedCount++;
+          alreadyPostedAmortDeals.add(String(deal.deal_number));
+          posted++;
+        } catch (err) {
+          console.error('Failed GSec amortization for deal:', deal.deal_number, err);
         }
-        await db.query(
-          `UPDATE gsec SET per_day_accrual = ?, number_of_days_for_coupon_period = ? WHERE id = ?`,
-          [amount, E, deal.id]
-        );
+      }
+      return {
+        posted,
+        skipped_already_posted: skippedAlreadyPosted,
+        enabled: true,
+        deals_loaded: gsecAmortDeals.length
+      };
+    };
+
+    const [gsecAccrualEodResult, gsecAmortEodResult] = await Promise.all([
+      runGsecDailyAccrualPosting(),
+      runGsecDailyAmortizationPosting()
+    ]);
+
+    const gsecPostedCount = gsecAccrualEodResult.posted;
+    const gsecSkippedAlreadyPosted = gsecAccrualEodResult.skipped_already_posted;
+    const gsecAmortPostedCount = gsecAmortEodResult.posted;
+    const gsecAmortSkippedAlreadyPosted = gsecAmortEodResult.skipped_already_posted;
+
+    console.log(
+      `GSec accrual summary: posted=${gsecPostedCount}, already_posted_skipped=${gsecSkippedAlreadyPosted}`
+    );
+    console.log(
+      `GSec amortization summary: posted=${gsecAmortPostedCount}, already_posted_skipped=${gsecAmortSkippedAlreadyPosted}`
+    );
+
+    // GSec coupon settlement posting on coupon date (semi-annual schedule)
+    let gsecCouponPostedCount = 0;
+    let gsecCouponSkippedAlreadyPosted = 0;
+    const gsecCouponIncomeCode = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_COUPON_INCOME);
+    const gsecCouponIncomeId = await resolveAccountIdByCode(db, gsecCouponIncomeCode);
+    const [dueCouponDeals] = await db.query(
+      `SELECT g.id, g.deal_number, g.isin_number, g.value_date, g.maturity_date, g.face_value,
+              g.remaining_face_value, g.coupon_interest, g.settlement_mode,
+              im.coupon_rate, ics.coupon_date, ics.coupon_amount
+       FROM gsec g
+       JOIN isin_coupon_schedule ics
+         ON ics.isin COLLATE utf8mb4_unicode_ci = g.isin_number COLLATE utf8mb4_unicode_ci
+        AND DATE(ics.coupon_date) = DATE(?)
+       LEFT JOIN isin_master im
+         ON g.isin_number COLLATE utf8mb4_unicode_ci = im.isin_number COLLATE utf8mb4_unicode_ci
+       WHERE g.transaction_type = 'Buy'
+         AND g.status = 'final_approved'
+         AND DATE(g.value_date) <= DATE(?)
+         AND DATE(g.maturity_date) >= DATE(?)
+         AND COALESCE(g.remaining_face_value, g.face_value, 0) > 0`,
+      [systemDay, systemDay, systemDay]
+    );
+    const [alreadyPostedCouponRows] = await db.query(
+      `SELECT deal_number, description
+       FROM ledger_entries
+       WHERE DATE(entry_date) = DATE(?)
+         AND description LIKE 'GSec Coupon Settlement %'`,
+      [systemDay]
+    );
+    const alreadyPostedCoupons = new Set(
+      (alreadyPostedCouponRows || []).map((r) => `${String(r.deal_number)}|${String(r.description)}`)
+    );
+    const settlementAccountCache = new Map();
+
+    for (const deal of dueCouponDeals) {
+      try {
+        const couponDateStr = new Date(deal.coupon_date).toISOString().slice(0, 10);
+        const description = `GSec Coupon Settlement ${deal.deal_number} ${couponDateStr}`;
+        const postingKey = `${String(deal.deal_number)}|${description}`;
+        if (alreadyPostedCoupons.has(postingKey)) {
+          gsecCouponSkippedAlreadyPosted++;
+          continue;
+        }
+
+        const amount = computeGsecCouponSettlementAmount(deal);
+        if (!Number.isFinite(amount) || amount <= 0) {
+          continue;
+        }
+
+        let bankAccountCode = settlementAccountCache.get(String(deal.settlement_mode || ''));
+        if (!bankAccountCode) {
+          bankAccountCode = await resolveSettlementAccountCode(db, deal.settlement_mode);
+          settlementAccountCache.set(String(deal.settlement_mode || ''), bankAccountCode);
+        }
+        const bankAccountId = await resolveAccountIdByCode(db, bankAccountCode);
+
+        const lr = await postGsecCouponSettlementDirect(db, {
+          date: systemDay,
+          amount,
+          dealId: deal.deal_number,
+          description,
+          drAccruedIncomeAccountId: gsecCrAccountId,
+          crAccruedReceivableAccountId: gsecDrAccountId,
+          drBankAccountId: bankAccountId,
+          crCouponIncomeAccountId: gsecCouponIncomeId
+        });
+        if (!isLedgerPostOk(lr)) {
+          console.error('GSec coupon settlement post failed:', deal.deal_number, lr && lr.error);
+          continue;
+        }
+
+        alreadyPostedCoupons.add(postingKey);
+        gsecCouponPostedCount++;
       } catch (err) {
-        console.error('Failed to post GSec ledger for deal:', deal.deal_number, err);
+        console.error('Failed to post GSec coupon settlement for deal:', deal.deal_number, err);
       }
     }
     console.log(
-      `GSec posting summary: posted=${gsecPostedCount}, already_posted_skipped=${gsecSkippedAlreadyPosted}`
+      `GSec coupon settlement summary: posted=${gsecCouponPostedCount}, already_posted_skipped=${gsecCouponSkippedAlreadyPosted}`
     );
 
     // Clear per_day_accrual for Buy deals whose value date is still in the future (or was posted before this rule)
@@ -637,8 +958,21 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
     await setSystemDay(tomorrowStr);
     res.json({
       success: true,
-      message: `EOD complete. Posted for ${postedCount} money market deals, ${gsecPostedCount} GSec deals, ${fdPostedCount} fixed deposit deals, and ${repoAccrualCount} repo accrual + ${repoMaturityCount} repo maturity + ${repoBackfillCount} repo backfill entries.`,
-      next_system_day: tomorrowStr
+      message: `EOD complete. Posted for ${postedCount} money market deals, ${gsecPostedCount} GSec accrual deals, ${gsecAmortPostedCount} GSec amortization, ${gsecCouponPostedCount} GSec coupon settlements, ${fdPostedCount} fixed deposit deals, and ${repoAccrualCount} repo accrual + ${repoMaturityCount} repo maturity + ${repoBackfillCount} repo backfill entries.`,
+      next_system_day: tomorrowStr,
+      gsec_eod: {
+        daily_accrual: {
+          posted: gsecAccrualEodResult.posted,
+          skipped_already_posted: gsecAccrualEodResult.skipped_already_posted,
+          deals_loaded: gsecAccrualEodResult.deals_loaded
+        },
+        daily_amortization: {
+          posted: gsecAmortEodResult.posted,
+          skipped_already_posted: gsecAmortEodResult.skipped_already_posted,
+          enabled: gsecAmortEodResult.enabled,
+          deals_loaded: gsecAmortEodResult.deals_loaded
+        }
+      }
     });
   } catch (err) {
     console.error('EOD error:', err);

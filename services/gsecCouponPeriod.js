@@ -197,6 +197,70 @@ function computeGsecPerDayAccrual(deal, settlementDate, frequency = 2) {
   return { ok: true, amount, E, effectiveCouponInterest };
 }
 
+/**
+ * Calendar days from value_date to maturity_date (MySQL DATEDIFF-style: maturity - value).
+ * @returns {number}
+ */
+function daysFromValueToMaturity(valueDate, maturityDate) {
+  const v = new Date(valueDate);
+  const m = new Date(maturityDate);
+  if (Number.isNaN(v.getTime()) || Number.isNaN(m.getTime())) {
+    return 0;
+  }
+  const vUtc = Date.UTC(v.getFullYear(), v.getMonth(), v.getDate());
+  const mUtc = Date.UTC(m.getFullYear(), m.getMonth(), m.getDate());
+  return (mUtc - vUtc) / (24 * 60 * 60 * 1000);
+}
+
+/**
+ * Straight-line daily premium/discount amortization for a GSEC buy row.
+ * @param {object} deal - { face_value, remaining_face_value, clean_price, value_date, maturity_date }
+ * @param {Date|string} [_settlementDate] - reserved for future use (as-of date)
+ * @returns {{ ok: true, dailyAmount: number, scenario: 'premium'|'discount', days: number, scaledCal2: number } | { ok: false, reason: string }}
+ */
+function computeGsecDailyAmortization(deal, _settlementDate) {
+  const faceVal = Number(deal.face_value) || 0;
+  let remaining = deal.remaining_face_value;
+  if (remaining === null || remaining === undefined || remaining === '') {
+    remaining = faceVal;
+  } else {
+    remaining = Number(remaining);
+  }
+  if (!Number.isFinite(remaining) || remaining <= 0) {
+    return { ok: false, reason: 'no remaining face' };
+  }
+
+  const clean = Number(deal.clean_price);
+  if (!Number.isFinite(clean)) {
+    return { ok: false, reason: 'missing clean_price' };
+  }
+  if (Math.abs(clean - 100) < 1e-6) {
+    return { ok: false, reason: 'par bond' };
+  }
+
+  const cal1 = faceVal * (clean / 100);
+  const cal2 = faceVal - cal1;
+  const scale = faceVal > 0 ? remaining / faceVal : 1;
+  const scaledCal2 = cal2 * scale;
+  if (!Number.isFinite(scaledCal2) || Math.abs(scaledCal2) < 1e-12) {
+    return { ok: false, reason: 'zero scaled premium/discount' };
+  }
+
+  const days = daysFromValueToMaturity(deal.value_date, deal.maturity_date);
+  if (!Number.isFinite(days) || days <= 0) {
+    return { ok: false, reason: `invalid amortization days (${days})` };
+  }
+
+  const dailyAmount =
+    Math.floor((Math.abs(scaledCal2) / days) * 100000000) / 100000000;
+  if (!Number.isFinite(dailyAmount) || dailyAmount === 0) {
+    return { ok: false, reason: 'zero daily amortization' };
+  }
+
+  const scenario = clean > 100 ? 'premium' : 'discount';
+  return { ok: true, dailyAmount, scenario, days, scaledCal2 };
+}
+
 module.exports = {
   getDaysDifference,
   findCouponPeriodFromMaturity,
@@ -205,5 +269,7 @@ module.exports = {
   getCouponPeriodLengthDaysFromIsinSchedule,
   resolveIsinCouponDates,
   ISIN_COUPON_SCHEDULE_OVERRIDE,
-  computeGsecPerDayAccrual
+  computeGsecPerDayAccrual,
+  daysFromValueToMaturity,
+  computeGsecDailyAmortization
 };

@@ -21,7 +21,7 @@ async function main() {
       const [coupons] = await db.query(`
         SELECT coupon_date, coupon_amount
         FROM isin_coupon_schedule
-        WHERE isin = ? AND coupon_date <= ?
+        WHERE isin COLLATE utf8mb4_unicode_ci = ? COLLATE utf8mb4_unicode_ci AND coupon_date <= ?
         ORDER BY coupon_date
       `, [deal.isin, deal.maturity_date]);
 

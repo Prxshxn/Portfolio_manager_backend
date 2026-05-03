@@ -381,7 +381,7 @@ const buybackDealController = {
                   const couponDate2 = buybackDeal.coupon_date2 || isin.coupon_date_2;
 
                   const [couponSchedule] = await db.query(
-                    'SELECT * FROM isin_coupon_schedule WHERE isin = ? ORDER BY coupon_date ASC',
+                    'SELECT * FROM isin_coupon_schedule WHERE isin COLLATE utf8mb4_unicode_ci = ? COLLATE utf8mb4_unicode_ci ORDER BY coupon_date ASC',
                     [buybackDeal.leg2_isin]
                   );
 
@@ -531,6 +531,7 @@ const buybackDealController = {
                     'UPDATE gsec SET remaining_face_value = ? WHERE id = ?',
                     [newRemaining.toFixed(4), buyDeal.id]
                   );
+                  await Gsec.syncFutureCouponCashflowsForBuyDeal(buyDeal.deal_number);
 
                   console.log(
                     `Deducted ${deductAmount} from buy deal ${allocDealNumber} (id=${buyDeal.id}). New remaining: ${newRemaining}`
@@ -594,6 +595,7 @@ const buybackDealController = {
                         'UPDATE gsec SET remaining_face_value = ? WHERE id = ?',
                         [newRemaining.toFixed(4), buyDeal.id]
                       );
+                      await Gsec.syncFutureCouponCashflowsForBuyDeal(buyDeal.deal_number);
                       console.log(`Legacy deducted ${deductAmount} from buy deal ${buyDeal.deal_number}. New remaining: ${newRemaining}`);
                       remainingToDeduct -= deductAmount;
                     }
@@ -841,6 +843,7 @@ const buybackDealController = {
               'UPDATE gsec SET remaining_face_value = ? WHERE id = ?',
               [restoredRemaining.toFixed(4), buyDeal.id]
             );
+            await Gsec.syncFutureCouponCashflowsForBuyDeal(buyDeal.deal_number);
 
             console.log(
               `Restored ${addBack} to buy deal ${allocDealNumber} (id=${buyDeal.id}). New remaining: ${restoredRemaining}`
@@ -901,6 +904,7 @@ const buybackDealController = {
                 'UPDATE gsec SET remaining_face_value = ? WHERE id = ?',
                 [restoredRemaining.toFixed(4), buyDeal.id]
               );
+              await Gsec.syncFutureCouponCashflowsForBuyDeal(buyDeal.deal_number);
 
               remainingToRestore -= addBack;
             }
