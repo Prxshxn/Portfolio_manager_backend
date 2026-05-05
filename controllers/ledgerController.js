@@ -1,8 +1,8 @@
-const db = require('../config/db');
+const { pool } = require('../config/database');
 
 // Helper to get account_id from account_code
 async function getAccountIdByCode(account_code) {
-  const [rows] = await db.query(
+  const [rows] = await pool.query(
     'SELECT id FROM chart_of_accounts WHERE account_code = ? LIMIT 1',
     [account_code]
   );
@@ -21,7 +21,7 @@ exports.postLedgerEntry = async function(entry) {
   console.log('postLedgerEntry function called');
   const { date, dr_account, cr_account, amount, deal_id, description } = entry;
   console.log('EOD Posting:', entry);
-  const connection = await db.getConnection();
+  const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
     const dr_account_id = await getAccountIdByCode(dr_account);
@@ -81,7 +81,7 @@ exports.postCompoundLedgerEntry = async function(entry) {
   
   console.log('Compound Entry:', { date, dr_accounts, cr_account, totalDebit, deal_id, description });
   
-  const connection = await db.getConnection();
+  const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
     
@@ -160,7 +160,7 @@ exports.postMultiLineLedgerEntry = async function(entry) {
     };
   }
 
-  const connection = await db.getConnection();
+  const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
 
