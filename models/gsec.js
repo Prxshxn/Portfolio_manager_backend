@@ -1178,49 +1178,54 @@ const Gsec = {
                 const sellCleanPct = Number(transaction.clean_price || 0);
                 const sellCleanAmt = truncate8((sellFace * sellCleanPct) / 100);
 
-                // Coupon accrued-to-sell (for coupon income + accrued reversal).
-                // Uses per-day accrual at sell date and days since last coupon boundary.
-                let couponAccruedToSell = 0;
-                try {
-                  // coupon_rate and coupon_date_1/2 are not guaranteed on gsec rows; pull from isin_master for accuracy.
-                  const [isinRows] = await db.query(
-                    `SELECT coupon_rate, coupon_date_1, coupon_date_2
-                     FROM isin_master
-                     WHERE isin_number COLLATE utf8mb4_unicode_ci = ? COLLATE utf8mb4_unicode_ci
-                     LIMIT 1`,
-                    [buyDeal.isin_number]
-                  );
-                  const isin = isinRows && isinRows[0] ? isinRows[0] : {};
-                  const perDay = computeGsecPerDayAccrual(
-                    {
-                      face_value: buyDeal.face_value,
-                      remaining_face_value: sellFace, // accrue on the portion sold
-                      coupon_interest: buyDeal.coupon_interest,
-                      coupon_rate: isin.coupon_rate,
-                      maturity_date: buyDeal.maturity_date,
-                      isin_number: buyDeal.isin_number,
-                      coupon_date_1: isin.coupon_date_1,
-                      coupon_date_2: isin.coupon_date_2
-                    },
-                    sellDate,
-                    2
-                  );
-                  if (perDay.ok) {
-                    let lastCoupon = buyDeal.last_coupon_date ? new Date(buyDeal.last_coupon_date) : null;
-                    if (!lastCoupon || Number.isNaN(lastCoupon.getTime())) {
-                      const r = findCouponPeriodFromMaturity(sellDate, buyDeal.maturity_date, 2);
-                      lastCoupon = r.lastCoupon;
+                // Coupon accrued-to-sell: prefer stored sell accrued_interest (matches dirty-clean split),
+                // fallback to derived accrual only if missing.
+                let couponAccruedToSell = truncate8(Number(transaction.accrued_interest || 0));
+                if (!Number.isFinite(couponAccruedToSell) || couponAccruedToSell < 0) couponAccruedToSell = 0;
+                if (couponAccruedToSell === 0) {
+                  try {
+                    const [isinRows] = await db.query(
+                      `SELECT coupon_rate, coupon_date_1, coupon_date_2
+                       FROM isin_master
+                       WHERE isin_number COLLATE utf8mb4_unicode_ci = ? COLLATE utf8mb4_unicode_ci
+                       LIMIT 1`,
+                      [buyDeal.isin_number]
+                    );
+                    const isin = isinRows && isinRows[0] ? isinRows[0] : {};
+                    const perDay = computeGsecPerDayAccrual(
+                      {
+                        face_value: buyDeal.face_value,
+                        remaining_face_value: sellFace, // accrue on the portion sold
+                        coupon_interest: buyDeal.coupon_interest,
+                        coupon_rate: isin.coupon_rate,
+                        maturity_date: buyDeal.maturity_date,
+                        isin_number: buyDeal.isin_number,
+                        coupon_date_1: isin.coupon_date_1,
+                        coupon_date_2: isin.coupon_date_2
+                      },
+                      sellDate,
+                      2
+                    );
+                    if (perDay.ok) {
+                      let lastCoupon = buyDeal.last_coupon_date ? new Date(buyDeal.last_coupon_date) : null;
+                      if (!lastCoupon || Number.isNaN(lastCoupon.getTime())) {
+                        const r = findCouponPeriodFromMaturity(sellDate, buyDeal.maturity_date, 2);
+                        lastCoupon = r.lastCoupon;
+                      }
+                      const daysAccrued = Math.max(0, utcDayDiffSigned(sellDate, lastCoupon));
+                      couponAccruedToSell = truncate8(perDay.amount * daysAccrued);
                     }
-                    const daysAccrued = Math.max(0, utcDayDiffSigned(sellDate, lastCoupon));
-                    couponAccruedToSell = truncate8(perDay.amount * daysAccrued);
+                  } catch (e) {
+                    console.warn('Failed to compute coupon accrued-to-sell, defaulting to 0:', e.message);
+                    couponAccruedToSell = 0;
                   }
-                } catch (e) {
-                  console.warn('Failed to compute coupon accrued-to-sell, defaulting to 0:', e.message);
-                  couponAccruedToSell = 0;
                 }
 
                 const bookValueAtSell = truncate8(purchaseCleanAmt + amortToSell);
-                const capitalGl = truncate8(sellCleanAmt - bookValueAtSell);
+                // Prefer clean amount derived from dirty cash-in minus accrued interest (matches template and avoids pct rounding).
+                const sellDirtyAmt = truncate8(Number(transaction.settlement_amount || 0));
+                const sellCleanAmtEffective = truncate8(sellDirtyAmt - couponAccruedToSell);
+                const capitalGl = truncate8(sellCleanAmtEffective - bookValueAtSell);
 
                 // Resolve accounts (with safe fallbacks to the codes you provided).
                 let tradingAccount = '131-101-350-098-44';
@@ -1262,6 +1267,19 @@ const Gsec = {
                     mainCr.push({ account_code: capitalGainLossAccount, amount: Math.abs(capitalGl), description: mainDescription });
                   } else {
                     mainDr.push({ account_code: capitalGainLossAccount, amount: Math.abs(capitalGl), description: mainDescription });
+                  }
+                }
+
+                // Ensure the journal balances (absorb any small rounding residual into capital gain/loss).
+                const sumLines = (arr) => arr.reduce((s, l) => s + (Number(l.amount) || 0), 0);
+                const totalDr = sumLines(mainDr);
+                const totalCr = sumLines(mainCr);
+                const residual = truncate8(totalDr - totalCr);
+                if (Math.abs(residual) > 0.00000001) {
+                  if (residual > 0) {
+                    mainCr.push({ account_code: capitalGainLossAccount, amount: Math.abs(residual), description: `${mainDescription} (Rounding)` });
+                  } else {
+                    mainDr.push({ account_code: capitalGainLossAccount, amount: Math.abs(residual), description: `${mainDescription} (Rounding)` });
                   }
                 }
 
@@ -1654,45 +1672,50 @@ Gsec.backfillLedgerEntries = async (transactionId = null) => {
           const sellCleanPct = Number(transaction.clean_price || 0);
           const sellCleanAmt = truncate8((sellFace * sellCleanPct) / 100);
 
-          let couponAccruedToSell = 0;
-          try {
-            const [isinRows] = await db.query(
-              `SELECT coupon_rate, coupon_date_1, coupon_date_2
-               FROM isin_master
-               WHERE isin_number COLLATE utf8mb4_unicode_ci = ? COLLATE utf8mb4_unicode_ci
-               LIMIT 1`,
-              [buyDeal.isin_number]
-            );
-            const isin = isinRows && isinRows[0] ? isinRows[0] : {};
-            const perDay = computeGsecPerDayAccrual(
-              {
-                face_value: buyDeal.face_value,
-                remaining_face_value: sellFace,
-                coupon_interest: buyDeal.coupon_interest,
-                coupon_rate: isin.coupon_rate,
-                maturity_date: buyDeal.maturity_date,
-                isin_number: buyDeal.isin_number,
-                coupon_date_1: isin.coupon_date_1,
-                coupon_date_2: isin.coupon_date_2
-              },
-              sellDate,
-              2
-            );
-            if (perDay.ok) {
-              let lastCoupon = buyDeal.last_coupon_date ? new Date(buyDeal.last_coupon_date) : null;
-              if (!lastCoupon || Number.isNaN(lastCoupon.getTime())) {
-                const r = findCouponPeriodFromMaturity(sellDate, buyDeal.maturity_date, 2);
-                lastCoupon = r.lastCoupon;
+          let couponAccruedToSell = truncate8(Number(transaction.accrued_interest || 0));
+          if (!Number.isFinite(couponAccruedToSell) || couponAccruedToSell < 0) couponAccruedToSell = 0;
+          if (couponAccruedToSell === 0) {
+            try {
+              const [isinRows] = await db.query(
+                `SELECT coupon_rate, coupon_date_1, coupon_date_2
+                 FROM isin_master
+                 WHERE isin_number COLLATE utf8mb4_unicode_ci = ? COLLATE utf8mb4_unicode_ci
+                 LIMIT 1`,
+                [buyDeal.isin_number]
+              );
+              const isin = isinRows && isinRows[0] ? isinRows[0] : {};
+              const perDay = computeGsecPerDayAccrual(
+                {
+                  face_value: buyDeal.face_value,
+                  remaining_face_value: sellFace,
+                  coupon_interest: buyDeal.coupon_interest,
+                  coupon_rate: isin.coupon_rate,
+                  maturity_date: buyDeal.maturity_date,
+                  isin_number: buyDeal.isin_number,
+                  coupon_date_1: isin.coupon_date_1,
+                  coupon_date_2: isin.coupon_date_2
+                },
+                sellDate,
+                2
+              );
+              if (perDay.ok) {
+                let lastCoupon = buyDeal.last_coupon_date ? new Date(buyDeal.last_coupon_date) : null;
+                if (!lastCoupon || Number.isNaN(lastCoupon.getTime())) {
+                  const r = findCouponPeriodFromMaturity(sellDate, buyDeal.maturity_date, 2);
+                  lastCoupon = r.lastCoupon;
+                }
+                const daysAccrued = Math.max(0, utcDayDiffSigned(sellDate, lastCoupon));
+                couponAccruedToSell = truncate8(perDay.amount * daysAccrued);
               }
-              const daysAccrued = Math.max(0, utcDayDiffSigned(sellDate, lastCoupon));
-              couponAccruedToSell = truncate8(perDay.amount * daysAccrued);
+            } catch (_) {
+              couponAccruedToSell = 0;
             }
-          } catch (_) {
-            couponAccruedToSell = 0;
           }
 
           const bookValueAtSell = truncate8(purchaseCleanAmt + amortToSell);
-          const capitalGl = truncate8(sellCleanAmt - bookValueAtSell);
+          const sellDirtyAmt = truncate8(Number(transaction.settlement_amount || 0));
+          const sellCleanAmtEffective = truncate8(sellDirtyAmt - couponAccruedToSell);
+          const capitalGl = truncate8(sellCleanAmtEffective - bookValueAtSell);
 
           let tradingAccount = '131-101-350-098-44';
           let amortAccount = '358-101-130-416-44';
@@ -1727,6 +1750,15 @@ Gsec.backfillLedgerEntries = async (transactionId = null) => {
           if (Math.abs(capitalGl) > 0.00000001) {
             if (capitalGl >= 0) mainCr.push({ account_code: capitalGainLossAccount, amount: Math.abs(capitalGl), description: mainDescription });
             else mainDr.push({ account_code: capitalGainLossAccount, amount: Math.abs(capitalGl), description: mainDescription });
+          }
+
+          const sumLines = (arr) => arr.reduce((s, l) => s + (Number(l.amount) || 0), 0);
+          const totalDr = sumLines(mainDr);
+          const totalCr = sumLines(mainCr);
+          const residual = truncate8(totalDr - totalCr);
+          if (Math.abs(residual) > 0.00000001) {
+            if (residual > 0) mainCr.push({ account_code: capitalGainLossAccount, amount: Math.abs(residual), description: `${mainDescription} (Rounding)` });
+            else mainDr.push({ account_code: capitalGainLossAccount, amount: Math.abs(residual), description: `${mainDescription} (Rounding)` });
           }
 
           const reversalDescription = `GSec Sale - Accrued Interest Reversal - ${transaction.deal_number}`;
