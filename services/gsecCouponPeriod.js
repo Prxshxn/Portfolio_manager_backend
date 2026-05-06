@@ -246,10 +246,12 @@ function computeGsecDailyAmortization(deal, _settlementDate) {
     return { ok: false, reason: 'zero scaled premium/discount' };
   }
 
-  const days = daysFromValueToMaturity(deal.value_date, deal.maturity_date);
-  if (!Number.isFinite(days) || days <= 0) {
-    return { ok: false, reason: `invalid amortization days (${days})` };
+  const rawDays = daysFromValueToMaturity(deal.value_date, deal.maturity_date);
+  if (!Number.isFinite(rawDays) || rawDays <= 0) {
+    return { ok: false, reason: `invalid amortization days (${rawDays})` };
   }
+  // Maturity calendar day is excluded from the straight-line divisor (not amortized on maturity).
+  const days = Math.max(1, rawDays - 1);
 
   const dailyAmount =
     Math.floor((Math.abs(scaledCal2) / days) * 100000000) / 100000000;

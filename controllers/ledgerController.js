@@ -1,8 +1,8 @@
-const db = require('../config/db');
+const { pool } = require('../config/database');
 
 // Helper to get account_id from account_code
 async function getAccountIdByCode(account_code) {
-  const [rows] = await db.query(
+  const [rows] = await pool.query(
     'SELECT id FROM chart_of_accounts WHERE account_code = ? LIMIT 1',
     [account_code]
   );
@@ -21,7 +21,7 @@ exports.postLedgerEntry = async function(entry) {
   console.log('postLedgerEntry function called');
   const { date, dr_account, cr_account, amount, deal_id, description } = entry;
   console.log('EOD Posting:', entry);
-  const connection = await db.getConnection();
+  const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
     const dr_account_id = await getAccountIdByCode(dr_account);
@@ -81,7 +81,7 @@ exports.postCompoundLedgerEntry = async function(entry) {
   
   console.log('Compound Entry:', { date, dr_accounts, cr_account, totalDebit, deal_id, description });
   
-  const connection = await db.getConnection();
+  const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
     
@@ -123,6 +123,74 @@ exports.postCompoundLedgerEntry = async function(entry) {
   } catch (err) {
     await connection.rollback();
     console.error('Compound ledger entry insert error:', err);
+    return { success: false, error: err.message };
+  } finally {
+    connection.release();
+  }
+};
+
+/**
+ * Post a multi-line journal entry with multiple debits and multiple credits.
+ * All lines share the same entry_date, deal_number, and description (unless line overrides).
+ *
+ * @param {Object} entry
+ * @param {string} entry.date
+ * @param {Array<{account_code: string, amount: number, description?: string}>} entry.dr_accounts
+ * @param {Array<{account_code: string, amount: number, description?: string}>} entry.cr_accounts
+ * @param {string} entry.deal_id
+ * @param {string} entry.description
+ */
+exports.postMultiLineLedgerEntry = async function(entry) {
+  const { date, dr_accounts, cr_accounts, deal_id, description } = entry;
+
+  if (!Array.isArray(dr_accounts) || dr_accounts.length === 0) {
+    return { success: false, error: 'dr_accounts must be a non-empty array' };
+  }
+  if (!Array.isArray(cr_accounts) || cr_accounts.length === 0) {
+    return { success: false, error: 'cr_accounts must be a non-empty array' };
+  }
+
+  const totalDr = dr_accounts.reduce((sum, l) => sum + parseFloat(l.amount || 0), 0);
+  const totalCr = cr_accounts.reduce((sum, l) => sum + parseFloat(l.amount || 0), 0);
+  const diff = Math.abs(totalDr - totalCr);
+  if (!Number.isFinite(totalDr) || !Number.isFinite(totalCr) || diff > 0.01) {
+    return {
+      success: false,
+      error: `Debits and credits must balance (dr=${totalDr}, cr=${totalCr}, diff=${diff})`
+    };
+  }
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    for (const dr of dr_accounts) {
+      const dr_account_id = await getAccountIdByCode(dr.account_code);
+      const drAmount = parseFloat(dr.amount || 0);
+      if (!Number.isFinite(drAmount) || drAmount <= 0) continue;
+      await connection.query(
+        `INSERT INTO ledger_entries (entry_date, account_id, debit_amount, credit_amount, deal_number, description, currency)
+         VALUES (?, ?, ?, 0, ?, ?, ?)`,
+        [date, dr_account_id, drAmount, deal_id, dr.description || description, 'LKR']
+      );
+    }
+
+    for (const cr of cr_accounts) {
+      const cr_account_id = await getAccountIdByCode(cr.account_code);
+      const crAmount = parseFloat(cr.amount || 0);
+      if (!Number.isFinite(crAmount) || crAmount <= 0) continue;
+      await connection.query(
+        `INSERT INTO ledger_entries (entry_date, account_id, debit_amount, credit_amount, deal_number, description, currency)
+         VALUES (?, ?, 0, ?, ?, ?, ?)`,
+        [date, cr_account_id, crAmount, deal_id, cr.description || description, 'LKR']
+      );
+    }
+
+    await connection.commit();
+    return { success: true };
+  } catch (err) {
+    await connection.rollback();
+    console.error('Multi-line ledger entry insert error:', err);
     return { success: false, error: err.message };
   } finally {
     connection.release();

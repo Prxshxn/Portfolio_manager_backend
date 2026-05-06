@@ -1,6 +1,26 @@
 const db = require('../config/database');
 const LimitSetup = require('./limitSetupModel');
 const CashflowCaptureService = require('../services/cashflowCaptureService');
+const { computeGsecPerDayAccrual, findCouponPeriodFromMaturity } = require('../services/gsecCouponPeriod');
+
+function utcDayDiffSigned(a, b) {
+  const da = new Date(a);
+  const dbb = new Date(b);
+  if (Number.isNaN(da.getTime()) || Number.isNaN(dbb.getTime())) return 0;
+  const aUtc = Date.UTC(da.getFullYear(), da.getMonth(), da.getDate());
+  const bUtc = Date.UTC(dbb.getFullYear(), dbb.getMonth(), dbb.getDate());
+  return (aUtc - bUtc) / (24 * 60 * 60 * 1000);
+}
+
+function toYmd(d) {
+  const x = new Date(d);
+  if (Number.isNaN(x.getTime())) return null;
+  return x.toISOString().slice(0, 10);
+}
+
+function truncate8(x) {
+  return Math.floor(Number(x) * 100000000) / 100000000;
+}
 
 const Gsec = {
   create: async (data) => {
@@ -1087,8 +1107,13 @@ const Gsec = {
                 // Skip the old single entry logic for Buy transactions
                 return result;
               } else if (transaction.transaction_type === 'Sell') {
-                // Sell: Debit Cash/Bank, Credit Investment Asset (TBonds)
-                // Try to get settlement account from settlement_mode, otherwise use default
+                // Sell: Post multi-line entry (bank, trading, amortization-to-date, coupon income, capital gain/loss)
+                // plus separate accrued-interest reversal (Dr accrued income / Cr accrued receivable).
+                const sellDate = transaction.value_date
+                  ? new Date(transaction.value_date).toISOString().slice(0, 10)
+                  : new Date().toISOString().slice(0, 10);
+
+                // Resolve bank account from settlement_mode (fallback to default)
                 if (transaction.settlement_mode) {
                   try {
                     const [settlementAccount] = await db.query(
@@ -1107,8 +1132,198 @@ const Gsec = {
                 } else {
                   drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_DEFAULT_SETTLEMENT);
                 }
-                crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_ASSET_TBONDS);
-                description = `GSec Sale - Final Approval - ${transaction.deal_number}`;
+
+                // Need source buy deal to compute purchase clean and amortization-to-date.
+                let buyDeal = null;
+                if (transaction.buy_deal_number) {
+                  const [buyRows] = await db.query(
+                    `SELECT deal_number, value_date, maturity_date, face_value, clean_price, last_coupon_date, per_day_amortization,
+                            coupon_interest, remaining_face_value, isin_number
+                     FROM gsec
+                     WHERE transaction_type = 'Buy' AND deal_number = ?
+                     LIMIT 1`,
+                    [transaction.buy_deal_number]
+                  );
+                  buyDeal = buyRows && buyRows[0] ? buyRows[0] : null;
+                }
+
+                // Fallback to legacy 2-line posting if we can't compute using the buy deal.
+                if (!buyDeal) {
+                  crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_ASSET_TBONDS);
+                  description = `GSec Sale - Final Approval - ${transaction.deal_number}`;
+                  const ledgerResult = await ledgerController.postLedgerEntry({
+                    date: sellDate,
+                    dr_account: drAccount,
+                    cr_account: crAccount,
+                    amount,
+                    deal_id: transaction.deal_number,
+                    description
+                  });
+                  if (!ledgerResult.success) {
+                    console.error('Failed to post legacy GSec sell ledger entry:', ledgerResult.error);
+                  }
+                  return result;
+                }
+
+                const sellFace = Number(transaction.face_value || 0);
+                const buyFace = Number(buyDeal.face_value || 0);
+                const scale = buyFace > 0 ? sellFace / buyFace : 1;
+                const purchaseCleanPct = Number(buyDeal.clean_price || 0);
+                const purchaseCleanAmt = truncate8((buyFace * purchaseCleanPct) / 100) * scale;
+
+                const holdingDays = Math.max(0, utcDayDiffSigned(sellDate, buyDeal.value_date));
+                const perDayAmort = Number(buyDeal.per_day_amortization || 0);
+                const amortToSell = truncate8(perDayAmort * holdingDays) * scale;
+
+                const sellCleanPct = Number(transaction.clean_price || 0);
+                const sellCleanAmt = truncate8((sellFace * sellCleanPct) / 100);
+
+                // Coupon accrued-to-sell: prefer stored sell accrued_interest (matches dirty-clean split),
+                // fallback to derived accrual only if missing.
+                let couponAccruedToSell = truncate8(Number(transaction.accrued_interest || 0));
+                if (!Number.isFinite(couponAccruedToSell) || couponAccruedToSell < 0) couponAccruedToSell = 0;
+                if (couponAccruedToSell === 0) {
+                  try {
+                    const [isinRows] = await db.query(
+                      `SELECT coupon_rate, coupon_date_1, coupon_date_2
+                       FROM isin_master
+                       WHERE isin_number COLLATE utf8mb4_unicode_ci = ? COLLATE utf8mb4_unicode_ci
+                       LIMIT 1`,
+                      [buyDeal.isin_number]
+                    );
+                    const isin = isinRows && isinRows[0] ? isinRows[0] : {};
+                    const perDay = computeGsecPerDayAccrual(
+                      {
+                        face_value: buyDeal.face_value,
+                        remaining_face_value: sellFace, // accrue on the portion sold
+                        coupon_interest: buyDeal.coupon_interest,
+                        coupon_rate: isin.coupon_rate,
+                        maturity_date: buyDeal.maturity_date,
+                        isin_number: buyDeal.isin_number,
+                        coupon_date_1: isin.coupon_date_1,
+                        coupon_date_2: isin.coupon_date_2
+                      },
+                      sellDate,
+                      2
+                    );
+                    if (perDay.ok) {
+                      let lastCoupon = buyDeal.last_coupon_date ? new Date(buyDeal.last_coupon_date) : null;
+                      if (!lastCoupon || Number.isNaN(lastCoupon.getTime())) {
+                        const r = findCouponPeriodFromMaturity(sellDate, buyDeal.maturity_date, 2);
+                        lastCoupon = r.lastCoupon;
+                      }
+                      const daysAccrued = Math.max(0, utcDayDiffSigned(sellDate, lastCoupon));
+                      couponAccruedToSell = truncate8(perDay.amount * daysAccrued);
+                    }
+                  } catch (e) {
+                    console.warn('Failed to compute coupon accrued-to-sell, defaulting to 0:', e.message);
+                    couponAccruedToSell = 0;
+                  }
+                }
+
+                const bookValueAtSell = truncate8(purchaseCleanAmt + amortToSell);
+                // Prefer clean amount derived from dirty cash-in minus accrued interest (matches template and avoids pct rounding).
+                const sellDirtyAmt = truncate8(Number(transaction.settlement_amount || 0));
+                const sellCleanAmtEffective = truncate8(sellDirtyAmt - couponAccruedToSell);
+                const capitalGl = truncate8(sellCleanAmtEffective - bookValueAtSell);
+
+                // Resolve accounts (with safe fallbacks to the codes you provided).
+                let tradingAccount = '131-101-350-098-44';
+                let amortAccount = '358-101-130-416-44';
+                let couponIncomeAccount = '467-101-190-476-44';
+                let capitalGainLossAccount = '358-101-130-398-44';
+                let accruedIncomeAccount = '467-101-190-470-44';
+                let accruedReceivableAccount = '131-101-290-218-44';
+
+                try { tradingAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_TRADING_ACCOUNT); } catch (_) {}
+                try { amortAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_AMORTISATION_TRADING); } catch (_) {}
+                try { couponIncomeAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_COUPON_INCOME); } catch (_) {}
+                try { accruedIncomeAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_ACCRUAL_INCOME); } catch (_) {}
+                try { accruedReceivableAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_ACCRUAL_ASSET); } catch (_) {}
+
+                // Main sell entry: Dr bank (dirty cash); Cr trading (purchase clean), amortization-to-date, coupon income; plus capital gain/loss.
+                const mainDescription = `GSec Sale - Final Approval - ${transaction.deal_number}`;
+                const mainDr = [
+                  { account_code: drAccount, amount: Number(transaction.settlement_amount || 0), description: mainDescription }
+                ];
+                const mainCr = [];
+                if (purchaseCleanAmt > 0) {
+                  mainCr.push({ account_code: tradingAccount, amount: purchaseCleanAmt, description: mainDescription });
+                }
+                if (amortToSell > 0) {
+                  // Discount increases carrying value (credit amortised discount). Premium decreases (debit premium paid).
+                  const isPremium = Number(buyDeal.clean_price || 0) > 100;
+                  if (isPremium) {
+                    mainDr.push({ account_code: amortAccount, amount: amortToSell, description: mainDescription });
+                  } else {
+                    mainCr.push({ account_code: amortAccount, amount: amortToSell, description: mainDescription });
+                  }
+                }
+                if (couponAccruedToSell > 0) {
+                  mainCr.push({ account_code: couponIncomeAccount, amount: couponAccruedToSell, description: mainDescription });
+                }
+                if (Math.abs(capitalGl) > 0.00000001) {
+                  if (capitalGl >= 0) {
+                    mainCr.push({ account_code: capitalGainLossAccount, amount: Math.abs(capitalGl), description: mainDescription });
+                  } else {
+                    mainDr.push({ account_code: capitalGainLossAccount, amount: Math.abs(capitalGl), description: mainDescription });
+                  }
+                }
+
+                // Ensure the journal balances (absorb any small rounding residual into capital gain/loss).
+                const sumLines = (arr) => arr.reduce((s, l) => s + (Number(l.amount) || 0), 0);
+                const totalDr = sumLines(mainDr);
+                const totalCr = sumLines(mainCr);
+                const residual = truncate8(totalDr - totalCr);
+                if (Math.abs(residual) > 0.00000001) {
+                  if (residual > 0) {
+                    mainCr.push({ account_code: capitalGainLossAccount, amount: Math.abs(residual), description: `${mainDescription} (Rounding)` });
+                  } else {
+                    mainDr.push({ account_code: capitalGainLossAccount, amount: Math.abs(residual), description: `${mainDescription} (Rounding)` });
+                  }
+                }
+
+                // Reversal entry: Dr accrued income (accrued interest income), Cr accrued receivable.
+                const reversalDescription = `GSec Sale - Accrued Interest Reversal - ${transaction.deal_number}`;
+                const reversalDr = couponAccruedToSell > 0
+                  ? [{ account_code: accruedIncomeAccount, amount: couponAccruedToSell, description: reversalDescription }]
+                  : [];
+                const reversalCr = couponAccruedToSell > 0
+                  ? [{ account_code: accruedReceivableAccount, amount: couponAccruedToSell, description: reversalDescription }]
+                  : [];
+
+                const postMulti = ledgerController.postMultiLineLedgerEntry;
+                if (typeof postMulti !== 'function') {
+                  throw new Error('postMultiLineLedgerEntry is not available in ledgerController');
+                }
+
+                const mainResult = await postMulti({
+                  date: sellDate,
+                  dr_accounts: mainDr,
+                  cr_accounts: mainCr,
+                  deal_id: transaction.deal_number,
+                  description: mainDescription
+                });
+                if (!mainResult.success) {
+                  console.error('Failed to post GSec sell multi-line entry:', mainResult.error);
+                  return result;
+                }
+
+                if (reversalDr.length && reversalCr.length) {
+                  const revResult = await postMulti({
+                    date: sellDate,
+                    dr_accounts: reversalDr,
+                    cr_accounts: reversalCr,
+                    deal_id: transaction.deal_number,
+                    description: reversalDescription
+                  });
+                  if (!revResult.success) {
+                    console.error('Failed to post GSec sell accrued reversal entry:', revResult.error);
+                  }
+                }
+
+                console.log(`Successfully created sell multi-line ledger entries for ${transaction.deal_number}`);
+                return result;
               } else {
                 // Unknown transaction type, skip ledger entry
                 console.warn(`Unknown transaction type: ${transaction.transaction_type}, skipping ledger entry`);
@@ -1387,8 +1602,12 @@ Gsec.backfillLedgerEntries = async (transactionId = null) => {
           }
           continue; // Skip the old single entry logic
         } else if (transaction.transaction_type === 'Sell') {
-          // Sell: Debit Cash/Bank, Credit Investment Asset (TBonds)
-          // Try to get settlement account from settlement_mode, otherwise use default
+          // Mirror the sell multi-line posting (same as updateStatus final approval).
+          const sellDate = transaction.value_date
+            ? new Date(transaction.value_date).toISOString().slice(0, 10)
+            : new Date().toISOString().slice(0, 10);
+
+          // Resolve bank account from settlement_mode (fallback to default)
           if (transaction.settlement_mode) {
             try {
               const [settlementAccount] = await db.query(
@@ -1407,8 +1626,181 @@ Gsec.backfillLedgerEntries = async (transactionId = null) => {
           } else {
             drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_DEFAULT_SETTLEMENT);
           }
-          crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_ASSET_TBONDS);
-          description = `GSec Sale - Final Approval - ${transaction.deal_number}`;
+
+          let buyDeal = null;
+          if (transaction.buy_deal_number) {
+            const [buyRows] = await db.query(
+              `SELECT deal_number, value_date, maturity_date, face_value, clean_price, last_coupon_date, per_day_amortization,
+                      coupon_interest, remaining_face_value, isin_number
+               FROM gsec
+               WHERE transaction_type = 'Buy' AND deal_number = ?
+               LIMIT 1`,
+              [transaction.buy_deal_number]
+            );
+            buyDeal = buyRows && buyRows[0] ? buyRows[0] : null;
+          }
+          if (!buyDeal) {
+            // Legacy fallback
+            crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_ASSET_TBONDS);
+            description = `GSec Sale - Final Approval - ${transaction.deal_number}`;
+            const ledgerResult = await ledgerController.postLedgerEntry({
+              date: sellDate,
+              dr_account: drAccount,
+              cr_account: crAccount,
+              amount: amount,
+              deal_id: transaction.deal_number,
+              description
+            });
+            if (!ledgerResult.success) {
+              errors.push(`Transaction ${transaction.deal_number}: ${ledgerResult.error}`);
+            } else {
+              processed++;
+            }
+            continue;
+          }
+
+          const sellFace = Number(transaction.face_value || 0);
+          const buyFace = Number(buyDeal.face_value || 0);
+          const scale = buyFace > 0 ? sellFace / buyFace : 1;
+          const purchaseCleanPct = Number(buyDeal.clean_price || 0);
+          const purchaseCleanAmt = truncate8((buyFace * purchaseCleanPct) / 100) * scale;
+
+          const holdingDays = Math.max(0, utcDayDiffSigned(sellDate, buyDeal.value_date));
+          const perDayAmort = Number(buyDeal.per_day_amortization || 0);
+          const amortToSell = truncate8(perDayAmort * holdingDays) * scale;
+
+          const sellCleanPct = Number(transaction.clean_price || 0);
+          const sellCleanAmt = truncate8((sellFace * sellCleanPct) / 100);
+
+          let couponAccruedToSell = truncate8(Number(transaction.accrued_interest || 0));
+          if (!Number.isFinite(couponAccruedToSell) || couponAccruedToSell < 0) couponAccruedToSell = 0;
+          if (couponAccruedToSell === 0) {
+            try {
+              const [isinRows] = await db.query(
+                `SELECT coupon_rate, coupon_date_1, coupon_date_2
+                 FROM isin_master
+                 WHERE isin_number COLLATE utf8mb4_unicode_ci = ? COLLATE utf8mb4_unicode_ci
+                 LIMIT 1`,
+                [buyDeal.isin_number]
+              );
+              const isin = isinRows && isinRows[0] ? isinRows[0] : {};
+              const perDay = computeGsecPerDayAccrual(
+                {
+                  face_value: buyDeal.face_value,
+                  remaining_face_value: sellFace,
+                  coupon_interest: buyDeal.coupon_interest,
+                  coupon_rate: isin.coupon_rate,
+                  maturity_date: buyDeal.maturity_date,
+                  isin_number: buyDeal.isin_number,
+                  coupon_date_1: isin.coupon_date_1,
+                  coupon_date_2: isin.coupon_date_2
+                },
+                sellDate,
+                2
+              );
+              if (perDay.ok) {
+                let lastCoupon = buyDeal.last_coupon_date ? new Date(buyDeal.last_coupon_date) : null;
+                if (!lastCoupon || Number.isNaN(lastCoupon.getTime())) {
+                  const r = findCouponPeriodFromMaturity(sellDate, buyDeal.maturity_date, 2);
+                  lastCoupon = r.lastCoupon;
+                }
+                const daysAccrued = Math.max(0, utcDayDiffSigned(sellDate, lastCoupon));
+                couponAccruedToSell = truncate8(perDay.amount * daysAccrued);
+              }
+            } catch (_) {
+              couponAccruedToSell = 0;
+            }
+          }
+
+          const bookValueAtSell = truncate8(purchaseCleanAmt + amortToSell);
+          const sellDirtyAmt = truncate8(Number(transaction.settlement_amount || 0));
+          const sellCleanAmtEffective = truncate8(sellDirtyAmt - couponAccruedToSell);
+          const capitalGl = truncate8(sellCleanAmtEffective - bookValueAtSell);
+
+          let tradingAccount = '131-101-350-098-44';
+          let amortAccount = '358-101-130-416-44';
+          let couponIncomeAccount = '467-101-190-476-44';
+          let capitalGainLossAccount = '358-101-130-398-44';
+          let accruedIncomeAccount = '467-101-190-470-44';
+          let accruedReceivableAccount = '131-101-290-218-44';
+
+          try { tradingAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_TRADING_ACCOUNT); } catch (_) {}
+          try { amortAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_AMORTISATION_TRADING); } catch (_) {}
+          try { couponIncomeAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_COUPON_INCOME); } catch (_) {}
+          try { accruedIncomeAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_ACCRUAL_INCOME); } catch (_) {}
+          try { accruedReceivableAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_ACCRUAL_ASSET); } catch (_) {}
+
+          const mainDescription = `GSec Sale - Final Approval - ${transaction.deal_number}`;
+          const mainDr = [
+            { account_code: drAccount, amount: Number(transaction.settlement_amount || 0), description: mainDescription }
+          ];
+          const mainCr = [];
+          if (purchaseCleanAmt > 0) mainCr.push({ account_code: tradingAccount, amount: purchaseCleanAmt, description: mainDescription });
+
+          if (amortToSell > 0) {
+            const isPremium = Number(buyDeal.clean_price || 0) > 100;
+            if (isPremium) mainDr.push({ account_code: amortAccount, amount: amortToSell, description: mainDescription });
+            else mainCr.push({ account_code: amortAccount, amount: amortToSell, description: mainDescription });
+          }
+
+          if (couponAccruedToSell > 0) {
+            mainCr.push({ account_code: couponIncomeAccount, amount: couponAccruedToSell, description: mainDescription });
+          }
+
+          if (Math.abs(capitalGl) > 0.00000001) {
+            if (capitalGl >= 0) mainCr.push({ account_code: capitalGainLossAccount, amount: Math.abs(capitalGl), description: mainDescription });
+            else mainDr.push({ account_code: capitalGainLossAccount, amount: Math.abs(capitalGl), description: mainDescription });
+          }
+
+          const sumLines = (arr) => arr.reduce((s, l) => s + (Number(l.amount) || 0), 0);
+          const totalDr = sumLines(mainDr);
+          const totalCr = sumLines(mainCr);
+          const residual = truncate8(totalDr - totalCr);
+          if (Math.abs(residual) > 0.00000001) {
+            if (residual > 0) mainCr.push({ account_code: capitalGainLossAccount, amount: Math.abs(residual), description: `${mainDescription} (Rounding)` });
+            else mainDr.push({ account_code: capitalGainLossAccount, amount: Math.abs(residual), description: `${mainDescription} (Rounding)` });
+          }
+
+          const reversalDescription = `GSec Sale - Accrued Interest Reversal - ${transaction.deal_number}`;
+          const reversalDr = couponAccruedToSell > 0
+            ? [{ account_code: accruedIncomeAccount, amount: couponAccruedToSell, description: reversalDescription }]
+            : [];
+          const reversalCr = couponAccruedToSell > 0
+            ? [{ account_code: accruedReceivableAccount, amount: couponAccruedToSell, description: reversalDescription }]
+            : [];
+
+          if (typeof ledgerController.postMultiLineLedgerEntry !== 'function') {
+            errors.push(`Transaction ${transaction.deal_number}: postMultiLineLedgerEntry unavailable`);
+            continue;
+          }
+
+          const mainRes = await ledgerController.postMultiLineLedgerEntry({
+            date: sellDate,
+            dr_accounts: mainDr,
+            cr_accounts: mainCr,
+            deal_id: transaction.deal_number,
+            description: mainDescription
+          });
+          if (!mainRes.success) {
+            errors.push(`Transaction ${transaction.deal_number}: ${mainRes.error}`);
+            continue;
+          }
+
+          if (reversalDr.length && reversalCr.length) {
+            const revRes = await ledgerController.postMultiLineLedgerEntry({
+              date: sellDate,
+              dr_accounts: reversalDr,
+              cr_accounts: reversalCr,
+              deal_id: transaction.deal_number,
+              description: reversalDescription
+            });
+            if (!revRes.success) {
+              errors.push(`Transaction ${transaction.deal_number} reversal: ${revRes.error}`);
+            }
+          }
+
+          processed++;
+          continue;
         } else {
           errors.push(`Transaction ${transaction.deal_number}: Unknown transaction type ${transaction.transaction_type}, skipping`);
           continue;
