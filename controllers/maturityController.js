@@ -2988,6 +2988,10 @@ MaturityController.processBuybackPrematureMaturity = async (req, res) => {
   try {
     const db = require('../config/database');
     const Gsec = require('../models/gsec');
+const {
+  getCouponPeriodLengthDaysFromIsinSchedule,
+  resolveIsinCouponDates
+} = require('../services/gsecCouponPeriod');
     const { deals } = req.body || {};
     const userId = req.user?.id || 1;
     const [buybackLinkColRows] = await db.query(
@@ -3303,7 +3307,40 @@ MaturityController.processBuybackPrematureMaturity = async (req, res) => {
 
           let numberOfDaysInterestAccrued = null;
           let numberOfDaysForCouponPeriod = null;
-          if (lastCouponDate && nextCouponDate && leg2ValueDate) {
+          // Prefer actual coupon-day schedule from isin_master (with overrides) so E matches calendar days.
+          if (leg2ValueDate && maturityDate) {
+            try {
+              const resolved = resolveIsinCouponDates({
+                isin_number: deal.leg2_isin,
+                coupon_date_1: couponDate1,
+                coupon_date_2: couponDate2
+              });
+              const sched = getCouponPeriodLengthDaysFromIsinSchedule(
+                leg2ValueDate,
+                maturityDate,
+                resolved.coupon_date_1,
+                resolved.coupon_date_2
+              );
+              if (sched && sched.E > 0) {
+                lastCouponDate = sched.lastCoupon.toISOString().slice(0, 10);
+                nextCouponDate = sched.nextCoupon.toISOString().slice(0, 10);
+                numberOfDaysForCouponPeriod = sched.E;
+                const valueDateObj = new Date(leg2ValueDate);
+                numberOfDaysInterestAccrued = Math.floor(
+                  (valueDateObj - sched.lastCoupon) / (1000 * 60 * 60 * 24)
+                );
+              }
+            } catch (e) {
+              console.warn('Failed to compute coupon period from ISIN schedule; using coupon_schedule dates:', e.message);
+            }
+          }
+          // Fallback to coupon_schedule-derived boundaries if schedule-based calc failed
+          if (
+            (numberOfDaysForCouponPeriod === null || numberOfDaysForCouponPeriod === undefined) &&
+            lastCouponDate &&
+            nextCouponDate &&
+            leg2ValueDate
+          ) {
             const lastDate = new Date(lastCouponDate);
             const nextDate = new Date(nextCouponDate);
             const valueDateObj = new Date(leg2ValueDate);

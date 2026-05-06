@@ -87,6 +87,28 @@ function parseCouponMMDD(s) {
   // MM-DD or MM/DD
   let m = t.match(/^(\d{1,2})[-/](\d{1,2})$/);
   if (m) return { month: parseInt(m[1], 10), day: parseInt(m[2], 10) };
+  // DD-MMM-YY or DD-MMM-YYYY (e.g. 15-Oct-25, 15-Apr-2026)
+  m = t.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2}|\d{4})$/);
+  if (m) {
+    const day = parseInt(m[1], 10);
+    const mon = String(m[2] || '').toLowerCase();
+    const monthMap = {
+      jan: 1,
+      feb: 2,
+      mar: 3,
+      apr: 4,
+      may: 5,
+      jun: 6,
+      jul: 7,
+      aug: 8,
+      sep: 9,
+      oct: 10,
+      nov: 11,
+      dec: 12
+    };
+    const month = monthMap[mon];
+    if (month && day >= 1 && day <= 31) return { month, day };
+  }
   // Full date YYYY-MM-DD (or Date object serialised as string) — extract month+day
   m = t.match(/^\d{4}[-/](\d{1,2})[-/](\d{1,2})/);
   if (m) return { month: parseInt(m[1], 10), day: parseInt(m[2], 10) };
