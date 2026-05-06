@@ -1,6 +1,10 @@
 const db = require('../config/db');
 const { differenceInDays, parseISO } = require('date-fns');
 const { calculateNVP } = require('../utils/bondPricingNVP');
+const {
+  getCouponPeriodLengthDaysFromIsinSchedule,
+  resolveIsinCouponDates
+} = require('./gsecCouponPeriod');
 
 // Helper to truncate to 4 decimals
 function truncate4(val) {
@@ -38,6 +42,25 @@ function formatPercentage(value, decimals = 4) {
   });
 }
 
+function utcDayDiffSigned(a, b) {
+  const da = new Date(a);
+  const dbb = new Date(b);
+  if (Number.isNaN(da.getTime()) || Number.isNaN(dbb.getTime())) return 0;
+  const aUtc = Date.UTC(da.getFullYear(), da.getMonth(), da.getDate());
+  const bUtc = Date.UTC(dbb.getFullYear(), dbb.getMonth(), dbb.getDate());
+  return (aUtc - bUtc) / (24 * 60 * 60 * 1000);
+}
+
+function clampToYmd(x) {
+  const d = new Date(x);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 10);
+}
+
+function truncate8(x) {
+  return Math.floor(Number(x) * 100000000) / 100000000;
+}
+
 exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityDate, page, pageSize }) => {
   try {
     // Debug: Log the asAtDate parameter
@@ -45,7 +68,9 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     
     // Build query with filters - only include Buy transactions from GSEC deals
     // Note: remaining_face_value is computed, not a column, so we calculate it later
-    let sql = `SELECT g.id, g.portfolio, g.deal_number, g.face_value, g.value_date, g.maturity_date, g.isin_number as isin, g.coupon_interest, g.clean_price, g.dirty_price, g.yield, g.counterparty_id, g.transaction_type, 
+    let sql = `SELECT g.id, g.portfolio, g.deal_number, g.face_value, g.value_date, g.maturity_date, g.isin_number as isin, g.coupon_interest, g.clean_price, g.dirty_price, g.yield, g.counterparty_id, g.transaction_type,
+               g.per_day_accrual AS daily_accrual,
+               g.per_day_amortization AS daily_amortization,
                COALESCE(
                  corp.short_name,
                  ind.short_name,
@@ -476,6 +501,61 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     
     console.log(`Deal ${row.deal_number}: dealFaceValue=${dealFaceValue}, repoCollateral=${repoCollateral}, availableBalance=${availableBalance}`);
 
+    // Daily fields from DB (already as per-day amounts for this deal row)
+    const dailyAccrual = Number(row.daily_accrual) || 0;
+    const dailyAmort = Number(row.daily_amortization) || 0;
+
+    // Cumulative amortization from purchase date (value_date) to asAtDate (or today if missing)
+    const effectiveAsAt = asAtDate || new Date().toISOString().split('T')[0];
+    const endYmd = clampToYmd(effectiveAsAt);
+    const matYmd = clampToYmd(row.maturity_date);
+    const startYmd = clampToYmd(row.value_date);
+    const cappedEnd = matYmd && endYmd && endYmd > matYmd ? matYmd : endYmd;
+    let holdingDays = startYmd && cappedEnd ? Math.max(0, utcDayDiffSigned(cappedEnd, startYmd)) : 0;
+    // Exclude maturity day from cumulative amortization if report date is maturity
+    if (matYmd && cappedEnd === matYmd) holdingDays = Math.max(0, holdingDays - 1);
+    const cumulativeAmort = truncate8(dailyAmort * holdingDays);
+
+    // Cumulative accrual since purchase date up to asAtDate (scaled to remaining face as at report)
+    let cumulativeAccrual = 0;
+    try {
+      const effectiveFace = Number(row.remaining_face_value_report ?? row.face_value) || 0;
+      const originalFace = Number(row.face_value) || 0;
+      const couponInterestFull = Number(row.coupon_interest) || 0;
+      const scale = originalFace > 0 ? effectiveFace / originalFace : 1;
+      const effectiveCouponInterest = couponInterestFull * scale;
+
+      const accStart = startYmd;
+      const accEnd = cappedEnd;
+      if (effectiveCouponInterest > 0 && accStart && accEnd && accEnd > accStart && matYmd) {
+        let cursor = accStart;
+        const maxIters = 20; // safety (semiannual; 10y => 20 periods)
+        for (let iter = 0; iter < maxIters && cursor < accEnd; iter += 1) {
+          const { coupon_date_1: c1, coupon_date_2: c2 } = resolveIsinCouponDates({
+            isin_number: row.isin,
+            coupon_date_1: row.coupon_date_1,
+            coupon_date_2: row.coupon_date_2
+          });
+          const sched = getCouponPeriodLengthDaysFromIsinSchedule(cursor, matYmd, c1, c2);
+          if (!sched || !sched.E || sched.E <= 0) break;
+          const nextCouponYmd = sched.nextCoupon.toISOString().slice(0, 10);
+          const sliceEnd = nextCouponYmd < accEnd ? nextCouponYmd : accEnd;
+          const daysInSlice = Math.max(0, utcDayDiffSigned(sliceEnd, cursor));
+          if (daysInSlice > 0) {
+            const perDay = effectiveCouponInterest / sched.E;
+            cumulativeAccrual = truncate8(cumulativeAccrual + perDay * daysInSlice);
+          }
+          cursor = sliceEnd;
+          // If we landed exactly on next coupon, continue into next period.
+          if (cursor < accEnd && cursor === nextCouponYmd) {
+            // advance by 0 days; loop recomputes next period
+          }
+        }
+      }
+    } catch (_) {
+      cumulativeAccrual = 0;
+    }
+
     return {
       id: row.id,
       product_type: 'GSec',
@@ -507,6 +587,10 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       accrued_interest: nvpResult.accruedInterest ? formatPrice(nvpResult.accruedInterest, 4) : '',
       repo_collateral: row.repo_collateral ? formatPrice(row.repo_collateral, 4) : '0.0000',
       sell_back: row.sell_back ? formatCurrency(row.sell_back, 2) : '0.00',
+      daily_accrual: formatPrice(dailyAccrual, 8),
+      daily_amortization: formatPrice(dailyAmort, 8),
+      cumulative_accrual: formatPrice(cumulativeAccrual, 8),
+      cumulative_amortization: formatPrice(cumulativeAmort, 8),
       counterparty: row.counterparty_name || (row.counterparty_id ? String(row.counterparty_id) : ''),
       transaction_type: row.transaction_type || ''
     };
