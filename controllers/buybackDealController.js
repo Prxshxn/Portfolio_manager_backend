@@ -7,6 +7,10 @@ const {
   postFinalApprovedSellLedger,
   truncate8: truncate8Ledger
 } = require('../services/gsecApprovalLedgerService');
+const {
+  getCouponPeriodLengthDaysFromIsinSchedule,
+  resolveIsinCouponDates
+} = require('../services/gsecCouponPeriod');
 
 // Helper function to convert empty strings to null for numeric fields
 const sanitizeNumeric = (value) => {
@@ -411,7 +415,41 @@ const buybackDealController = {
 
                   let numberOfDaysInterestAccrued = null;
                   let numberOfDaysForCouponPeriod = null;
-                  if (lastCouponDate && nextCouponDate && buybackDeal.leg2_value_date) {
+                  // Prefer actual coupon-day schedule from isin_master (with overrides) so E matches calendar
+                  // (e.g. 15-Mar -> 15-Sep is 184 days, not a fixed 182/183 assumption).
+                  if (buybackDeal.leg2_value_date && maturityDate) {
+                    try {
+                      const resolved = resolveIsinCouponDates({
+                        isin_number: buybackDeal.leg2_isin,
+                        coupon_date_1: couponDate1,
+                        coupon_date_2: couponDate2
+                      });
+                      const sched = getCouponPeriodLengthDaysFromIsinSchedule(
+                        buybackDeal.leg2_value_date,
+                        maturityDate,
+                        resolved.coupon_date_1,
+                        resolved.coupon_date_2
+                      );
+                      if (sched && sched.E > 0) {
+                        lastCouponDate = sched.lastCoupon.toISOString().slice(0, 10);
+                        nextCouponDate = sched.nextCoupon.toISOString().slice(0, 10);
+                        numberOfDaysForCouponPeriod = sched.E;
+                        const valueDate = new Date(buybackDeal.leg2_value_date);
+                        numberOfDaysInterestAccrued = Math.floor(
+                          (valueDate - sched.lastCoupon) / (1000 * 60 * 60 * 24)
+                        );
+                      }
+                    } catch (e) {
+                      console.warn('Failed to compute coupon period from ISIN schedule; using coupon_schedule dates:', e.message);
+                    }
+                  }
+                  // Fallback to coupon_schedule-derived boundaries if schedule-based calc failed
+                  if (
+                    (numberOfDaysForCouponPeriod === null || numberOfDaysForCouponPeriod === undefined) &&
+                    lastCouponDate &&
+                    nextCouponDate &&
+                    buybackDeal.leg2_value_date
+                  ) {
                     const lastDate = new Date(lastCouponDate);
                     const nextDate = new Date(nextCouponDate);
                     const valueDate = new Date(buybackDeal.leg2_value_date);
