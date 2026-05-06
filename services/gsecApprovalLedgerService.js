@@ -21,6 +21,15 @@ function truncate8(x) {
 /** Same default as buy compound path when settlement_accounts / mappings are missing */
 const DEFAULT_GSEC_BANK_LEDGER_CODE = '131-101-410-164-44';
 
+function isPositiveFiniteAmount(x) {
+  const n = Number(x);
+  return Number.isFinite(n) && n > 0;
+}
+
+function filterValidLines(lines) {
+  return (lines || []).filter((l) => l && l.account_code && isPositiveFiniteAmount(l.amount));
+}
+
 /**
  * DR bank on GSec sell: settlement_accounts by leg settlement_mode, else mapping GSEC_DEFAULT_SETTLEMENT, else hard default.
  */
@@ -261,7 +270,7 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
   if (couponAccruedToSell > 0) {
     mainCr.push({ account_code: couponIncomeAccount, amount: couponAccruedToSell, description: mainDescription });
   }
-  if (Math.abs(capitalGl) > 0.00000001) {
+  if (Number.isFinite(capitalGl) && Math.abs(capitalGl) > 0.00000001) {
     if (capitalGl >= 0) {
       mainCr.push({ account_code: capitalGainLossAccount, amount: Math.abs(capitalGl), description: mainDescription });
     } else {
@@ -269,23 +278,26 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
     }
   }
 
+  // Remove any empty/0/NaN lines before balancing and posting.
+  const mainDrClean = filterValidLines(mainDr);
+  const mainCrClean = filterValidLines(mainCr);
+
   const sumLines = (arr) => arr.reduce((s, l) => s + (Number(l.amount) || 0), 0);
-  const totalDr = sumLines(mainDr);
-  const totalCr = sumLines(mainCr);
+  const totalDr = sumLines(mainDrClean);
+  const totalCr = sumLines(mainCrClean);
   const residual = truncate8(totalDr - totalCr);
-  if (Math.abs(residual) > 0.00000001) {
-    if (residual > 0) {
-      mainCr.push({
-        account_code: capitalGainLossAccount,
-        amount: Math.abs(residual),
-        description: `${mainDescription} (Rounding)`
-      });
-    } else {
-      mainDr.push({
-        account_code: capitalGainLossAccount,
-        amount: Math.abs(residual),
-        description: `${mainDescription} (Rounding)`
-      });
+  if (Number.isFinite(residual) && Math.abs(residual) > 0.00000001) {
+    const roundingLine = {
+      account_code: capitalGainLossAccount,
+      amount: Math.abs(residual),
+      description: `${mainDescription} (Rounding)`
+    };
+    if (isPositiveFiniteAmount(roundingLine.amount)) {
+      if (residual > 0) {
+        mainCrClean.push(roundingLine);
+      } else {
+        mainDrClean.push(roundingLine);
+      }
     }
   }
 
@@ -306,8 +318,8 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
 
   const mainResult = await postMulti({
     date: sellDate,
-    dr_accounts: mainDr,
-    cr_accounts: mainCr,
+    dr_accounts: mainDrClean,
+    cr_accounts: mainCrClean,
     deal_id: dealId,
     description: mainDescription
   });
