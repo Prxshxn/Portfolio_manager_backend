@@ -2,6 +2,11 @@ const BuybackDeal = require('../models/buybackDealModel');
 const Gsec = require('../models/gsec');
 const db = require('../config/database');
 const holidayValidationService = require('../services/holidayValidationService');
+const {
+  postFinalApprovedBuyLedger,
+  postFinalApprovedSellLedger,
+  truncate8: truncate8Ledger
+} = require('../services/gsecApprovalLedgerService');
 
 // Helper function to convert empty strings to null for numeric fields
 const sanitizeNumeric = (value) => {
@@ -338,6 +343,7 @@ const buybackDealController = {
             ) || 0;
 
             // Create GSec only at final authorization for leg2 Buy, with duplicate guard
+            let leg2GsecIdForLedger = null;
             if (buybackDeal.leg2_transaction_type === 'Buy' && leg2EffectiveFace > 0) {
               const [existing] = hasBuybackDealId
                 ? await db.query(
@@ -461,6 +467,9 @@ const buybackDealController = {
                       gsecResult.insertId
                     ]);
                   }
+                  if (gsecResult && gsecResult.insertId) {
+                    leg2GsecIdForLedger = gsecResult.insertId;
+                  }
                   console.log(
                     `Created GSec leg2 deal on buyback final approval. buyback=${buybackDeal.deal_number}, gsecId=${gsecResult.insertId}`
                   );
@@ -470,9 +479,35 @@ const buybackDealController = {
                   );
                 }
               } else {
+                leg2GsecIdForLedger = existing[0].id;
                 console.log(
                   `GSec leg2 already exists for buyback ${buybackDeal.deal_number}: ${existing[0].deal_number}`
                 );
+              }
+            }
+
+            if (leg2GsecIdForLedger) {
+              try {
+                const [gsecRows] = await db.query('SELECT * FROM gsec WHERE id = ?', [leg2GsecIdForLedger]);
+                const gsecRow = gsecRows && gsecRows[0];
+                if (gsecRow) {
+                  const [leCount] = await db.query(
+                    'SELECT COUNT(*) as cnt FROM ledger_entries WHERE deal_number = ?',
+                    [gsecRow.deal_number]
+                  );
+                  if (leCount[0].cnt === 0) {
+                    const bbPrefix = `Buyback ${buybackDeal.deal_number} - `;
+                    const buyLedgerRes = await postFinalApprovedBuyLedger(gsecRow, { descriptionPrefix: bbPrefix });
+                    if (!buyLedgerRes.success) {
+                      console.error(
+                        `Buyback leg2 buy ledger failed for ${buybackDeal.deal_number}:`,
+                        buyLedgerRes.error
+                      );
+                    }
+                  }
+                }
+              } catch (leg2LedgerErr) {
+                console.error('Buyback leg2 buy ledger posting error:', leg2LedgerErr);
               }
             }
             
@@ -605,6 +640,61 @@ const buybackDealController = {
                     console.warn(`Could not fully deduct ${remainingToDeduct} from buyback deal ${buybackDeal.deal_number} - insufficient buy deal balances`);
                   }
                 }
+              }
+
+              try {
+                const descPrefix = `Buyback ${buybackDeal.deal_number} - `;
+                const leg1Den =
+                  parseFloat(
+                    buybackDeal.leg1_adjusted_face_value !== null &&
+                      buybackDeal.leg1_adjusted_face_value !== undefined
+                      ? buybackDeal.leg1_adjusted_face_value
+                      : buybackDeal.leg1_face_value
+                  ) || 0;
+                const leg1Settlement = parseFloat(buybackDeal.leg1_settlement_amount) || 0;
+                const leg1Accrued = parseFloat(buybackDeal.leg1_accrued_interest) || 0;
+
+                const postSellSlice = async (buyDealNumber, faceSlice, syntheticDealNumber) => {
+                  const [cntRows] = await db.query('SELECT COUNT(*) as cnt FROM ledger_entries WHERE deal_number = ?', [
+                    syntheticDealNumber
+                  ]);
+                  if (cntRows[0].cnt > 0) return;
+                  const ratio = leg1Den > 0 ? faceSlice / leg1Den : 1;
+                  const sliceSettlement = truncate8Ledger(leg1Settlement * ratio);
+                  const sliceAccrued = truncate8Ledger(leg1Accrued * ratio);
+                  const sellLike = {
+                    deal_number: syntheticDealNumber,
+                    buy_deal_number: buyDealNumber,
+                    face_value: faceSlice,
+                    settlement_amount: sliceSettlement,
+                    accrued_interest: sliceAccrued,
+                    clean_price: buybackDeal.leg1_clean_price,
+                    dirty_price: buybackDeal.leg1_dirty_price,
+                    settlement_mode: buybackDeal.leg1_settlement_mode,
+                    value_date: buybackDeal.leg1_value_date,
+                    trade_date: buybackDeal.leg1_trade_date || buybackDeal.leg1_value_date,
+                    transaction_type: 'Sell'
+                  };
+                  const r = await postFinalApprovedSellLedger(sellLike, { descriptionPrefix: descPrefix });
+                  if (!r.success) {
+                    console.error(`Buyback leg1 sell ledger failed ${syntheticDealNumber}:`, r.error);
+                  }
+                };
+
+                if (allocations && Array.isArray(allocations) && allocations.length > 0) {
+                  for (const alloc of allocations) {
+                    const dn = alloc.deal_number;
+                    const amt = parseFloat(alloc.amountToSell || 0);
+                    if (!dn || amt <= 0) continue;
+                    const synthetic = `${buybackDeal.deal_number}/BB-L1/${dn}`;
+                    await postSellSlice(dn, amt, synthetic);
+                  }
+                } else if (buybackDeal.source_buy_deal_number && leg1Den > 0) {
+                  const synthetic = `${buybackDeal.deal_number}/BB-L1/${buybackDeal.source_buy_deal_number}`;
+                  await postSellSlice(buybackDeal.source_buy_deal_number, leg1Den, synthetic);
+                }
+              } catch (leg1GlErr) {
+                console.error('Buyback leg1 sell ledger posting error:', leg1GlErr);
               }
             }
           }

@@ -89,6 +89,30 @@ async function getAccountCode(mappingKey) {
 }
 
 /**
+ * Same lookup as getAccountCode but returns null if missing or inactive (no console noise).
+ * Use when the caller supplies a hardcoded fallback.
+ * @param {string} mappingKey
+ * @returns {Promise<string|null>}
+ */
+async function getAccountCodeOptional(mappingKey) {
+  try {
+    const [mappings] = await db.query(
+      `SELECT account_code FROM account_mappings 
+       WHERE mapping_key = ? AND is_active = TRUE 
+       LIMIT 1`,
+      [mappingKey]
+    );
+    if (mappings && mappings.length > 0) {
+      return mappings[0].account_code;
+    }
+    return null;
+  } catch (error) {
+    console.error(`getAccountCodeOptional failed for ${mappingKey}:`, error.message);
+    return null;
+  }
+}
+
+/**
  * Get account ID by mapping key
  * @param {string} mappingKey - The mapping key
  * @returns {Promise<number>} - The account ID
@@ -215,6 +239,7 @@ async function getAllMappings() {
 module.exports = {
   MAPPING_KEYS,
   getAccountCode,
+  getAccountCodeOptional,
   getAccountId,
   getAccountCodeByPattern,
   getAccountIdByPattern,
