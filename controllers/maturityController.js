@@ -2990,7 +2990,8 @@ MaturityController.processBuybackPrematureMaturity = async (req, res) => {
     const Gsec = require('../models/gsec');
 const {
   getCouponPeriodLengthDaysFromIsinSchedule,
-  resolveIsinCouponDates
+  resolveIsinCouponDates,
+  getCouponPeriodEOverride
 } = require('../services/gsecCouponPeriod');
     const { deals } = req.body || {};
     const userId = req.user?.id || 1;
@@ -3333,6 +3334,10 @@ const {
             } catch (e) {
               console.warn('Failed to compute coupon period from ISIN schedule; using coupon_schedule dates:', e.message);
             }
+          }
+          const eOverride = getCouponPeriodEOverride(deal.leg2_isin);
+          if (eOverride) {
+            numberOfDaysForCouponPeriod = eOverride;
           }
           // Fallback to coupon_schedule-derived boundaries if schedule-based calc failed
           if (
