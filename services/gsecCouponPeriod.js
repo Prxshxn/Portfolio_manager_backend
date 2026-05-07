@@ -64,8 +64,29 @@ const ISIN_COUPON_SCHEDULE_OVERRIDE = {
   // The maturity is 2034-09-15 and the maturity-based rollback gives 15-Mar / 15-Sep.
   // We pin it explicitly so the value cannot regress if isin_master ever drifts.
   LKB01534I155: { coupon_date_1: '03-15', coupon_date_2: '09-15' },
-  LKB00529L150: { coupon_date_1: '12-15', coupon_date_2: '06-15' }
+  LKB00529L150: { coupon_date_1: '12-15', coupon_date_2: '06-15' },
+  // Market schedule: 15-May / 15-Nov coupon dates => E=184 for these ISINs.
+  LKB00426E154: { coupon_date_1: '05-15', coupon_date_2: '11-15' },
+  LKB01530E152: { coupon_date_1: '05-15', coupon_date_2: '11-15' }
 };
+
+/**
+ * Finance policy overrides for coupon period length E (day count).
+ * Some instruments are treated with a fixed semi-annual basis for daily accrual reporting.
+ * Keyed by ISIN.
+ */
+const ISIN_COUPON_PERIOD_E_OVERRIDE = {
+  // Per ops workbook: treat these ISINs as E=184 for accrual calculations.
+  LKB00426E154: 184,
+  LKB01530E152: 184
+};
+
+function getCouponPeriodEOverride(isinNumber) {
+  const isin = isinNumber && String(isinNumber).trim();
+  if (!isin) return null;
+  const v = ISIN_COUPON_PERIOD_E_OVERRIDE[isin];
+  return v ? Number(v) : null;
+}
 
 function resolveIsinCouponDates(deal) {
   const isin = deal.isin_number && String(deal.isin_number).trim();
@@ -181,17 +202,35 @@ function computeGsecPerDayAccrual(deal, settlementDate, frequency = 2) {
     return { ok: false, reason: 'no remaining face' };
   }
   const scale = faceVal > 0 ? remaining / faceVal : 1;
-  let couponInterestFull = Number(deal.coupon_interest);
-  if (!Number.isFinite(couponInterestFull) || couponInterestFull <= 0) {
-    // Derive from isin_master.coupon_rate if coupon_interest was never stored
-    const rate = Number(deal.coupon_rate);
-    if (Number.isFinite(rate) && rate > 0 && faceVal > 0) {
-      couponInterestFull = faceVal * (rate / 100) / (frequency || 2);
+  // IMPORTANT: In our DB, `coupon_interest` is not consistently stored as "coupon per period".
+  // Some records store the ANNUAL coupon amount (= face * rate%), while others store per-period.
+  // Daily accrual should always use the coupon amount for the current coupon period.
+  const storedCouponInterest = Number(deal.coupon_interest);
+  const rate = Number(deal.coupon_rate);
+  const freq = Number.isFinite(frequency) && frequency > 0 ? frequency : 2;
+
+  let couponPerPeriodForFullFace = null;
+  if (Number.isFinite(rate) && rate > 0 && faceVal > 0) {
+    const annual = faceVal * (rate / 100);
+    const perPeriod = annual / freq;
+
+    if (Number.isFinite(storedCouponInterest) && storedCouponInterest > 0) {
+      // Pick the closer interpretation (annual vs per-period) when both are plausible.
+      const diffAnnual = Math.abs(storedCouponInterest - annual);
+      const diffPer = Math.abs(storedCouponInterest - perPeriod);
+      couponPerPeriodForFullFace = diffPer <= diffAnnual ? perPeriod : annual / freq;
     } else {
+      couponPerPeriodForFullFace = perPeriod;
+    }
+  } else {
+    if (!Number.isFinite(storedCouponInterest) || storedCouponInterest <= 0) {
       return { ok: false, reason: 'invalid coupon_interest and no coupon_rate fallback' };
     }
+    // No coupon_rate to infer annual vs period → assume stored value already represents a period coupon.
+    couponPerPeriodForFullFace = storedCouponInterest;
   }
-  const effectiveCouponInterest = couponInterestFull * scale;
+
+  const effectiveCouponInterest = couponPerPeriodForFullFace * scale;
   let E = 0;
   const { coupon_date_1: c1, coupon_date_2: c2 } = resolveIsinCouponDates(deal);
   if (c1 && c2) {
@@ -209,6 +248,9 @@ function computeGsecPerDayAccrual(deal, settlementDate, frequency = 2) {
     const r = getCouponPeriodLengthDays(settlementDate, deal.maturity_date, frequency);
     E = r.E;
   }
+  // Apply fixed-E overrides (after computing schedule) if configured.
+  const eOverride = getCouponPeriodEOverride(deal.isin_number);
+  if (eOverride) E = eOverride;
   if (!E || E <= 0) {
     return { ok: false, reason: `invalid coupon period E (${E})` };
   }
@@ -293,6 +335,8 @@ module.exports = {
   getCouponPeriodLengthDaysFromIsinSchedule,
   resolveIsinCouponDates,
   ISIN_COUPON_SCHEDULE_OVERRIDE,
+  ISIN_COUPON_PERIOD_E_OVERRIDE,
+  getCouponPeriodEOverride,
   computeGsecPerDayAccrual,
   daysFromValueToMaturity,
   computeGsecDailyAmortization
