@@ -5,6 +5,7 @@ const { getSystemDay, setSystemDay } = require('../models/systemDayModel');
 const { checkAuth, checkAdmin } = require('../middleware/auth');
 const accountMapping = require('../services/accountMappingService');
 const { computeGsecPerDayAccrual, computeGsecDailyAmortization } = require('../services/gsecCouponPeriod');
+const { postFinalApprovedBuyLedger } = require('../services/gsecApprovalLedgerService');
 // You may need to adjust this path to your ledger posting API
 const postLedgerEntry = require('../controllers/ledgerController').postLedgerEntry;
 console.log ("started eod page");
@@ -245,6 +246,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
     }
     let postedCount = 0;
     let mmSkippedAlreadyPosted = 0;
+    let buybackLeg2BuyPosted = 0;
     for (const deal of deals) {
       let amount = Number(deal.per_day_interest);
       if (isNaN(amount) || amount === undefined) {
@@ -651,6 +653,49 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
       `GSec coupon settlement summary: posted=${gsecCouponPostedCount}, already_posted_skipped=${gsecCouponSkippedAlreadyPosted}`
     );
 
+    // Buyback leg2 (Buy) compound purchase: post only when system day >= value date (not on early approval); skip if ledger already exists (e.g. pre-maturity / prior run).
+    try {
+      const [leg2BuyDeals] = await db.query(
+        `SELECT g.*, bd.deal_number AS buyback_deal_number
+         FROM gsec g
+         INNER JOIN buyback_deals bd ON bd.id = g.buyback_deal_id
+         WHERE g.transaction_type = 'Buy'
+           AND g.status = 'final_approved'
+           AND g.buyback_deal_id IS NOT NULL
+           AND g.value_date IS NOT NULL
+           AND DATE(g.value_date) <= DATE(?)
+           AND NOT EXISTS (
+             SELECT 1 FROM ledger_entries le WHERE le.deal_number = g.deal_number
+           )`,
+        [systemDay]
+      );
+      for (const gsecRow of leg2BuyDeals || []) {
+        try {
+          const bbNum = gsecRow.buyback_deal_number != null ? String(gsecRow.buyback_deal_number) : '';
+          const bbPrefix = bbNum ? `Buyback ${bbNum} - ` : 'Buyback - ';
+          const buyLedgerRes = await postFinalApprovedBuyLedger(gsecRow, { descriptionPrefix: bbPrefix });
+          if (!isLedgerPostOk(buyLedgerRes)) {
+            console.error(
+              'Buyback leg2 buy ledger (EOD) failed:',
+              gsecRow.deal_number,
+              buyLedgerRes && buyLedgerRes.error
+            );
+            continue;
+          }
+          buybackLeg2BuyPosted++;
+        } catch (leg2EodErr) {
+          console.error('Buyback leg2 buy ledger (EOD) error:', gsecRow.deal_number, leg2EodErr);
+        }
+      }
+      if ((leg2BuyDeals || []).length > 0) {
+        console.log(
+          `Buyback leg2 buy compound ledger (EOD): candidates=${leg2BuyDeals.length}, posted=${buybackLeg2BuyPosted}`
+        );
+      }
+    } catch (buybackLeg2EodErr) {
+      console.error('Buyback leg2 buy ledger (EOD) block failed:', buybackLeg2EodErr);
+    }
+
     // Clear per_day_accrual for Buy deals whose value date is still in the future (or was posted before this rule)
     await db.query(
       `UPDATE gsec SET per_day_accrual = 0
@@ -971,7 +1016,8 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
           skipped_already_posted: gsecAmortEodResult.skipped_already_posted,
           enabled: gsecAmortEodResult.enabled,
           deals_loaded: gsecAmortEodResult.deals_loaded
-        }
+        },
+        buyback_leg2_buy_posted: buybackLeg2BuyPosted
       }
     });
   } catch (err) {

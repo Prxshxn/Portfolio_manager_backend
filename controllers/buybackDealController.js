@@ -1,6 +1,7 @@
 const BuybackDeal = require('../models/buybackDealModel');
 const Gsec = require('../models/gsec');
 const db = require('../config/database');
+const { getSystemDay } = require('../models/systemDayModel');
 const holidayValidationService = require('../services/holidayValidationService');
 const {
   postFinalApprovedBuyLedger,
@@ -9,7 +10,8 @@ const {
 } = require('../services/gsecApprovalLedgerService');
 const {
   getCouponPeriodLengthDaysFromIsinSchedule,
-  resolveIsinCouponDates
+  resolveIsinCouponDates,
+  getCouponPeriodEOverride
 } = require('../services/gsecCouponPeriod');
 
 // Helper function to convert empty strings to null for numeric fields
@@ -20,6 +22,17 @@ const sanitizeNumeric = (value) => {
   const num = parseFloat(value);
   return isNaN(num) ? null : num;
 };
+
+/** Post settlement only once the book system day is on or after leg2 value date (same rule as GSec EOD). */
+function valueDateOnOrBeforeSystemDay(valueDate, systemDay) {
+  if (valueDate == null || systemDay == null) return false;
+  const v = new Date(valueDate);
+  const s = new Date(systemDay);
+  if (Number.isNaN(v.getTime()) || Number.isNaN(s.getTime())) return false;
+  const vUtc = Date.UTC(v.getFullYear(), v.getMonth(), v.getDate());
+  const sUtc = Date.UTC(s.getFullYear(), s.getMonth(), s.getDate());
+  return vUtc <= sUtc;
+}
 
 const buybackDealController = {
   // Create a new buyback deal
@@ -443,6 +456,10 @@ const buybackDealController = {
                       console.warn('Failed to compute coupon period from ISIN schedule; using coupon_schedule dates:', e.message);
                     }
                   }
+                  const eOverride = getCouponPeriodEOverride(buybackDeal.leg2_isin);
+                  if (eOverride) {
+                    numberOfDaysForCouponPeriod = eOverride;
+                  }
                   // Fallback to coupon_schedule-derived boundaries if schedule-based calc failed
                   if (
                     (numberOfDaysForCouponPeriod === null || numberOfDaysForCouponPeriod === undefined) &&
@@ -534,13 +551,25 @@ const buybackDealController = {
                     [gsecRow.deal_number]
                   );
                   if (leCount[0].cnt === 0) {
-                    const bbPrefix = `Buyback ${buybackDeal.deal_number} - `;
-                    const buyLedgerRes = await postFinalApprovedBuyLedger(gsecRow, { descriptionPrefix: bbPrefix });
-                    if (!buyLedgerRes.success) {
-                      console.error(
-                        `Buyback leg2 buy ledger failed for ${buybackDeal.deal_number}:`,
-                        buyLedgerRes.error
+                    const systemDayRow = await getSystemDay();
+                    const systemDate = systemDayRow && systemDayRow.system_date;
+                    if (!systemDate) {
+                      console.warn(
+                        `Buyback leg2 buy ledger skipped (system day not set) for ${buybackDeal.deal_number}`
                       );
+                    } else if (!valueDateOnOrBeforeSystemDay(gsecRow.value_date, systemDate)) {
+                      console.log(
+                        `Buyback leg2 buy ledger deferred until value date (leg2 VD after system day): buyback=${buybackDeal.deal_number}, leg2_value_date=${gsecRow.value_date}, system_date=${systemDate}`
+                      );
+                    } else {
+                      const bbPrefix = `Buyback ${buybackDeal.deal_number} - `;
+                      const buyLedgerRes = await postFinalApprovedBuyLedger(gsecRow, { descriptionPrefix: bbPrefix });
+                      if (!buyLedgerRes.success) {
+                        console.error(
+                          `Buyback leg2 buy ledger failed for ${buybackDeal.deal_number}:`,
+                          buyLedgerRes.error
+                        );
+                      }
                     }
                   }
                 }
