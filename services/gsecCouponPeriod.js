@@ -88,6 +88,14 @@ function getCouponPeriodEOverride(isinNumber) {
   return v ? Number(v) : null;
 }
 
+function parseNumberLike(x) {
+  if (x === null || x === undefined || x === '') return NaN;
+  if (typeof x === 'number') return x;
+  const s = String(x).trim().replace(/,/g, '');
+  const n = parseFloat(s);
+  return Number.isFinite(n) ? n : NaN;
+}
+
 function resolveIsinCouponDates(deal) {
   const isin = deal.isin_number && String(deal.isin_number).trim();
   if (isin && ISIN_COUPON_SCHEDULE_OVERRIDE[isin]) {
@@ -191,12 +199,12 @@ function getCouponPeriodLengthDaysFromIsinSchedule(settlementDate, maturityDate,
  * @returns {{ ok: true, amount: number, E: number, effectiveCouponInterest: number } | { ok: false, reason: string }}
  */
 function computeGsecPerDayAccrual(deal, settlementDate, frequency = 2) {
-  const faceVal = Number(deal.face_value) || 0;
+  const faceVal = parseNumberLike(deal.face_value) || 0;
   let remaining = deal.remaining_face_value;
   if (remaining === null || remaining === undefined || remaining === '') {
     remaining = faceVal;
   } else {
-    remaining = Number(remaining);
+    remaining = parseNumberLike(remaining);
   }
   if (!Number.isFinite(remaining) || remaining <= 0) {
     return { ok: false, reason: 'no remaining face' };
@@ -205,8 +213,8 @@ function computeGsecPerDayAccrual(deal, settlementDate, frequency = 2) {
   // IMPORTANT: In our DB, `coupon_interest` is not consistently stored as "coupon per period".
   // Some records store the ANNUAL coupon amount (= face * rate%), while others store per-period.
   // Daily accrual should always use the coupon amount for the current coupon period.
-  const storedCouponInterest = Number(deal.coupon_interest);
-  const rate = Number(deal.coupon_rate);
+  const storedCouponInterest = parseNumberLike(deal.coupon_interest);
+  const rate = parseNumberLike(deal.coupon_rate);
   const freq = Number.isFinite(frequency) && frequency > 0 ? frequency : 2;
 
   let couponPerPeriodForFullFace = null;
