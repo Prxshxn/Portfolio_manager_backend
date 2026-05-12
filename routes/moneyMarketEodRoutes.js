@@ -330,6 +330,15 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
       db.query(
         `SELECT g.id, g.deal_number, g.value_date, g.coupon_interest, g.maturity_date, g.face_value, g.remaining_face_value,
                 g.isin_number, g.per_day_accrual,
+                COALESCE((
+                  SELECT SUM(s.face_value)
+                  FROM gsec s
+                  WHERE s.transaction_type = 'Sell'
+                    AND s.buy_deal_number IS NOT NULL
+                    AND TRIM(s.buy_deal_number) = TRIM(g.deal_number)
+                    AND s.value_date IS NOT NULL
+                    AND DATE(s.value_date) <= DATE(?)
+                ), 0) AS linked_sold_face_value,
                 im.coupon_date_1, im.coupon_date_2, im.coupon_rate
          FROM gsec g
          LEFT JOIN isin_master im ON g.isin_number COLLATE utf8mb4_unicode_ci = im.isin_number COLLATE utf8mb4_unicode_ci
@@ -340,7 +349,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
            AND DATE(g.value_date) <= DATE(?)
            AND (g.coupon_interest IS NOT NULL AND g.coupon_interest > 0
                 OR im.coupon_rate IS NOT NULL AND im.coupon_rate > 0)`,
-        [systemDay, systemDay]
+        [systemDay, systemDay, systemDay]
       ),
       db.query(
         `SELECT g.id, g.deal_number, g.value_date, g.maturity_date, g.face_value,
@@ -413,6 +422,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
       const alreadyPostedDeals = new Set((alreadyPostedRows || []).map((r) => String(r.deal_number)));
       let posted = 0;
       let skippedAlreadyPosted = 0;
+      let storedValueCorrected = 0;
       for (const deal of gsecDeals) {
         try {
           if (!valueDateOnOrBeforeSystemDay(deal.value_date, systemDay)) {
@@ -426,6 +436,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
             );
             if (Number(deal.per_day_accrual) > 0) {
               await db.query('UPDATE gsec SET per_day_accrual = 0 WHERE id = ?', [deal.id]);
+              storedValueCorrected++;
             }
             continue;
           }
@@ -434,6 +445,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
             console.warn('Skipping GSec deal:', deal.deal_number, computed.reason);
             if (Number(deal.per_day_accrual) > 0) {
               await db.query('UPDATE gsec SET per_day_accrual = 0 WHERE id = ?', [deal.id]);
+              storedValueCorrected++;
             }
             continue;
           }
@@ -460,6 +472,10 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
             alreadyPostedDeals.add(String(deal.deal_number));
             posted++;
           }
+          const existingPerDay = Number(deal.per_day_accrual) || 0;
+          if (Math.abs(existingPerDay - Number(amount)) > 0.00000001) {
+            storedValueCorrected++;
+          }
           await db.query(
             `UPDATE gsec SET per_day_accrual = ?, number_of_days_for_coupon_period = ? WHERE id = ?`,
             [amount, E, deal.id]
@@ -471,6 +487,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
       return {
         posted,
         skipped_already_posted: skippedAlreadyPosted,
+        stored_value_corrected: storedValueCorrected,
         deals_loaded: gsecDeals.length
       };
     };
@@ -566,7 +583,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
     const gsecAmortSkippedAlreadyPosted = gsecAmortEodResult.skipped_already_posted;
 
     console.log(
-      `GSec accrual summary: posted=${gsecPostedCount}, already_posted_skipped=${gsecSkippedAlreadyPosted}`
+      `GSec accrual summary: posted=${gsecPostedCount}, already_posted_skipped=${gsecSkippedAlreadyPosted}, stored_value_corrected=${gsecAccrualEodResult.stored_value_corrected}`
     );
     console.log(
       `GSec amortization summary: posted=${gsecAmortPostedCount}, already_posted_skipped=${gsecAmortSkippedAlreadyPosted}`
@@ -1009,6 +1026,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
         daily_accrual: {
           posted: gsecAccrualEodResult.posted,
           skipped_already_posted: gsecAccrualEodResult.skipped_already_posted,
+          stored_value_corrected: gsecAccrualEodResult.stored_value_corrected,
           deals_loaded: gsecAccrualEodResult.deals_loaded
         },
         daily_amortization: {

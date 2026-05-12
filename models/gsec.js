@@ -1,6 +1,7 @@
 const db = require('../config/database');
 const LimitSetup = require('./limitSetupModel');
 const CashflowCaptureService = require('../services/cashflowCaptureService');
+const { computeGsecPerDayAccrual } = require('../services/gsecCouponPeriod');
 const Gsec = {
   create: async (data) => {
     // Use the existing create method but with connection pool
@@ -52,13 +53,23 @@ const Gsec = {
       
       const currentDate = new Date();
       
-      // Calculate per_day_accrual: couponInterest / numberOfDaysForCouponPeriod
+      // Calculate per_day_accrual using the same normalized logic as EOD/reporting.
       let perDayAccrual = null;
-      if (data.couponInterest && data.numberOfDaysForCouponPeriod) {
-        const ci = parseFloat(data.couponInterest);
-        const nd = parseFloat(data.numberOfDaysForCouponPeriod);
-        if (ci && nd) {
-          perDayAccrual = Math.floor((ci / nd) * 100000000) / 100000000; // truncate to 8 decimals
+      if (data.transactionType === 'Buy') {
+        const computedPerDay = computeGsecPerDayAccrual(
+          {
+            face_value: data.faceValue,
+            remaining_face_value: data.faceValue,
+            coupon_interest: data.couponInterest,
+            maturity_date: data.maturityDate,
+            isin_number: data.isin,
+            coupon_rate: data.couponRate
+          },
+          data.valueDate || new Date().toISOString().slice(0, 10),
+          2
+        );
+        if (computedPerDay.ok) {
+          perDayAccrual = computedPerDay.amount;
         }
       }
       data.per_day_accrual = perDayAccrual;
