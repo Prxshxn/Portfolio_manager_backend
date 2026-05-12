@@ -206,6 +206,19 @@ function computeGsecPerDayAccrual(deal, settlementDate, frequency = 2) {
   } else {
     remaining = parseNumberLike(remaining);
   }
+  // Guard: if remaining_face_value is wrongly reduced but there are no linked sells,
+  // treat remaining as full face to avoid suppressing accrual (data sometimes gets out of sync).
+  const linkedSold = parseNumberLike(deal.linked_sold_face_value);
+  if (
+    Number.isFinite(faceVal) &&
+    faceVal > 0 &&
+    Number.isFinite(remaining) &&
+    remaining > 0 &&
+    remaining < faceVal &&
+    (linkedSold === 0 || !Number.isFinite(linkedSold))
+  ) {
+    remaining = faceVal;
+  }
   if (!Number.isFinite(remaining) || remaining <= 0) {
     return { ok: false, reason: 'no remaining face' };
   }
