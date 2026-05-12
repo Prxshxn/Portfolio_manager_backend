@@ -3,7 +3,8 @@ const { differenceInDays, parseISO } = require('date-fns');
 const { calculateNVP } = require('../utils/bondPricingNVP');
 const {
   getCouponPeriodLengthDaysFromIsinSchedule,
-  resolveIsinCouponDates
+  resolveIsinCouponDates,
+  computeGsecPerDayAccrual
 } = require('./gsecCouponPeriod');
 
 // Helper to truncate to 4 decimals
@@ -501,8 +502,29 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     
     console.log(`Deal ${row.deal_number}: dealFaceValue=${dealFaceValue}, repoCollateral=${repoCollateral}, availableBalance=${availableBalance}`);
 
-    // Daily fields from DB (already as per-day amounts for this deal row)
-    const dailyAccrual = Number(row.daily_accrual) || 0;
+    // Recompute daily accrual for report date so stale persisted values do not leak into output.
+    // Fallback to stored DB value only when recomputation is not possible for the row.
+    const accrualAsOfDate = asAtDate || new Date().toISOString().split('T')[0];
+    const normalizedDealNumberForAccrual = (row.deal_number || '').trim();
+    const soldAgainstForAccrual = Number(soldByDeal[normalizedDealNumberForAccrual] || 0);
+    const computedDailyAccrual = computeGsecPerDayAccrual(
+      {
+        face_value: row.face_value,
+        remaining_face_value: row.remaining_face_value_report ?? row.face_value,
+        coupon_interest: row.coupon_interest,
+        maturity_date: row.maturity_date,
+        isin_number: row.isin,
+        coupon_date_1: row.coupon_date_1,
+        coupon_date_2: row.coupon_date_2,
+        coupon_rate: row.coupon_rate,
+        linked_sold_face_value: soldAgainstForAccrual
+      },
+      accrualAsOfDate,
+      2
+    );
+    const dailyAccrual = computedDailyAccrual.ok
+      ? Number(computedDailyAccrual.amount)
+      : (Number(row.daily_accrual) || 0);
     const dailyAmort = Number(row.daily_amortization) || 0;
 
     // Cumulative amortization from purchase date (value_date) to asAtDate (or today if missing)
