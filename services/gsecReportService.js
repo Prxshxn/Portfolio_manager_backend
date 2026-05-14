@@ -507,6 +507,11 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     const accrualAsOfDate = asAtDate || new Date().toISOString().split('T')[0];
     const normalizedDealNumberForAccrual = (row.deal_number || '').trim();
     const soldAgainstForAccrual = Number(soldByDeal[normalizedDealNumberForAccrual] || 0);
+    // IMPORTANT: pass buyback deductions too. Otherwise the safety guard inside
+    // computeGsecPerDayAccrual would reset remaining_face_value back to face_value for
+    // deals that were partially bought back (no Sell rows exist), wrongly inflating the
+    // daily accrual. `buybackByDealBatch` was already aggregated above for this purpose.
+    const buybackAgainstForAccrual = Number(buybackByDealBatch[normalizedDealNumberForAccrual] || 0);
     const computedDailyAccrual = computeGsecPerDayAccrual(
       {
         face_value: row.face_value,
@@ -517,7 +522,8 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
         coupon_date_1: row.coupon_date_1,
         coupon_date_2: row.coupon_date_2,
         coupon_rate: row.coupon_rate,
-        linked_sold_face_value: soldAgainstForAccrual
+        linked_sold_face_value: soldAgainstForAccrual,
+        linked_buyback_face_value: buybackAgainstForAccrual
       },
       accrualAsOfDate,
       2
