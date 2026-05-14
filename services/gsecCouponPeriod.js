@@ -206,16 +206,26 @@ function computeGsecPerDayAccrual(deal, settlementDate, frequency = 2) {
   } else {
     remaining = parseNumberLike(remaining);
   }
-  // Guard: if remaining_face_value is wrongly reduced but there are no linked sells,
-  // treat remaining as full face to avoid suppressing accrual (data sometimes gets out of sync).
-  const linkedSold = parseNumberLike(deal.linked_sold_face_value);
+  // Guard: if remaining_face_value is wrongly reduced but there is NO known reduction
+  // from any source (sells, buybacks, or any other passed-in reduction signal), treat
+  // remaining as full face to avoid suppressing accrual (data sometimes gets out of sync).
+  // IMPORTANT: callers MUST pass `linked_buyback_face_value` whenever the deal has been
+  // partially bought back, otherwise this guard will wrongly inflate the accrual back to
+  // the full-face level. Same for any other reduction source via `linked_reduced_face_value`.
+  const linkedSoldRaw = parseNumberLike(deal.linked_sold_face_value);
+  const linkedBuybackRaw = parseNumberLike(deal.linked_buyback_face_value);
+  const linkedReducedRaw = parseNumberLike(deal.linked_reduced_face_value);
+  const linkedSold = Number.isFinite(linkedSoldRaw) ? linkedSoldRaw : 0;
+  const linkedBuyback = Number.isFinite(linkedBuybackRaw) ? linkedBuybackRaw : 0;
+  const linkedReducedExtra = Number.isFinite(linkedReducedRaw) ? linkedReducedRaw : 0;
+  const totalKnownReduction = linkedSold + linkedBuyback + linkedReducedExtra;
   if (
     Number.isFinite(faceVal) &&
     faceVal > 0 &&
     Number.isFinite(remaining) &&
     remaining > 0 &&
     remaining < faceVal &&
-    (linkedSold === 0 || !Number.isFinite(linkedSold))
+    totalKnownReduction <= 0
   ) {
     remaining = faceVal;
   }
