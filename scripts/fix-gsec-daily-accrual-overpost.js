@@ -112,20 +112,86 @@ async function main() {
 
       const [gsecRows] = await db.query(
         `SELECT g.face_value, g.remaining_face_value, g.coupon_interest, g.maturity_date, g.isin_number,
-                im.coupon_rate, im.coupon_date_1, im.coupon_date_2
+                im.coupon_rate, im.coupon_date_1, im.coupon_date_2,
+                COALESCE((
+                  SELECT SUM(s.face_value)
+                  FROM gsec s
+                  WHERE s.transaction_type = 'Sell'
+                    AND s.buy_deal_number IS NOT NULL
+                    AND TRIM(s.buy_deal_number) = TRIM(g.deal_number)
+                    AND s.value_date IS NOT NULL
+                    AND DATE(s.value_date) <= DATE(?)
+                ), 0) AS linked_sold_face_value
          FROM gsec g
          LEFT JOIN isin_master im
            ON g.isin_number COLLATE utf8mb4_unicode_ci = im.isin_number COLLATE utf8mb4_unicode_ci
          WHERE g.deal_number = ?
            AND g.transaction_type = 'Buy'
          LIMIT 1`,
-        [dealNumber]
+        [entryDate, dealNumber]
       );
       const deal = gsecRows && gsecRows[0];
       if (!deal) {
         console.warn(`[fix-gsec-accrual] missing gsec buy row for deal=${dealNumber}, skipping`);
         continue;
       }
+
+      // Aggregate buyback deductions for this deal so the safety guard inside
+      // computeGsecPerDayAccrual does not reset remaining_face_value back to face_value
+      // when a deal was partially bought back (no Sell rows exist).
+      let linkedBuybackForDeal = 0;
+      try {
+        const [directBBRows] = await db.query(
+          `SELECT COALESCE(SUM(leg1_face_value), 0) AS bb
+           FROM buyback_deals
+           WHERE deal_status = 'Approved'
+             AND TRIM(source_buy_deal_number) = TRIM(?)
+             AND approved_at IS NOT NULL
+             AND DATE(approved_at) <= DATE(?)`,
+          [dealNumber, entryDate]
+        );
+        linkedBuybackForDeal += Number((directBBRows && directBBRows[0] && directBBRows[0].bb) || 0);
+
+        // sell_deal_allocations JSON entries (parsed in JS)
+        let hasAllocsCol = false;
+        try {
+          const [colCheck] = await db.query(
+            `SELECT 1 AS ok FROM INFORMATION_SCHEMA.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'buyback_deals'
+               AND COLUMN_NAME = 'sell_deal_allocations'
+             LIMIT 1`
+          );
+          hasAllocsCol = Array.isArray(colCheck) && colCheck.length > 0;
+        } catch (_) { /* leave false */ }
+
+        if (hasAllocsCol) {
+          const [allocRows] = await db.query(
+            `SELECT sell_deal_allocations
+             FROM buyback_deals
+             WHERE deal_status = 'Approved'
+               AND sell_deal_allocations IS NOT NULL
+               AND approved_at IS NOT NULL
+               AND DATE(approved_at) <= DATE(?)`,
+            [entryDate]
+          );
+          for (const r of allocRows || []) {
+            try {
+              const allocs = typeof r.sell_deal_allocations === 'string'
+                ? JSON.parse(r.sell_deal_allocations)
+                : r.sell_deal_allocations;
+              if (!Array.isArray(allocs)) continue;
+              for (const a of allocs) {
+                if (String((a && a.deal_number) || '').trim() === dealNumber.trim()) {
+                  linkedBuybackForDeal += Number(a && a.amountToSell) || 0;
+                }
+              }
+            } catch (_) { /* ignore malformed JSON */ }
+          }
+        }
+      } catch (bbErr) {
+        console.warn(`[fix-gsec-accrual] failed to aggregate buyback for deal=${dealNumber}: ${bbErr.message}`);
+      }
+      deal.linked_buyback_face_value = linkedBuybackForDeal;
 
       const computed = computeGsecPerDayAccrual(deal, entryDate, 2);
       if (!computed.ok) {
