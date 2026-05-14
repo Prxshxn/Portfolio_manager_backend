@@ -391,6 +391,92 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
 
     const hasPerDayAmortizationColumn = Array.isArray(colRows) && colRows.length > 0;
 
+    // ── Aggregate per-Buy-deal buyback deductions so daily accrual is computed on the
+    // ── true remaining face. Without this, deals that were partially bought back have
+    // ── remaining_face_value < face_value but linked_sold_face_value = 0, which makes
+    // ── the safety guard in computeGsecPerDayAccrual reset remaining back to face and
+    // ── inflate the accrual. We sum (a) source_buy_deal_number direct links, and
+    // ── (b) sell_deal_allocations JSON entries, both restricted to approved buybacks
+    // ── on/before the system day.
+    const buybackByDealForAccrual = {};
+    try {
+      const buyDealNumbersForBB = (gsecDeals || [])
+        .map((d) => String(d.deal_number || '').trim())
+        .filter(Boolean);
+
+      let hasSellDealAllocationsCol = false;
+      let hasBBPortfolioCol = false;
+      let hasBBTransactionTypeCol = false;
+      try {
+        const [bbSchemaRows] = await db.query(
+          `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+           WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'buyback_deals'
+             AND COLUMN_NAME IN ('sell_deal_allocations', 'leg1_portfolio', 'leg1_transaction_type')`
+        );
+        const cols = new Set((bbSchemaRows || []).map((r) => r.COLUMN_NAME));
+        hasSellDealAllocationsCol = cols.has('sell_deal_allocations');
+        hasBBPortfolioCol = cols.has('leg1_portfolio');
+        hasBBTransactionTypeCol = cols.has('leg1_transaction_type');
+      } catch (_) { /* leave defaults */ }
+
+      if (buyDealNumbersForBB.length) {
+        const ph = buyDealNumbersForBB.map(() => '?').join(',');
+        let directBBSql = `
+          SELECT TRIM(source_buy_deal_number) AS dn,
+                 COALESCE(SUM(leg1_face_value), 0) AS bb
+          FROM buyback_deals
+          WHERE deal_status = 'Approved'
+            AND source_buy_deal_number IS NOT NULL
+            AND TRIM(source_buy_deal_number) IN (${ph})
+            AND approved_at IS NOT NULL
+            AND DATE(approved_at) <= DATE(?)`;
+        const directBBParams = [...buyDealNumbersForBB, systemDay];
+        if (hasBBTransactionTypeCol) directBBSql += ` AND leg1_transaction_type = 'Sell'`;
+        directBBSql += ' GROUP BY TRIM(source_buy_deal_number)';
+        const [directBBRows] = await db.query(directBBSql, directBBParams);
+        directBBRows.forEach((r) => {
+          const dn = String(r.dn || '').trim();
+          if (dn) buybackByDealForAccrual[dn] = Number(r.bb) || 0;
+        });
+
+        if (hasSellDealAllocationsCol) {
+          let allocBBSql = `
+            SELECT sell_deal_allocations
+            FROM buyback_deals
+            WHERE deal_status = 'Approved'
+              AND sell_deal_allocations IS NOT NULL
+              AND approved_at IS NOT NULL
+              AND DATE(approved_at) <= DATE(?)`;
+          const allocBBParams = [systemDay];
+          if (hasBBTransactionTypeCol) allocBBSql += ` AND leg1_transaction_type = 'Sell'`;
+          const [allocRows] = await db.query(allocBBSql, allocBBParams);
+          const buyDealSet = new Set(buyDealNumbersForBB);
+          for (const r of allocRows || []) {
+            try {
+              const allocs = typeof r.sell_deal_allocations === 'string'
+                ? JSON.parse(r.sell_deal_allocations)
+                : r.sell_deal_allocations;
+              if (!Array.isArray(allocs)) continue;
+              for (const a of allocs) {
+                const dn = String((a && a.deal_number) || '').trim();
+                const amt = Number(a && a.amountToSell) || 0;
+                if (dn && amt > 0 && buyDealSet.has(dn)) {
+                  buybackByDealForAccrual[dn] = (buybackByDealForAccrual[dn] || 0) + amt;
+                }
+              }
+            } catch (_) { /* ignore malformed JSON */ }
+          }
+        }
+      }
+      // Keep variable to silence lint when portfolio col is unused (kept for future filtering).
+      void hasBBPortfolioCol;
+    } catch (bbAggErr) {
+      console.warn(
+        'Failed to aggregate buyback deductions for GSec accrual (continuing with sells only):',
+        bbAggErr.message
+      );
+    }
+
     const [gsecDrAccountCode, gsecCrAccountCode] = await Promise.all([
       accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_ACCRUAL_ASSET),
       accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.GSEC_ACCRUAL_INCOME)
@@ -440,7 +526,12 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
             }
             continue;
           }
-          const computed = computeGsecPerDayAccrual(deal, systemDay, 2);
+          const dnForBB = String(deal.deal_number || '').trim();
+          const linkedBuybackForDeal = Number(buybackByDealForAccrual[dnForBB] || 0);
+          const dealForAccrual = Object.assign({}, deal, {
+            linked_buyback_face_value: linkedBuybackForDeal
+          });
+          const computed = computeGsecPerDayAccrual(dealForAccrual, systemDay, 2);
           if (!computed.ok) {
             console.warn('Skipping GSec deal:', deal.deal_number, computed.reason);
             if (Number(deal.per_day_accrual) > 0) {
