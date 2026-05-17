@@ -62,14 +62,36 @@ function truncate8(x) {
   return Math.floor(Number(x) * 100000000) / 100000000;
 }
 
+/** Stored gsec.remaining_face_value when set on the buy row (source of truth for outstanding). */
+function parseStoredRemainingFaceValue(row) {
+  const raw = row.remaining_face_value;
+  if (raw === null || raw === undefined || raw === '') return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, n);
+}
+
+/** Prefer DB remaining_face_value; fall back to sell/buyback-derived report value. */
+function resolveEffectiveRemainingFace(row) {
+  const stored = parseStoredRemainingFaceValue(row);
+  if (stored !== null) return stored;
+  const face = Math.max(0, Number(row.face_value) || 0);
+  const directSold = Number(row._direct_sold_against_deal ?? 0);
+  const directBuyback = Number(row._direct_buyback_against_deal ?? 0);
+  // No reductions linked to this deal_number — show full face (do not apply FIFO unlinked sells).
+  if (directSold <= 0 && directBuyback <= 0) {
+    return face;
+  }
+  return Math.max(0, Number(row.remaining_face_value_report ?? face) || 0);
+}
+
 exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityDate, page, pageSize }) => {
   try {
     // Debug: Log the asAtDate parameter
     console.log(`[GSEC Report] Called with asAtDate: ${asAtDate}, portfolio: ${portfolio}, isin: ${isin}`);
     
     // Build query with filters - only include Buy transactions from GSEC deals
-    // Note: remaining_face_value is computed, not a column, so we calculate it later
-    let sql = `SELECT g.id, g.portfolio, g.deal_number, g.face_value, g.value_date, g.maturity_date, g.isin_number as isin, g.coupon_interest, g.clean_price, g.dirty_price, g.yield, g.counterparty_id, g.transaction_type,
+    let sql = `SELECT g.id, g.portfolio, g.deal_number, g.face_value, g.remaining_face_value, g.matured, g.value_date, g.maturity_date, g.isin_number as isin, g.coupon_interest, g.clean_price, g.dirty_price, g.yield, g.counterparty_id, g.transaction_type,
                g.per_day_accrual AS daily_accrual,
                g.per_day_amortization AS daily_amortization,
                COALESCE(
@@ -106,6 +128,9 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     }
     if (asAtDate) {
       sql += ' AND g.value_date <= ?';
+      params.push(asAtDate);
+      // Exclude deals that have already matured on or before the report date.
+      sql += ' AND g.maturity_date > ?';
       params.push(asAtDate);
     }
     
@@ -395,7 +420,10 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     const originalFace = Number(row.face_value) || 0;
     const buybackDeduction = Number(buybackByDealBatch[normalizedDealNumber] || 0);
 
+    row._direct_sold_against_deal = soldAgainstThisDeal;
+    row._direct_buyback_against_deal = buybackDeduction;
     row.remaining_face_value_report = Math.max(0, originalFace - soldAgainstThisDeal - buybackDeduction);
+    row.effective_remaining_face = resolveEffectiveRemainingFace(row);
     row.sell_back = 0;
   }
 
@@ -470,8 +498,18 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
   // This ensures NVP is calculated to the asAtDate (historical date) when viewing past reports
   const valueDateForNVP = asAtDate || new Date().toISOString().split('T')[0];
 
-  // Hide deals that have zero remaining face value as at report date.
-  const visibleRows = rows.filter(row => Number(row.remaining_face_value_report ?? row.face_value ?? 0) > 0);
+  // Hide deals that have zero remaining face value as at report date,
+  // and deals already matured on or before the report date.
+  const asAtYmd = asAtDate ? clampToYmd(asAtDate) : null;
+  const visibleRows = rows.filter(row => {
+    if (Number(row.effective_remaining_face ?? 0) <= 0) return false;
+    if (asAtYmd) {
+      const matYmd = clampToYmd(row.maturity_date);
+      if (matYmd && matYmd <= asAtYmd) return false;
+    }
+    if (Number(row.matured) === 1) return false;
+    return true;
+  });
 
   // Format results
   const data = visibleRows.map(row => {
@@ -496,7 +534,7 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     });
 
     // Calculate available balance: deal face value - repo_collateral (deal-wise calculation)
-    const dealFaceValue = Number(row.remaining_face_value_report ?? row.face_value) || 0;
+    const dealFaceValue = Number(row.effective_remaining_face ?? row.face_value) || 0;
     const repoCollateral = Number(row.repo_collateral) || 0;
     const availableBalance = dealFaceValue - repoCollateral;
     
@@ -506,16 +544,22 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     // Fallback to stored DB value only when recomputation is not possible for the row.
     const accrualAsOfDate = asAtDate || new Date().toISOString().split('T')[0];
     const normalizedDealNumberForAccrual = (row.deal_number || '').trim();
-    const soldAgainstForAccrual = Number(soldByDeal[normalizedDealNumberForAccrual] || 0);
+    const storedRemainingForAccrual = parseStoredRemainingFaceValue(row);
+    const originalFaceForAccrual = Number(row.face_value) || 0;
+    const soldAgainstForAccrual = storedRemainingForAccrual !== null
+      ? Math.max(0, originalFaceForAccrual - storedRemainingForAccrual)
+      : Number(soldByDeal[normalizedDealNumberForAccrual] || 0);
     // IMPORTANT: pass buyback deductions too. Otherwise the safety guard inside
     // computeGsecPerDayAccrual would reset remaining_face_value back to face_value for
     // deals that were partially bought back (no Sell rows exist), wrongly inflating the
     // daily accrual. `buybackByDealBatch` was already aggregated above for this purpose.
-    const buybackAgainstForAccrual = Number(buybackByDealBatch[normalizedDealNumberForAccrual] || 0);
+    const buybackAgainstForAccrual = storedRemainingForAccrual !== null
+      ? 0
+      : Number(buybackByDealBatch[normalizedDealNumberForAccrual] || 0);
     const computedDailyAccrual = computeGsecPerDayAccrual(
       {
         face_value: row.face_value,
-        remaining_face_value: row.remaining_face_value_report ?? row.face_value,
+        remaining_face_value: row.effective_remaining_face ?? row.face_value,
         coupon_interest: row.coupon_interest,
         maturity_date: row.maturity_date,
         isin_number: row.isin,
@@ -547,7 +591,7 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     // Cumulative accrual since purchase date up to asAtDate (scaled to remaining face as at report)
     let cumulativeAccrual = 0;
     try {
-      const effectiveFace = Number(row.remaining_face_value_report ?? row.face_value) || 0;
+      const effectiveFace = Number(row.effective_remaining_face ?? row.face_value) || 0;
       const originalFace = Number(row.face_value) || 0;
       const couponInterestFull = Number(row.coupon_interest) || 0;
       const scale = originalFace > 0 ? effectiveFace / originalFace : 1;
@@ -590,9 +634,8 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       portfolio: row.portfolio,
       custodian: '', // custodian column doesn't exist in gsec table
       deal_number: row.deal_number || '',
-      // Show remaining face value (after deducting sell deals and buyback deals) in the Face Value column
-      // This reflects the actual available face value at the point of creation
-      face_value: formatCurrency(row.remaining_face_value_report ?? row.face_value, 2),
+      // Face Value column: stored remaining_face_value on the buy row when set, else sell/buyback-derived
+      face_value: formatCurrency(row.effective_remaining_face ?? row.face_value, 2),
       value_date: row.value_date,
       maturity_date: row.maturity_date,
       isin: row.isin,
@@ -627,21 +670,23 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
   // Calculate total portfolio balance when portfolio filter is applied
   let totalPortfolioBalance = null;
   if (portfolio) {
-    // Calculate total balance using remaining face value (after deducting sells)
-    // Note: remaining_face_value is computed, not a column
-    const balanceSql = `SELECT g.deal_number, g.face_value, g.isin_number AS isin FROM gsec g WHERE g.transaction_type = 'Buy'` +
+    // Calculate total balance using remaining face value (stored on row, or sell/buyback-derived)
+    const balanceSql = `SELECT g.deal_number, g.face_value, g.remaining_face_value, g.isin_number AS isin FROM gsec g WHERE g.transaction_type = 'Buy' AND COALESCE(g.matured, 0) = 0` +
       (portfolio ? ' AND g.portfolio = ?' : '') +
       (isin ? ' AND g.isin_number = ?' : '') +
       (valueDate ? ' AND g.value_date = ?' : '') +
       (maturityDate ? ' AND g.maturity_date = ?' : '') +
-      (asAtDate ? ' AND g.value_date <= ?' : '');
+      (asAtDate ? ' AND g.value_date <= ? AND g.maturity_date > ?' : '');
     
     const balanceParams = [];
     if (portfolio) balanceParams.push(portfolio);
     if (isin) balanceParams.push(isin);
     if (valueDate) balanceParams.push(valueDate);
     if (maturityDate) balanceParams.push(maturityDate);
-    if (asAtDate) balanceParams.push(asAtDate);
+    if (asAtDate) {
+      balanceParams.push(asAtDate);
+      balanceParams.push(asAtDate);
+    }
     
     const [balanceRows] = await db.query(balanceSql, balanceParams);
     
@@ -867,15 +912,20 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     // the portfolio total.
     let totalBalanceCents = 0;
     balanceRows.forEach(balanceRow => {
-      const originalFaceCents = Math.round((Number(balanceRow.face_value) || 0) * 100);
-      const normalizedDealNumber = (balanceRow.deal_number || '').trim();
-      const soldAgainstThisDealCents = Math.round((Number(soldByDeal[normalizedDealNumber] || 0)) * 100);
-      const buybackDeductionCents = Math.round((Number(buybackByDeal[normalizedDealNumber] || 0)) * 100);
-
-      const remainingFaceValueCents = Math.max(
-        0,
-        originalFaceCents - soldAgainstThisDealCents - buybackDeductionCents
-      );
+      const storedRemaining = parseStoredRemainingFaceValue(balanceRow);
+      let remainingFaceValueCents;
+      if (storedRemaining !== null) {
+        remainingFaceValueCents = Math.round(storedRemaining * 100);
+      } else {
+        const originalFaceCents = Math.round((Number(balanceRow.face_value) || 0) * 100);
+        const normalizedDealNumber = (balanceRow.deal_number || '').trim();
+        const soldAgainstThisDealCents = Math.round((Number(soldByDeal[normalizedDealNumber] || 0)) * 100);
+        const buybackDeductionCents = Math.round((Number(buybackByDeal[normalizedDealNumber] || 0)) * 100);
+        remainingFaceValueCents = Math.max(
+          0,
+          originalFaceCents - soldAgainstThisDealCents - buybackDeductionCents
+        );
+      }
       totalBalanceCents += remainingFaceValueCents;
     });
     const totalBalance = totalBalanceCents / 100;

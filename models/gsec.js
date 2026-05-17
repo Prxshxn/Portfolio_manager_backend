@@ -1,7 +1,10 @@
 const db = require('../config/database');
 const LimitSetup = require('./limitSetupModel');
 const CashflowCaptureService = require('../services/cashflowCaptureService');
-const { computeGsecPerDayAccrual } = require('../services/gsecCouponPeriod');
+const {
+  computeGsecPerDayAccrual,
+  computeGsecDailyAmortization
+} = require('../services/gsecCouponPeriod');
 const Gsec = {
   create: async (data) => {
     // Use the existing create method but with connection pool
@@ -52,6 +55,24 @@ const Gsec = {
       }
       
       const currentDate = new Date();
+
+      const cleanNumericValue = (value) => {
+        if (value === '' || value === null || value === undefined) {
+          return null;
+        }
+        if (typeof value === 'number') {
+          return isNaN(value) ? null : value;
+        }
+        if (typeof value === 'string') {
+          const trimmed = value.trim();
+          if (trimmed === '' || trimmed === 'null' || trimmed === 'undefined') {
+            return null;
+          }
+          const parsed = parseFloat(trimmed);
+          return isNaN(parsed) ? null : parsed;
+        }
+        return value;
+      };
       
       // Calculate per_day_accrual using the same normalized logic as EOD/reporting.
       let perDayAccrual = null;
@@ -73,6 +94,25 @@ const Gsec = {
         }
       }
       data.per_day_accrual = perDayAccrual;
+
+      let perDayAmortization = null;
+      let remainingFaceValue = null;
+      if (data.transactionType === 'Buy') {
+        const faceForDerived = cleanNumericValue(data.faceValue);
+        remainingFaceValue = faceForDerived;
+        const amortComputed = computeGsecDailyAmortization({
+          face_value: faceForDerived,
+          remaining_face_value: faceForDerived,
+          clean_price: data.cleanPrice,
+          value_date: data.valueDate,
+          maturity_date: data.maturityDate
+        });
+        if (amortComputed.ok) {
+          perDayAmortization = amortComputed.dailyAmount;
+        }
+      }
+      data.per_day_amortization = perDayAmortization;
+      data.remaining_face_value = remainingFaceValue;
 
       // Parse counterparty string (e.g., 'i1', 'j1', 'c1') to extract the numeric ID
       let counterpartyId = null;
@@ -107,30 +147,9 @@ const Gsec = {
         coupon_interest, clean_price, dirty_price, accrued_interest_calculation, accrued_interest_six_decimals, 
         accrued_interest_for_100, settlement_amount, settlement_mode, issue_date, maturity_date, coupon_dates, 
         yield, brokerage, currency, portfolio, strategy, broker, accrued_interest_adjustment, clean_price_adjustment, 
-        buy_deal_number, status, current_approval_level, per_day_accrual
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+        buy_deal_number, status, current_approval_level, per_day_accrual, remaining_face_value, per_day_amortization
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
       
-      // Helper function to convert empty strings to null for numeric fields
-      const cleanNumericValue = (value) => {
-        if (value === '' || value === null || value === undefined) {
-          return null;
-        }
-        // If it's already a number, return it
-        if (typeof value === 'number') {
-          return isNaN(value) ? null : value;
-        }
-        // If it's a string, try to parse it
-        if (typeof value === 'string') {
-          const trimmed = value.trim();
-          if (trimmed === '' || trimmed === 'null' || trimmed === 'undefined') {
-            return null;
-          }
-          const parsed = parseFloat(trimmed);
-          return isNaN(parsed) ? null : parsed;
-        }
-        return value;
-      };
-
       const values = [
         data.transactionType,
         counterpartyValue, // counterparty: prefixed string ('c3') or numeric id for old schema
@@ -166,7 +185,9 @@ const Gsec = {
         data.buyDealNumber || null,
         data.status || 'pending', // Status: pending by default
         data.current_approval_level || 'front_office', // 3-tier: start at front_office for Front Office Verifier
-        cleanNumericValue(data.per_day_accrual) // Daily accrual amount
+        cleanNumericValue(data.per_day_accrual),
+        cleanNumericValue(data.remaining_face_value),
+        cleanNumericValue(data.per_day_amortization)
         // created_at has DEFAULT CURRENT_TIMESTAMP, so we don't need to include it
       ];
       try {
@@ -938,7 +959,21 @@ const Gsec = {
     
     try {
       const [result] = await db.query(sql, values);
-      const [afterRows] = await db.query('SELECT id, deal_number, transaction_type, status, current_approval_level, face_value, settlement_amount, clean_price, dirty_price, value_date, maturity_date FROM gsec WHERE id = ?', [id]);
+      const [afterRows] = await db.query('SELECT id, deal_number, transaction_type, status, current_approval_level, face_value, settlement_amount, clean_price, dirty_price, value_date, maturity_date, remaining_face_value, per_day_accrual, per_day_amortization, coupon_interest, isin_number FROM gsec WHERE id = ?', [id]);
+      const after = afterRows && afterRows[0];
+      if (
+        after &&
+        after.transaction_type === 'Buy' &&
+        (after.remaining_face_value == null ||
+          after.per_day_amortization == null ||
+          after.per_day_accrual == null)
+      ) {
+        try {
+          await Gsec.ensureBuyDerivedFields(after);
+        } catch (deriveErr) {
+          console.error('Failed to backfill GSec buy derived fields on update:', deriveErr);
+        }
+      }
       // #region agent log
       (typeof fetch === 'function') && fetch('http://127.0.0.1:7242/ingest/29dc6e6a-2fb8-4497-a57e-c480a1e8f80b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'989560'},body:JSON.stringify({sessionId:'989560',runId:'pre-fix',hypothesisId:'H2_H5',location:'gsec.js:update:exit',message:'gsec.update after state',data:{id,affectedRows:result?.affectedRows,beforeDealNumber:beforeRows?.[0]?.deal_number||null,after:afterRows?.[0]||null,setClauseCount:setClauses.length},timestamp:Date.now()})}).catch(()=>{});
       // #endregion
@@ -949,6 +984,118 @@ const Gsec = {
     }
   },
   
+  /**
+   * Backfill remaining_face_value, per_day_accrual, per_day_amortization on Buy rows when missing
+   * (e.g. deals rejected/resubmitted before final approval, or legacy rows).
+   */
+  ensureBuyDerivedFields: async (idOrRow, connection = null) => {
+    const runQuery = async (sql, params) => {
+      if (connection) {
+        const [rows] = await connection.query(sql, params);
+        return rows;
+      }
+      const [rows] = await db.query(sql, params);
+      return rows;
+    };
+    const runExec = async (sql, params) => {
+      if (connection) {
+        return connection.query(sql, params);
+      }
+      return db.query(sql, params);
+    };
+
+    let row = typeof idOrRow === 'object' && idOrRow !== null ? idOrRow : null;
+    if (!row) {
+      const rows = await runQuery('SELECT * FROM gsec WHERE id = ?', [idOrRow]);
+      if (!rows.length) return { updated: false };
+      row = rows[0];
+    }
+    if (row.transaction_type !== 'Buy') return { updated: false };
+
+    const face = Number(row.face_value) || 0;
+    if (face <= 0) return { updated: false };
+
+    const setParts = [];
+    const values = [];
+
+    const needsRfv = row.remaining_face_value == null || row.remaining_face_value === '';
+    const remainingForCalc = needsRfv ? face : Number(row.remaining_face_value) || face;
+    if (needsRfv) {
+      setParts.push('remaining_face_value = ?');
+      values.push(face);
+    }
+
+    if ((row.per_day_accrual == null || row.per_day_accrual === '') && row.coupon_interest) {
+      let couponRate = null;
+      let couponDate1 = null;
+      let couponDate2 = null;
+      if (row.isin_number) {
+        const isinRows = await runQuery(
+          `SELECT coupon_rate, coupon_date_1, coupon_date_2
+           FROM isin_master WHERE isin_number = ? LIMIT 1`,
+          [row.isin_number]
+        );
+        if (isinRows[0]) {
+          couponRate = isinRows[0].coupon_rate;
+          couponDate1 = isinRows[0].coupon_date_1;
+          couponDate2 = isinRows[0].coupon_date_2;
+        }
+      }
+      const reductionForGuard = Math.max(0, face - remainingForCalc);
+      const computed = computeGsecPerDayAccrual(
+        {
+          face_value: face,
+          remaining_face_value: remainingForCalc,
+          coupon_interest: row.coupon_interest,
+          maturity_date: row.maturity_date,
+          isin_number: row.isin_number,
+          coupon_rate: couponRate,
+          coupon_date_1: couponDate1,
+          coupon_date_2: couponDate2,
+          // Pass total known reduction so the safety guard doesn't reset
+          // remaining back to face when stored RFV reflects real buyback/sell deductions.
+          linked_reduced_face_value: reductionForGuard
+        },
+        row.value_date || new Date().toISOString().slice(0, 10),
+        2
+      );
+      if (computed.ok) {
+        setParts.push('per_day_accrual = ?');
+        values.push(computed.amount);
+        if (
+          computed.E &&
+          (row.number_of_days_for_coupon_period == null || row.number_of_days_for_coupon_period === '')
+        ) {
+          setParts.push('number_of_days_for_coupon_period = ?');
+          values.push(computed.E);
+        }
+      }
+    }
+
+    if (row.per_day_amortization == null || row.per_day_amortization === '') {
+      const amort = computeGsecDailyAmortization({
+        face_value: face,
+        remaining_face_value: remainingForCalc,
+        clean_price: row.clean_price,
+        value_date: row.value_date,
+        maturity_date: row.maturity_date
+      });
+      if (amort.ok) {
+        setParts.push('per_day_amortization = ?');
+        values.push(amort.dailyAmount);
+      }
+    }
+
+    if (!setParts.length) {
+      return { updated: false, row };
+    }
+
+    values.push(row.id);
+    await runExec(`UPDATE gsec SET ${setParts.join(', ')}, updated_at = NOW() WHERE id = ?`, values);
+    const refreshed = await runQuery('SELECT * FROM gsec WHERE id = ?', [row.id]);
+    return { updated: true, row: refreshed[0] || row };
+  },
+
   /**
    * Update status of a GSec transaction (approve/reject)
    */
@@ -1010,7 +1157,16 @@ const Gsec = {
           // Fetch the full transaction details
           const [updatedTx] = await db.query('SELECT * FROM gsec WHERE id = ?', [id]);
           if (updatedTx && updatedTx.length > 0) {
-            const transaction = updatedTx[0];
+            let transaction = updatedTx[0];
+
+            if (transaction.transaction_type === 'Buy') {
+              try {
+                const derived = await Gsec.ensureBuyDerivedFields(transaction);
+                if (derived.row) transaction = derived.row;
+              } catch (deriveErr) {
+                console.error('Failed to backfill GSec buy derived fields on approval:', deriveErr);
+              }
+            }
             
             // Check if ledger entries already exist for this deal
             const [existingEntries] = await db.query(
@@ -1222,6 +1378,12 @@ Gsec.backfillLedgerEntries = async (transactionId = null) => {
         }
 
         if (transaction.transaction_type === 'Buy') {
+          try {
+            const derived = await Gsec.ensureBuyDerivedFields(transaction);
+            if (derived.row) transaction = derived.row;
+          } catch (deriveErr) {
+            console.error(`backfillLedgerEntries: derived fields failed for ${transaction.deal_number}:`, deriveErr);
+          }
           const ledgerResult = await gsecApprovalLedgerService.postFinalApprovedBuyLedger(transaction);
           if (!ledgerResult.success) {
             errors.push(`Transaction ${transaction.deal_number}: Failed to post compound ledger entry - ${ledgerResult.error}`);

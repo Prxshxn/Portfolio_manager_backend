@@ -344,7 +344,8 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
          LEFT JOIN isin_master im ON g.isin_number COLLATE utf8mb4_unicode_ci = im.isin_number COLLATE utf8mb4_unicode_ci
          WHERE g.transaction_type = 'Buy'
            AND g.status = 'final_approved'
-           AND g.maturity_date >= ?
+           AND COALESCE(g.matured, 0) = 0
+           AND DATE(g.maturity_date) > DATE(?)
            AND g.value_date IS NOT NULL
            AND DATE(g.value_date) <= DATE(?)
            AND (g.coupon_interest IS NOT NULL AND g.coupon_interest > 0
@@ -357,7 +358,8 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
          FROM gsec g
          WHERE g.transaction_type = 'Buy'
            AND g.status = 'final_approved'
-           AND g.maturity_date >= ?
+           AND COALESCE(g.matured, 0) = 0
+           AND DATE(g.maturity_date) > DATE(?)
            AND g.value_date IS NOT NULL
            AND DATE(g.value_date) <= DATE(?)
            AND COALESCE(g.remaining_face_value, g.face_value, 0) > 0`,
@@ -697,6 +699,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
          ON g.isin_number COLLATE utf8mb4_unicode_ci = im.isin_number COLLATE utf8mb4_unicode_ci
        WHERE g.transaction_type = 'Buy'
          AND g.status = 'final_approved'
+         AND COALESCE(g.matured, 0) = 0
          AND DATE(g.value_date) <= DATE(?)
          AND DATE(g.maturity_date) >= DATE(?)
          AND COALESCE(g.remaining_face_value, g.face_value, 0) > 0`,
