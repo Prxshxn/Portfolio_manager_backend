@@ -402,7 +402,7 @@ class CashflowCaptureService {
       
       // Capture from GSEC transactions
       const [gsecRows] = await db.query(`
-        SELECT g.id, g.deal_number, g.settlement_amount, g.value_date, g.counterparty
+        SELECT g.id, g.deal_number, g.settlement_amount, g.value_date, g.counterparty_id
         FROM gsec g
         WHERE g.value_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
         AND g.settlement_amount > 0
@@ -414,7 +414,7 @@ class CashflowCaptureService {
           'buy', // Assuming all GSEC entries are purchases
           row.settlement_amount,
           row.value_date,
-          row.counterparty
+          row.counterparty_id
         );
         totalCaptured += captured;
       }
