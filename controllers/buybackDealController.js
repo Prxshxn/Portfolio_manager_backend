@@ -38,7 +38,7 @@ const buybackDealController = {
   // Create a new buyback deal
   createDeal: async (req, res) => {
     try {
-      const { leg1, leg2, sellDeals, source_buy_deal_number } = req.body;
+      const { leg1, leg2, sellDeals, source_buy_deal_number, fund_movement } = req.body;
       
       // Validate required fields
       if (!leg1 || !leg2) {
@@ -140,6 +140,7 @@ const buybackDealController = {
         couponDate2: leg1.couponDate2,
         // Status and tracking
         deal_status: 'Pending_Verification',
+        fund_movement: String(fund_movement || 'no').toLowerCase() === 'yes' ? 'yes' : 'no',
         created_by: req.user?.id || 1, // TODO: Get from auth middleware
         notes: req.body.notes || null,
         source_buy_deal_number: source_buy_deal_number || null,
@@ -795,7 +796,7 @@ const buybackDealController = {
   updateDeal: async (req, res) => {
     try {
       const { id } = req.params;
-      const { leg1, leg2 } = req.body;
+      const { leg1, leg2, fund_movement } = req.body;
 
       if (!leg1 || !leg2) {
         return res.status(400).json({
@@ -896,6 +897,7 @@ const buybackDealController = {
           accruedInterest: leg2.accruedInterest
         },
         notes: req.body.notes,
+        fund_movement: String(fund_movement || existingDeal.fund_movement || 'no').toLowerCase() === 'yes' ? 'yes' : 'no',
         // Re-submit edited rejected deals into the approval pipeline
         deal_status: 'Pending_Verification'
       };

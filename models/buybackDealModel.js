@@ -127,6 +127,7 @@ const BuybackDeal = {
       // Status and tracking
       deal_status:
         "ENUM('Draft', 'Pending_Verification', 'Verified', 'Pending_Final_Approval', 'Approved', 'Rejected', 'Settled') NULL DEFAULT 'Draft'",
+      fund_movement: "VARCHAR(10) NULL DEFAULT 'no'",
       created_by: 'INT NULL',
       notes: 'TEXT NULL',
       // Stores JSON array [{deal_number, amountToSell}] for every buy deal selected at creation time
@@ -149,7 +150,7 @@ const BuybackDeal = {
       leg2_face_value, leg2_adjusted_face_value, leg2_yield_rate, leg2_settlement_amount, leg2_clean_price,
       leg2_dirty_price, leg2_accrued_interest, leg2_currency,
       issue_date, maturity_date, coupon_rate, coupon_date1, coupon_date2,
-      deal_status, created_by, notes, source_buy_deal_number, sell_deal_allocations
+      deal_status, fund_movement, created_by, notes, source_buy_deal_number, sell_deal_allocations
     )`;
 
     const values = [
@@ -174,6 +175,7 @@ const BuybackDeal = {
       dealData.couponDate1, dealData.couponDate2,
       // Status and tracking
       dealData.deal_status || 'Pending_Verification',
+      String(dealData.fund_movement || 'no').toLowerCase() === 'yes' ? 'yes' : 'no',
       dealData.created_by,
       dealData.notes || null,
       dealData.source_buy_deal_number || null,
@@ -247,7 +249,7 @@ const BuybackDeal = {
       leg2_counterparty = ?, leg2_portfolio = ?, leg2_strategy = ?, leg2_custodian = ?,
       leg2_settlement_mode = ?, leg2_face_value = ?, leg2_adjusted_face_value = ?, leg2_yield_rate = ?, leg2_settlement_amount = ?,
       leg2_clean_price = ?, leg2_dirty_price = ?, leg2_accrued_interest = ?,
-      notes = ?, deal_status = ?,
+      notes = ?, fund_movement = ?, deal_status = ?,
       approved_at = CASE
         WHEN ? = 'Approved' AND approved_at IS NULL THEN NOW()
         ELSE approved_at
@@ -271,6 +273,7 @@ const BuybackDeal = {
       dealData.leg2.cleanPrice, dealData.leg2.dirtyPrice, dealData.leg2.accruedInterest,
       // Other
       dealData.notes,
+      String(dealData.fund_movement || 'no').toLowerCase() === 'yes' ? 'yes' : 'no',
       dealData.deal_status || 'Pending_Verification',
       dealData.deal_status || 'Pending_Verification',
       id
