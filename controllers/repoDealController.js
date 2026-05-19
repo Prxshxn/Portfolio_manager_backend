@@ -44,6 +44,7 @@ const mapRepoUpdatePayloadToColumns = (payload = {}) => {
     faceValue: 'face_value',
     faceValueAdjustment: 'face_value_adjustment',
     faceValueAsPerCounterparty: 'face_value_as_per_counterparty',
+    fundMovement: 'fund_movement',
     status: 'status',
     approvalStatus: 'approval_status',
     currentApprovalLevel: 'current_approval_level',
@@ -112,7 +113,8 @@ const repoDealController = {
         haircut,
         faceValue,
         faceValueAdjustment,
-        faceValueAsPerCounterparty
+        faceValueAsPerCounterparty,
+        fundMovement
       } = req.body;
 
       const counterpartyId = parseCounterpartyId(counterparty);
@@ -260,6 +262,7 @@ const repoDealController = {
         faceValue: parseFloat(faceValue) || null,
         faceValueAdjustment: parseFloat(faceValueAdjustment) || 0,
         faceValueAsPerCounterparty: parseFloat(faceValueAsPerCounterparty) || null,
+        fundMovement: String(fundMovement || 'no').toLowerCase() === 'yes' ? 'yes' : 'no',
         approvalStatus: 'pending',
         currentApprovalLevel: 'front_office',
         createdBy: req.user?.id || 1 // From auth middleware, fallback to user ID 1

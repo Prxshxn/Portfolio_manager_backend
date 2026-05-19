@@ -24,7 +24,8 @@ const parseCounterpartyId = (value) => {
 const ensureRepoDealColumns = async () => {
   const requiredColumns = {
     face_value_adjustment: 'DECIMAL(20,4) NULL',
-    face_value_as_per_counterparty: 'DECIMAL(20,4) NULL'
+    face_value_as_per_counterparty: 'DECIMAL(20,4) NULL',
+    fund_movement: "VARCHAR(10) NULL DEFAULT 'no'"
   };
 
   const columnNames = Object.keys(requiredColumns);
@@ -66,9 +67,9 @@ const RepoDeal = {
            deal_type, counterparty_id, settlement_mode, trade_date, value_date, maturity_date,
            principal_amount, interest_amount, rate, maturity_amount, tenor,
            calculation_day_basis, isin_number, issue_date, haircut, face_value, face_value_adjustment, face_value_as_per_counterparty,
-           status, approval_status, current_approval_level, comment, authorized_by, authorized_at, created_by,
+           fund_movement, status, approval_status, current_approval_level, comment, authorized_by, authorized_at, created_by,
            daily_accrual
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        `;
        
        const values = [
@@ -90,6 +91,7 @@ const RepoDeal = {
         dealData.faceValue || null,
         dealData.faceValueAdjustment || 0,
         dealData.faceValueAsPerCounterparty || null,
+        String(dealData.fundMovement || 'no').toLowerCase() === 'yes' ? 'yes' : 'no',
         dealData.status || 'Pending',
         dealData.approvalStatus || 'pending',
         dealData.currentApprovalLevel || 'front_office',
@@ -273,7 +275,7 @@ const RepoDeal = {
          'calculation_day_basis', 'isin_number', 'issue_date', 'haircut', 'face_value',
          'face_value_adjustment', 'face_value_as_per_counterparty',
          'status', 'approval_status', 'current_approval_level', 'comment', 'settlement_mode',
-         'daily_accrual'
+         'daily_accrual', 'fund_movement'
        ];
       
       const updates = [];
