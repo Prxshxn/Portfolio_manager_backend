@@ -5,6 +5,39 @@ const {
   computeGsecPerDayAccrual,
   computeGsecDailyAmortization
 } = require('../services/gsecCouponPeriod');
+
+let gsecColumnEnsurePromise = null;
+
+const ensureGsecColumns = async () => {
+  if (!gsecColumnEnsurePromise) {
+    gsecColumnEnsurePromise = (async () => {
+      const requiredColumns = {
+        fund_movement: "VARCHAR(10) NULL DEFAULT 'no'"
+      };
+
+      const columnNames = Object.keys(requiredColumns);
+      const placeholders = columnNames.map(() => '?').join(', ');
+      const [rows] = await db.query(
+        `SELECT COLUMN_NAME
+         FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE()
+           AND TABLE_NAME = 'gsec'
+           AND COLUMN_NAME IN (${placeholders})`,
+        columnNames
+      );
+      const present = new Set((rows || []).map((r) => r.COLUMN_NAME));
+
+      for (const columnName of columnNames) {
+        if (present.has(columnName)) continue;
+        await db.query(`ALTER TABLE gsec ADD COLUMN ${columnName} ${requiredColumns[columnName]}`);
+      }
+    })().catch((err) => {
+      gsecColumnEnsurePromise = null;
+      throw err;
+    });
+  }
+  await gsecColumnEnsurePromise;
+};
 const Gsec = {
   create: async (data) => {
     // Use the existing create method but with connection pool
@@ -12,6 +45,7 @@ const Gsec = {
   },
 
   createWithConnection: async (data, connection) => {
+      await ensureGsecColumns();
       // Auto-generate deal_number if not provided
       const MAX_ATTEMPTS = 5;
       let attempt = 0;
@@ -141,14 +175,15 @@ const Gsec = {
 
       // DB uses counterparty_id and isin_number (after rename from counterparty/isin)
       const counterpartyValue = data.counterparty != null && data.counterparty !== '' ? data.counterparty : counterpartyId;
+      const fundMovementValue = String(data.fundMovement || data.fund_movement || 'no').toLowerCase() === 'yes' ? 'yes' : 'no';
       const sql = `INSERT INTO gsec (
         transaction_type, counterparty_id, deal_number, isin_number, face_value, trade_date, value_date, next_coupon_date, 
         last_coupon_date, number_of_days_interest_accrued, number_of_days_for_coupon_period, accrued_interest, 
         coupon_interest, clean_price, dirty_price, accrued_interest_calculation, accrued_interest_six_decimals, 
         accrued_interest_for_100, settlement_amount, settlement_mode, issue_date, maturity_date, coupon_dates, 
         yield, brokerage, currency, portfolio, strategy, broker, accrued_interest_adjustment, clean_price_adjustment, 
-        buy_deal_number, status, current_approval_level, per_day_accrual, remaining_face_value, per_day_amortization
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+        buy_deal_number, status, current_approval_level, fund_movement, per_day_accrual, remaining_face_value, per_day_amortization
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
       
       const values = [
         data.transactionType,
@@ -185,6 +220,7 @@ const Gsec = {
         data.buyDealNumber || null,
         data.status || 'pending', // Status: pending by default
         data.current_approval_level || 'front_office', // 3-tier: start at front_office for Front Office Verifier
+        fundMovementValue,
         cleanNumericValue(data.per_day_accrual),
         cleanNumericValue(data.remaining_face_value),
         cleanNumericValue(data.per_day_amortization)
@@ -921,7 +957,7 @@ const Gsec = {
       'accrued_interest_adjustment', 'broker', 'strategy', 'stratergy', 'status', 'created_by',
       'created_at', 'updated_by', 'updated_at',
       'current_approval_level', 'brokerage', 'currency',
-      'remaining_face_value', 'matured', 'sell_back_amount'
+      'remaining_face_value', 'matured', 'sell_back_amount', 'fund_movement'
     ];
     
     // Resolve actual columns from DB so updates are schema-aware

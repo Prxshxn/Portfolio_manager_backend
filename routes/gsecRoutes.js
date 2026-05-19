@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../models/gsec'); // Adjust if your DB/model import is different
+const gsecLetterController = require('../controllers/gsecLetterController');
 
 /**
  * @swagger
@@ -157,5 +158,41 @@ router.get('/buy-deals-with-balance', async (req, res) => {
     res.status(500).json({ success: false, error: 'Failed to fetch Buy GSec deals with balance' });
   }
 });
+
+/**
+ * @swagger
+ * /api/gsec/{id}/letter:
+ *   get:
+ *     summary: Get GSEC instruction letter data (JSON)
+ *     description: Returns resolved letter fields for a GSEC deal. The letter scenario (DVP/DVF/RVP/RVF) is derived from transaction_type and fund_movement.
+ *     tags: [GSEC]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *     responses:
+ *       200: { description: OK }
+ *       404: { description: Deal not found }
+ */
+router.get('/:id/letter', gsecLetterController.getLetterData);
+
+/**
+ * @swagger
+ * /api/gsec/{id}/letter/html:
+ *   get:
+ *     summary: Get GSEC instruction letter as renderable HTML
+ *     description: Returns the full HTML document for the GSEC letter, suitable for opening in a new tab or iframe for printing.
+ *     tags: [GSEC]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: integer }
+ *     responses:
+ *       200: { description: HTML document }
+ *       404: { description: Deal not found }
+ */
+router.get('/:id/letter/html', gsecLetterController.getLetterHtml);
 
 module.exports = router;
