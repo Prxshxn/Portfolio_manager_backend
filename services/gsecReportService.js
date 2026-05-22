@@ -71,14 +71,15 @@ function parseStoredRemainingFaceValue(row) {
   return Math.max(0, n);
 }
 
-/** Prefer DB remaining_face_value; fall back to sell/buyback-derived report value. */
+/**
+ * Compute remaining face freshly from face_value - linked sells - linked buybacks.
+ * We deliberately do NOT rely on the stored gsec.remaining_face_value column because
+ * historical drift in that column can hide deals that should still be visible.
+ */
 function resolveEffectiveRemainingFace(row) {
-  const stored = parseStoredRemainingFaceValue(row);
-  if (stored !== null) return stored;
   const face = Math.max(0, Number(row.face_value) || 0);
   const directSold = Number(row._direct_sold_against_deal ?? 0);
   const directBuyback = Number(row._direct_buyback_against_deal ?? 0);
-  // No reductions linked to this deal_number — show full face (do not apply FIFO unlinked sells).
   if (directSold <= 0 && directBuyback <= 0) {
     return face;
   }
@@ -388,25 +389,21 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       });
     }
 
-    // Pass 2: FIFO / source_buy_deal_number fallback
+    // Pass 2: source_buy_deal_number only (no FIFO fallback for unlinked buybacks).
+    // Buybacks without an explicit source_buy_deal_number and without sell_deal_allocations
+    // are NOT deducted in the report (restores pre-eb0468b behavior).
     for (const r of bbWithoutAllocs) {
       const amount = Number(r.leg1_face_value) || 0;
       const key = (r.source_buy_deal_number || '').trim();
-      if (key) {
-        const alreadyDeducted = Number(buybackByDealBatch[key] || 0);
-        const sourceDealInfo = buyDealsByIsin[r.leg1_isin]?.find(c => c.deal_number === key);
-        const sourceFV = sourceDealInfo ? sourceDealInfo.face_value : 0;
-        const soldAgainst = Number(soldByDeal[key] || 0);
-        const capacity = Math.max(0, sourceFV - soldAgainst - alreadyDeducted);
-        const directAlloc = Math.min(amount, capacity);
-        if (directAlloc > 0) buybackByDealBatch[key] = alreadyDeducted + directAlloc;
-        const overflow = amount - directAlloc;
-        if (overflow > 0 && r.leg1_isin) {
-          allocateFIFO(r.leg1_isin, overflow, key);
-        }
-      } else if (r.leg1_isin) {
-        allocateFIFO(r.leg1_isin, amount, null);
-      }
+      if (!key) continue;
+      const alreadyDeducted = Number(buybackByDealBatch[key] || 0);
+      const sourceDealInfo = buyDealsByIsin[r.leg1_isin]?.find(c => c.deal_number === key);
+      const sourceFV = sourceDealInfo ? sourceDealInfo.face_value : 0;
+      const soldAgainst = Number(soldByDeal[key] || 0);
+      const capacity = Math.max(0, sourceFV - soldAgainst - alreadyDeducted);
+      const directAlloc = Math.min(amount, capacity);
+      if (directAlloc > 0) buybackByDealBatch[key] = alreadyDeducted + directAlloc;
+      // Overflow beyond source deal capacity is NOT redistributed via FIFO (reverted).
     }
   }
 
@@ -544,18 +541,8 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     // Fallback to stored DB value only when recomputation is not possible for the row.
     const accrualAsOfDate = asAtDate || new Date().toISOString().split('T')[0];
     const normalizedDealNumberForAccrual = (row.deal_number || '').trim();
-    const storedRemainingForAccrual = parseStoredRemainingFaceValue(row);
-    const originalFaceForAccrual = Number(row.face_value) || 0;
-    const soldAgainstForAccrual = storedRemainingForAccrual !== null
-      ? Math.max(0, originalFaceForAccrual - storedRemainingForAccrual)
-      : Number(soldByDeal[normalizedDealNumberForAccrual] || 0);
-    // IMPORTANT: pass buyback deductions too. Otherwise the safety guard inside
-    // computeGsecPerDayAccrual would reset remaining_face_value back to face_value for
-    // deals that were partially bought back (no Sell rows exist), wrongly inflating the
-    // daily accrual. `buybackByDealBatch` was already aggregated above for this purpose.
-    const buybackAgainstForAccrual = storedRemainingForAccrual !== null
-      ? 0
-      : Number(buybackByDealBatch[normalizedDealNumberForAccrual] || 0);
+    const soldAgainstForAccrual = Number(soldByDeal[normalizedDealNumberForAccrual] || 0);
+    const buybackAgainstForAccrual = Number(buybackByDealBatch[normalizedDealNumberForAccrual] || 0);
     const computedDailyAccrual = computeGsecPerDayAccrual(
       {
         face_value: row.face_value,
@@ -885,25 +872,21 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
         });
       }
 
-      // Pass 2: FIFO / source_buy_deal_number fallback
+      // Pass 2: source_buy_deal_number only (no FIFO fallback for unlinked buybacks).
+      // Buybacks without an explicit source_buy_deal_number and without sell_deal_allocations
+      // are NOT deducted in the portfolio total (restores pre-eb0468b behavior).
       for (const row of bbWithoutAllocs2) {
         const amount = Number(row.leg1_face_value) || 0;
         const key = (row.source_buy_deal_number || '').trim();
-        if (key) {
-          const alreadyDeducted = Number(buybackByDeal[key] || 0);
-          const sourceDealInfo = balBuysByIsin[row.leg1_isin]?.find(c => c.deal_number === key);
-          const sourceFV = sourceDealInfo ? sourceDealInfo.face_value : 0;
-          const sold = Number(soldByDeal[key] || 0);
-          const capacity = Math.max(0, sourceFV - sold - alreadyDeducted);
-          const directAlloc = Math.min(amount, capacity);
-          if (directAlloc > 0) buybackByDeal[key] = alreadyDeducted + directAlloc;
-          const overflow = amount - directAlloc;
-          if (overflow > 0 && row.leg1_isin) {
-            allocFIFO2(row.leg1_isin, overflow, key);
-          }
-        } else if (row.leg1_isin) {
-          allocFIFO2(row.leg1_isin, amount, null);
-        }
+        if (!key) continue;
+        const alreadyDeducted = Number(buybackByDeal[key] || 0);
+        const sourceDealInfo = balBuysByIsin[row.leg1_isin]?.find(c => c.deal_number === key);
+        const sourceFV = sourceDealInfo ? sourceDealInfo.face_value : 0;
+        const sold = Number(soldByDeal[key] || 0);
+        const capacity = Math.max(0, sourceFV - sold - alreadyDeducted);
+        const directAlloc = Math.min(amount, capacity);
+        if (directAlloc > 0) buybackByDeal[key] = alreadyDeducted + directAlloc;
+        // Overflow beyond source deal capacity is NOT redistributed via FIFO (reverted).
       }
     }
     
@@ -912,20 +895,14 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     // the portfolio total.
     let totalBalanceCents = 0;
     balanceRows.forEach(balanceRow => {
-      const storedRemaining = parseStoredRemainingFaceValue(balanceRow);
-      let remainingFaceValueCents;
-      if (storedRemaining !== null) {
-        remainingFaceValueCents = Math.round(storedRemaining * 100);
-      } else {
-        const originalFaceCents = Math.round((Number(balanceRow.face_value) || 0) * 100);
-        const normalizedDealNumber = (balanceRow.deal_number || '').trim();
-        const soldAgainstThisDealCents = Math.round((Number(soldByDeal[normalizedDealNumber] || 0)) * 100);
-        const buybackDeductionCents = Math.round((Number(buybackByDeal[normalizedDealNumber] || 0)) * 100);
-        remainingFaceValueCents = Math.max(
-          0,
-          originalFaceCents - soldAgainstThisDealCents - buybackDeductionCents
-        );
-      }
+      const originalFaceCents = Math.round((Number(balanceRow.face_value) || 0) * 100);
+      const normalizedDealNumber = (balanceRow.deal_number || '').trim();
+      const soldAgainstThisDealCents = Math.round((Number(soldByDeal[normalizedDealNumber] || 0)) * 100);
+      const buybackDeductionCents = Math.round((Number(buybackByDeal[normalizedDealNumber] || 0)) * 100);
+      const remainingFaceValueCents = Math.max(
+        0,
+        originalFaceCents - soldAgainstThisDealCents - buybackDeductionCents
+      );
       totalBalanceCents += remainingFaceValueCents;
     });
     const totalBalance = totalBalanceCents / 100;
