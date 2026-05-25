@@ -133,6 +133,9 @@ async function postFinalApprovedBuyLedger(transaction, options = {}) {
  * @returns {Promise<{ success: boolean, error?: string, legacy?: boolean }>}
  */
 async function postFinalApprovedSellLedger(transaction, options = {}) {
+  // #region agent log
+  fetch('http://127.0.0.1:7392/ingest/b636a3d1-1bd5-46f2-b184-ba446816f4e4',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ea67d3'},body:JSON.stringify({sessionId:'ea67d3',location:'gsecApprovalLedgerService.js:135',message:'postFinalApprovedSellLedger ENTRY',data:{deal_number:transaction.deal_number,settlement_amount:transaction.settlement_amount,face_value:transaction.face_value,buy_deal_number:transaction.buy_deal_number},timestamp:Date.now(),hypothesisId:'A',runId:'verify'})}).catch(()=>{});
+  // #endregion
   const ledgerController = require('../controllers/ledgerController');
   const accountMapping = require('./accountMappingService');
   const prefix = options.descriptionPrefix || '';
@@ -233,6 +236,9 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
   const sellDirtyAmt = truncate8(Number(transaction.settlement_amount || 0));
   const sellCleanAmtEffective = truncate8(sellDirtyAmt - couponAccruedToSell);
   const capitalGl = truncate8(sellCleanAmtEffective - bookValueAtSell);
+  // #region agent log
+  fetch('http://127.0.0.1:7392/ingest/b636a3d1-1bd5-46f2-b184-ba446816f4e4',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ea67d3'},body:JSON.stringify({sessionId:'ea67d3',location:'gsecApprovalLedgerService.js:235',message:'Capital gain calculation',data:{purchaseCleanAmt,amortToSell,bookValueAtSell,sellDirtyAmt,couponAccruedToSell,sellCleanAmtEffective,capitalGl,holdingDays},timestamp:Date.now(),hypothesisId:'C',runId:'verify'})}).catch(()=>{});
+  // #endregion
 
   const tradingAccount =
     (await accountMapping.getAccountCodeOptional(accountMapping.MAPPING_KEYS.GSEC_TRADING_ACCOUNT)) ||
@@ -250,6 +256,9 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
   const accruedReceivableAccount =
     (await accountMapping.getAccountCodeOptional(accountMapping.MAPPING_KEYS.GSEC_ACCRUAL_ASSET)) ||
     '131-101-290-218-44';
+  // #region agent log
+  fetch('http://127.0.0.1:7392/ingest/b636a3d1-1bd5-46f2-b184-ba446816f4e4',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ea67d3'},body:JSON.stringify({sessionId:'ea67d3',location:'gsecApprovalLedgerService.js:258',message:'Account codes resolved',data:{drAccount,tradingAccount,amortAccount,couponIncomeAccount,capitalGainLossAccount,accruedIncomeAccount,accruedReceivableAccount},timestamp:Date.now(),hypothesisId:'E',runId:'verify'})}).catch(()=>{});
+  // #endregion
 
   const mainDescription = `${prefix}GSec Sale - Final Approval - ${transaction.deal_number}`;
   const mainDr = [
@@ -286,6 +295,9 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
   const totalDr = sumLines(mainDrClean);
   const totalCr = sumLines(mainCrClean);
   const residual = truncate8(totalDr - totalCr);
+  // #region agent log
+  fetch('http://127.0.0.1:7392/ingest/b636a3d1-1bd5-46f2-b184-ba446816f4e4',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ea67d3'},body:JSON.stringify({sessionId:'ea67d3',location:'gsecApprovalLedgerService.js:288',message:'Before balance check',data:{mainDrClean,mainCrClean,totalDr,totalCr,residual},timestamp:Date.now(),hypothesisId:'B',runId:'verify'})}).catch(()=>{});
+  // #endregion
   if (Number.isFinite(residual) && Math.abs(residual) > 0.00000001) {
     const roundingLine = {
       account_code: capitalGainLossAccount,
@@ -310,6 +322,9 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
     couponAccruedToSell > 0
       ? [{ account_code: accruedReceivableAccount, amount: couponAccruedToSell, description: reversalDescription }]
       : [];
+  // #region agent log
+  fetch('http://127.0.0.1:7392/ingest/b636a3d1-1bd5-46f2-b184-ba446816f4e4',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ea67d3'},body:JSON.stringify({sessionId:'ea67d3',location:'gsecApprovalLedgerService.js:312',message:'Reversal entries prepared',data:{reversalDr,reversalCr,accruedIncomeAccount,accruedReceivableAccount},timestamp:Date.now(),hypothesisId:'D',runId:'verify'})}).catch(()=>{});
+  // #endregion
 
   const postMulti = ledgerController.postMultiLineLedgerEntry;
   if (typeof postMulti !== 'function') {
@@ -323,6 +338,9 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
     deal_id: dealId,
     description: mainDescription
   });
+  // #region agent log
+  fetch('http://127.0.0.1:7392/ingest/b636a3d1-1bd5-46f2-b184-ba446816f4e4',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ea67d3'},body:JSON.stringify({sessionId:'ea67d3',location:'gsecApprovalLedgerService.js:329',message:'Main posting result',data:{success:mainResult.success,error:mainResult.error,dealId,drCount:mainDrClean.length,crCount:mainCrClean.length},timestamp:Date.now(),hypothesisId:'A',runId:'verify'})}).catch(()=>{});
+  // #endregion
   if (!mainResult.success) {
     console.error('Failed to post GSec sell multi-line entry:', mainResult.error);
     return { success: false, error: mainResult.error };
@@ -336,6 +354,9 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
       deal_id: dealId,
       description: reversalDescription
     });
+    // #region agent log
+    fetch('http://127.0.0.1:7392/ingest/b636a3d1-1bd5-46f2-b184-ba446816f4e4',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ea67d3'},body:JSON.stringify({sessionId:'ea67d3',location:'gsecApprovalLedgerService.js:343',message:'Reversal posting result',data:{success:revResult.success,error:revResult.error},timestamp:Date.now(),hypothesisId:'D',runId:'verify'})}).catch(()=>{});
+    // #endregion
     if (!revResult.success) {
       // Match gsec.updateStatus: log but do not fail the overall approval path after main leg posted.
       console.error('Failed to post GSec sell accrued reversal entry:', revResult.error);
