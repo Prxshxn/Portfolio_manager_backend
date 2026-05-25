@@ -1,5 +1,6 @@
 const express = require('express');
-const { login, register } = require('../controllers/authController');
+const { login, register, forgotPassword, resetPassword, changePassword } = require('../controllers/authController');
+const { checkAuth } = require('../middleware/auth');
 const router = express.Router();
 
 /**
@@ -71,5 +72,123 @@ router.post('/login', login);
 // Please ensure they are properly defined and imported in your actual code.
 
 router.post('/register', register);
+
+/**
+ * @swagger
+ * /auth/forgot-password:
+ *   post:
+ *     summary: Request password reset
+ *     description: Sends a password reset email to the user if the email/username exists in the system.
+ *     tags:
+ *       - Auth
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 format: email
+ *                 example: user@example.com
+ *               username:
+ *                 type: string
+ *                 example: john_doe
+ *             oneOf:
+ *               - required: [email]
+ *               - required: [username]
+ *     responses:
+ *       200:
+ *         description: Success message (sent regardless of whether user exists for security)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *       400:
+ *         description: Missing email or username
+ *       500:
+ *         description: Server error
+ */
+router.post('/forgot-password', forgotPassword);
+
+/**
+ * @swagger
+ * /auth/reset-password:
+ *   post:
+ *     summary: Reset password using token
+ *     description: Resets user password using the token received in the reset email.
+ *     tags:
+ *       - Auth
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - token
+ *               - newPassword
+ *             properties:
+ *               token:
+ *                 type: string
+ *                 description: Reset token from email
+ *               newPassword:
+ *                 type: string
+ *                 description: New password meeting security requirements
+ *                 example: NewSecurePass123!
+ *     responses:
+ *       200:
+ *         description: Password reset successful
+ *       400:
+ *         description: Invalid token, expired token, or weak password
+ *       500:
+ *         description: Server error
+ */
+router.post('/reset-password', resetPassword);
+
+/**
+ * @swagger
+ * /auth/change-password:
+ *   post:
+ *     summary: Change password for authenticated user
+ *     description: Allows authenticated users to change their password by providing current password.
+ *     tags:
+ *       - Auth
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - currentPassword
+ *               - newPassword
+ *             properties:
+ *               currentPassword:
+ *                 type: string
+ *                 description: Current password for verification
+ *               newPassword:
+ *                 type: string
+ *                 description: New password meeting security requirements
+ *                 example: NewSecurePass123!
+ *     responses:
+ *       200:
+ *         description: Password changed successfully
+ *       400:
+ *         description: Invalid current password or weak new password
+ *       401:
+ *         description: Authentication required
+ *       500:
+ *         description: Server error
+ */
+router.post('/change-password', checkAuth, changePassword);
 
 module.exports = router;
