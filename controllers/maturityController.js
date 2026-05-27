@@ -1,6 +1,26 @@
 const MaturityAmountService = require('../services/maturityAmountService');
 const CashflowCaptureService = require('../services/cashflowCaptureService');
 
+const toYmd = (value) => {
+  if (!value) return null;
+  if (value instanceof Date) {
+    if (isNaN(value.getTime())) return null;
+    const y = value.getFullYear();
+    const m = String(value.getMonth() + 1).padStart(2, '0');
+    const d = String(value.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+  const str = String(value);
+  const first10 = str.slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(first10)) return first10;
+  const parsed = new Date(str);
+  if (isNaN(parsed.getTime())) return null;
+  const y = parsed.getFullYear();
+  const m = String(parsed.getMonth() + 1).padStart(2, '0');
+  const d = String(parsed.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+};
+
 const MaturityController = {
   // Get money market maturities up to a specific date
   getMoneyMarketMaturities: async (req, res) => {
@@ -2617,6 +2637,9 @@ MaturityController.getPrematureMaturityDeals = async (req, res) => {
   try {
     const { productType = 'all' } = req.query;
     const db = require('../config/database');
+    const { getSystemDay } = require('../models/systemDayModel');
+    const systemDay = await getSystemDay();
+    const effectiveDateStr = toYmd(systemDay?.system_date) || toYmd(new Date());
     
     let deals = [];
     
@@ -2637,7 +2660,7 @@ MaturityController.getPrematureMaturityDeals = async (req, res) => {
           g.face_value,
           g.maturity_date,
           g.status,
-          DATEDIFF(g.maturity_date, CURDATE()) as days_to_maturity,
+          DATEDIFF(g.maturity_date, ?) as days_to_maturity,
           'gsec' as product_type
         FROM gsec g
         LEFT JOIN counterparty_master_corporate corp ON 
@@ -2654,7 +2677,7 @@ MaturityController.getPrematureMaturityDeals = async (req, res) => {
           AND g.transaction_type = 'Buy'
         ORDER BY g.maturity_date ASC
       `;
-      const [gsecRows] = await db.query(gsecQuery);
+      const [gsecRows] = await db.query(gsecQuery, [effectiveDateStr]);
       deals = deals.concat(gsecRows.map(row => ({ ...row, product_type: 'gsec' })));
     }
     
@@ -2675,7 +2698,7 @@ MaturityController.getPrematureMaturityDeals = async (req, res) => {
           mmd.principal_amount as face_value,
           mmd.maturity_date,
           mmd.status,
-          DATEDIFF(mmd.maturity_date, CURDATE()) as days_to_maturity,
+          DATEDIFF(mmd.maturity_date, ?) as days_to_maturity,
           'money_market' as product_type
         FROM money_market_deals mmd
         LEFT JOIN counterparty_master_corporate corp ON mmd.counterparty_id = corp.id
@@ -2685,7 +2708,7 @@ MaturityController.getPrematureMaturityDeals = async (req, res) => {
           AND mmd.status = 'Approved'
         ORDER BY mmd.maturity_date ASC
       `;
-      const [mmRows] = await db.query(mmQuery);
+      const [mmRows] = await db.query(mmQuery, [effectiveDateStr]);
       deals = deals.concat(mmRows.map(row => ({ ...row, product_type: 'money_market' })));
     }
     
@@ -2706,7 +2729,7 @@ MaturityController.getPrematureMaturityDeals = async (req, res) => {
           rd.principal_amount as face_value,
           rd.maturity_date,
           rd.status,
-          DATEDIFF(rd.maturity_date, CURDATE()) as days_to_maturity,
+          DATEDIFF(rd.maturity_date, ?) as days_to_maturity,
           'repo' as product_type
         FROM repo_deals rd
         LEFT JOIN counterparty_master_corporate corp ON rd.counterparty_id = corp.id
@@ -2716,7 +2739,7 @@ MaturityController.getPrematureMaturityDeals = async (req, res) => {
           AND rd.approval_status = 'final_approved'
         ORDER BY rd.maturity_date ASC
       `;
-      const [repoRows] = await db.query(repoQuery);
+      const [repoRows] = await db.query(repoQuery, [effectiveDateStr]);
       deals = deals.concat(repoRows.map(row => ({ ...row, product_type: 'repo' })));
     }
 
@@ -2746,7 +2769,7 @@ MaturityController.getPrematureMaturityDeals = async (req, res) => {
           bb.coupon_date2 as coupon_date2,
           bb.leg2_value_date as maturity_date,
           bb.deal_status as status,
-          DATEDIFF(bb.leg2_value_date, CURDATE()) as days_to_maturity,
+          DATEDIFF(bb.leg2_value_date, ?) as days_to_maturity,
           'buyback' as product_type
         FROM buyback_deals bb
         LEFT JOIN counterparty_master_corporate corp ON
@@ -2760,10 +2783,10 @@ MaturityController.getPrematureMaturityDeals = async (req, res) => {
           OR (bb.leg1_counterparty = joint.id)
         WHERE bb.deal_status = 'Approved'
           AND bb.approved_at IS NOT NULL
-          AND DATE(bb.leg2_value_date) >= CURDATE()
+          AND DATE(bb.leg2_value_date) >= ?
         ORDER BY bb.leg2_value_date ASC
       `;
-      const [buybackRows] = await db.query(buybackQuery);
+      const [buybackRows] = await db.query(buybackQuery, [effectiveDateStr, effectiveDateStr]);
       deals = deals.concat(buybackRows.map(row => ({ ...row, product_type: 'buyback' })));
     }
 
@@ -2810,7 +2833,7 @@ MaturityController.processPrematureMaturity = async (req, res) => {
     }
     
     // Validate date format
-    const maturityDate = new Date(prematureMaturityDate);
+    const maturityDate = new Date(`${prematureMaturityDate}T00:00:00`);
     if (isNaN(maturityDate.getTime())) {
       return res.status(400).json({
         success: false,
@@ -2818,13 +2841,16 @@ MaturityController.processPrematureMaturity = async (req, res) => {
       });
     }
     
-    // Ensure date is not in the past
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    if (maturityDate < today) {
+    // Ensure date is not before current system day (not local machine date)
+    const { getSystemDay } = require('../models/systemDayModel');
+    const systemDay = await getSystemDay();
+    const baselineDateStr = toYmd(systemDay?.system_date) || toYmd(new Date());
+    const baselineDate = new Date(`${baselineDateStr}T00:00:00`);
+    baselineDate.setHours(0, 0, 0, 0);
+    if (maturityDate < baselineDate) {
       return res.status(400).json({
         success: false,
-        error: 'Premature maturity date cannot be in the past'
+        error: `Premature maturity date cannot be before system day (${baselineDateStr})`
       });
     }
     
