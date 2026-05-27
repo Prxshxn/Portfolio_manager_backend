@@ -506,4 +506,168 @@ router.get('/balance-sheet', auth, async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Settlement Ledger Preview (month-bucketed, excludes daily accrual/amortization)
+// ---------------------------------------------------------------------------
+
+const SETTLEMENT_EXCLUDED_DESCRIPTION_LIKE = [
+  'GSec Daily Accrual%',
+  'GSec Daily Amortization%',
+  'GSec Coupon Settlement%',
+  'Repo Daily Interest Accrual%',
+  'Reverse Repo Daily Interest Accrual%',
+];
+
+const SETTLEMENT_EXCLUDED_DESCRIPTION_EXACT = [
+  'Daily lending interest EOD',
+  'Daily borrowing interest EOD',
+];
+
+const SETTLEMENT_CATEGORY_DEFS = [
+  { key: 'gsec_buy', label: 'G-Sec Buy' },
+  { key: 'gsec_sell', label: 'G-Sec Sell' },
+  { key: 'repo', label: 'Repo' },
+  { key: 'reverse_repo', label: 'Reverse Repo' },
+  { key: 'mm_lending', label: 'MM Lending' },
+  { key: 'mm_borrowing', label: 'MM Borrowing' },
+  { key: 'fixed_deposit', label: 'Fixed Deposit' },
+  { key: 'maturity', label: 'Maturity' },
+  { key: 'other', label: 'Other' },
+];
+
+const MONTH_LABELS = [
+  '', 'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'
+];
+
+function classifyLedgerDescription(description) {
+  const d = (description || '').trim();
+  if (!d) return 'other';
+  const dl = d.toLowerCase();
+
+  if (/^GSec Purchase\b/i.test(d) || /Buyback .* - GSec Purchase\b/i.test(d)) return 'gsec_buy';
+  if (/^GSec Sale\b/i.test(d) || /Buyback .* - GSec Sale\b/i.test(d)) return 'gsec_sell';
+  if (/^Repo Purchase\b/i.test(d) || /^Repo Maturity\b/i.test(d)) return 'repo';
+  if (/^Reverse Repo Borrowing\b/i.test(d) || /^Reverse Repo Maturity\b/i.test(d)) return 'reverse_repo';
+  if (/^Lending\s*-/i.test(d)) return 'mm_lending';
+  if (/^Borrowing\s*-/i.test(d)) return 'mm_borrowing';
+  if (/^Fixed Deposit\s*-/i.test(d)) return 'fixed_deposit';
+  if (dl.includes('interest payment') || dl.includes('interest receipt') || dl.includes('interest accrual reversal')) {
+    return 'maturity';
+  }
+  return 'other';
+}
+
+function buildEmptyGroups() {
+  const groups = {};
+  for (const def of SETTLEMENT_CATEGORY_DEFS) {
+    groups[def.key] = {
+      label: def.label,
+      totals: { debit: 0, credit: 0, count: 0 },
+      entries: [],
+    };
+  }
+  return groups;
+}
+
+router.get('/settlement-preview', auth, async (req, res) => {
+  try {
+    const year = parseInt(req.query.year, 10) || 2026;
+    const monthsRaw = (req.query.months || '4,5').toString();
+    const months = monthsRaw
+      .split(',')
+      .map((m) => parseInt(m.trim(), 10))
+      .filter((m) => Number.isInteger(m) && m >= 1 && m <= 12);
+
+    if (months.length === 0) {
+      return res.status(400).json({ error: 'months must include at least one valid month (1-12)' });
+    }
+
+    const categoryFilter = req.query.category ? req.query.category.toString() : null;
+    if (categoryFilter && !SETTLEMENT_CATEGORY_DEFS.some((c) => c.key === categoryFilter)) {
+      return res.status(400).json({ error: `Unknown category: ${categoryFilter}` });
+    }
+
+    const excludeLikeClause = SETTLEMENT_EXCLUDED_DESCRIPTION_LIKE
+      .map(() => `le.description NOT LIKE ?`)
+      .join(' AND ');
+    const excludeExactPlaceholders = SETTLEMENT_EXCLUDED_DESCRIPTION_EXACT.map(() => '?').join(', ');
+    const monthPlaceholders = months.map(() => '?').join(', ');
+
+    const sql = `
+      SELECT le.*,
+             MONTH(le.entry_date) AS month_num,
+             COALESCE(coa_resolved.account_code, coa.account_code) AS account_code,
+             COALESCE(coa_resolved.name, coa.name) AS account_name,
+             at.category AS account_category
+      FROM ledger_entries le
+      LEFT JOIN chart_of_accounts coa ON le.account_id = coa.id
+      ${LEDGER_ACCOUNT_MAPPING_JOIN}
+      LEFT JOIN account_types at ON coa.account_type_id = at.id
+      WHERE YEAR(le.entry_date) = ?
+        AND MONTH(le.entry_date) IN (${monthPlaceholders})
+        AND ${excludeLikeClause}
+        AND le.description NOT IN (${excludeExactPlaceholders})
+      ORDER BY le.entry_date ASC, le.id ASC
+    `;
+
+    const params = [
+      year,
+      ...months,
+      ...SETTLEMENT_EXCLUDED_DESCRIPTION_LIKE,
+      ...SETTLEMENT_EXCLUDED_DESCRIPTION_EXACT,
+    ];
+
+    const [rows] = await db.query(sql, params);
+
+    const monthBuckets = new Map();
+    for (const m of months) {
+      monthBuckets.set(m, {
+        month: m,
+        label: `${MONTH_LABELS[m]} ${year}`,
+        totals: { debit: 0, credit: 0, count: 0 },
+        groups: buildEmptyGroups(),
+      });
+    }
+
+    for (const row of rows) {
+      const category = classifyLedgerDescription(row.description);
+      if (categoryFilter && category !== categoryFilter) continue;
+
+      const bucket = monthBuckets.get(row.month_num);
+      if (!bucket) continue;
+
+      const debit = parseFloat(row.debit_amount) || 0;
+      const credit = parseFloat(row.credit_amount) || 0;
+
+      const enriched = { ...row, category };
+
+      const group = bucket.groups[category] || bucket.groups.other;
+      group.entries.push(enriched);
+      group.totals.debit += debit;
+      group.totals.credit += credit;
+      group.totals.count += 1;
+
+      bucket.totals.debit += debit;
+      bucket.totals.credit += credit;
+      bucket.totals.count += 1;
+    }
+
+    const monthsResp = Array.from(monthBuckets.values()).sort((a, b) => a.month - b.month);
+
+    res.json({
+      year,
+      months: monthsResp,
+      excludedPatterns: [
+        ...SETTLEMENT_EXCLUDED_DESCRIPTION_LIKE,
+        ...SETTLEMENT_EXCLUDED_DESCRIPTION_EXACT,
+      ],
+      categories: SETTLEMENT_CATEGORY_DEFS,
+    });
+  } catch (error) {
+    console.error('Error fetching settlement preview:', error);
+    res.status(500).json({ error: 'Failed to fetch settlement preview' });
+  }
+});
+
 module.exports = router;
