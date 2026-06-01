@@ -507,67 +507,201 @@ router.get('/balance-sheet', auth, async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// Settlement Ledger Preview (month-bucketed, excludes daily accrual/amortization)
+// Settlement Ledger Preview
+// Source of truth: transaction tables (gsec, buyback_deals, repo_deals).
+// Ledger entries are LEFT JOINed so unposted deals still appear.
+// Monthly bucket uses each transaction's own value_date (not entry_date).
+// Excluded: daily accruals, daily amortization, EOD interest entries.
 // ---------------------------------------------------------------------------
 
-const SETTLEMENT_EXCLUDED_DESCRIPTION_LIKE = [
+const SETTLEMENT_EXCL_LIKE = [
   'GSec Daily Accrual%',
   'GSec Daily Amortization%',
   'GSec Coupon Settlement%',
   'Repo Daily Interest Accrual%',
   'Reverse Repo Daily Interest Accrual%',
-];
-
-const SETTLEMENT_EXCLUDED_DESCRIPTION_EXACT = [
   'Daily lending interest EOD',
   'Daily borrowing interest EOD',
 ];
 
 const SETTLEMENT_CATEGORY_DEFS = [
-  { key: 'gsec_buy', label: 'G-Sec Buy' },
-  { key: 'gsec_sell', label: 'G-Sec Sell' },
-  { key: 'repo', label: 'Repo' },
-  { key: 'reverse_repo', label: 'Reverse Repo' },
-  { key: 'mm_lending', label: 'MM Lending' },
-  { key: 'mm_borrowing', label: 'MM Borrowing' },
-  { key: 'fixed_deposit', label: 'Fixed Deposit' },
-  { key: 'maturity', label: 'Maturity' },
-  { key: 'other', label: 'Other' },
+  { key: 'gsec_buy',      label: 'G-Sec Buy' },
+  { key: 'gsec_sell',     label: 'G-Sec Sell' },
+  { key: 'buyback_buy',   label: 'Buyback Buy (2nd Leg)' },
+  { key: 'buyback_sell',  label: 'Buyback Sell (1st Leg)' },
+  { key: 'repo',          label: 'Repo' },
+  { key: 'reverse_repo',  label: 'Reverse Repo' },
 ];
 
 const MONTH_LABELS = [
   '', 'January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December'
+  'July', 'August', 'September', 'October', 'November', 'December',
 ];
-
-function classifyLedgerDescription(description) {
-  const d = (description || '').trim();
-  if (!d) return 'other';
-  const dl = d.toLowerCase();
-
-  if (/^GSec Purchase\b/i.test(d) || /Buyback .* - GSec Purchase\b/i.test(d)) return 'gsec_buy';
-  if (/^GSec Sale\b/i.test(d) || /Buyback .* - GSec Sale\b/i.test(d)) return 'gsec_sell';
-  if (/^Repo Purchase\b/i.test(d) || /^Repo Maturity\b/i.test(d)) return 'repo';
-  if (/^Reverse Repo Borrowing\b/i.test(d) || /^Reverse Repo Maturity\b/i.test(d)) return 'reverse_repo';
-  if (/^Lending\s*-/i.test(d)) return 'mm_lending';
-  if (/^Borrowing\s*-/i.test(d)) return 'mm_borrowing';
-  if (/^Fixed Deposit\s*-/i.test(d)) return 'fixed_deposit';
-  if (dl.includes('interest payment') || dl.includes('interest receipt') || dl.includes('interest accrual reversal')) {
-    return 'maturity';
-  }
-  return 'other';
-}
 
 function buildEmptyGroups() {
   const groups = {};
   for (const def of SETTLEMENT_CATEGORY_DEFS) {
     groups[def.key] = {
       label: def.label,
-      totals: { debit: 0, credit: 0, count: 0 },
+      totals: {
+        debit: 0,
+        credit: 0,
+        count: 0,
+        estimatedDebit: 0,
+        estimatedCredit: 0,
+        unposted: 0,
+      },
       entries: [],
     };
   }
   return groups;
+}
+
+/**
+ * Estimate the headline DR/CR amount that WILL be posted to ledger when this deal
+ * reaches final approval. Mirrors the actual posting services:
+ *  - GSec Buy/Sell  -> settlement_amount  (total of DR side = total of CR side)
+ *  - Buyback Buy    -> gsec.settlement_amount
+ *  - Buyback Sell   -> bd.leg1_settlement_amount
+ *  - Repo / R-Repo  -> rd.principal_amount
+ */
+function computeEstimatedAmount(row) {
+  const amt = parseFloat(row.deal_amount);
+  return Number.isFinite(amt) ? amt : 0;
+}
+
+/** Default account codes used by the posting services. */
+const SETTLEMENT_ACCOUNTS = {
+  GSEC_TREASURY_BONDS:    '131-101-350-098-44',
+  GSEC_ACCRUED_INTEREST:  '131-101-350-128-44',
+  GSEC_BANK:              '131-101-410-164-44',
+  REPO_REVERSE_ASSET:     '131-101-410-206-44',
+  REPO_LIABILITY:         '249-101-330-308-44',
+};
+
+/**
+ * Expand a single unposted deal into the journal lines that WILL be posted when
+ * the deal reaches final approval. This mirrors the postFinalApproved* services.
+ *
+ * Returns an array of `{ account_code, account_name, estimated_debit,
+ * estimated_credit, ledger_description, line_role }` objects.
+ */
+function expandUnpostedDeal(row, acctLabelMap) {
+  const lookup = (code, fallback) => acctLabelMap[code] || fallback;
+  const settlement = parseFloat(row.deal_amount) || 0;
+  const accrued    = parseFloat(row.accrued_interest) || 0;
+  const net        = settlement - accrued;
+  const dealNo     = row.deal_number;
+
+  // GSec Buy (and Buyback Buy 2nd leg) — 3-line compound entry.
+  if (row.category === 'gsec_buy' || row.category === 'buyback_buy') {
+    const prefix = row.category === 'buyback_buy' && row.buyback_deal_number
+      ? `Buyback ${row.buyback_deal_number} - `
+      : '';
+    const lines = [
+      {
+        line_role: 'treasury_bonds',
+        account_code: SETTLEMENT_ACCOUNTS.GSEC_TREASURY_BONDS,
+        account_name: lookup(SETTLEMENT_ACCOUNTS.GSEC_TREASURY_BONDS, 'Treasury Bonds - Trading A/c'),
+        estimated_debit:  net,
+        estimated_credit: 0,
+        ledger_description: `${prefix}GSec Purchase - Treasury Bonds - ${dealNo}`,
+      },
+      {
+        line_role: 'accrued_interest',
+        account_code: SETTLEMENT_ACCOUNTS.GSEC_ACCRUED_INTEREST,
+        account_name: lookup(SETTLEMENT_ACCOUNTS.GSEC_ACCRUED_INTEREST, 'Accrude Coupon Interest Paid at Purchase - TBond Trading'),
+        estimated_debit:  accrued,
+        estimated_credit: 0,
+        ledger_description: `${prefix}GSec Purchase - Accrued Interest - ${dealNo}`,
+      },
+      {
+        line_role: 'bank',
+        account_code: SETTLEMENT_ACCOUNTS.GSEC_BANK,
+        account_name: lookup(SETTLEMENT_ACCOUNTS.GSEC_BANK, 'Seylan Bank A/C - 0860-13374197-001'),
+        estimated_debit:  0,
+        estimated_credit: settlement,
+        ledger_description: `${prefix}GSec Purchase - Final Approval - ${dealNo}`,
+      },
+    ];
+    return lines.filter((l) => l.estimated_debit > 0 || l.estimated_credit > 0);
+  }
+
+  // GSec Sell — simplified 2-line (DR Bank, CR Treasury Bonds). Full posting
+  // logic computes capital gain/amortisation/coupon accrual which requires the
+  // original buy deal lookup; we surface the headline cash leg here.
+  if (row.category === 'gsec_sell' || row.category === 'buyback_sell') {
+    const prefix = row.category === 'buyback_sell'
+      ? `Buyback ${row.buyback_deal_number || dealNo} - `
+      : '';
+    const desc   = `${prefix}GSec Sale - Final Approval - ${dealNo}`;
+    return [
+      {
+        line_role: 'bank',
+        account_code: SETTLEMENT_ACCOUNTS.GSEC_BANK,
+        account_name: lookup(SETTLEMENT_ACCOUNTS.GSEC_BANK, 'Seylan Bank A/C - 0860-13374197-001'),
+        estimated_debit:  settlement,
+        estimated_credit: 0,
+        ledger_description: desc,
+      },
+      {
+        line_role: 'treasury_bonds',
+        account_code: SETTLEMENT_ACCOUNTS.GSEC_TREASURY_BONDS,
+        account_name: lookup(SETTLEMENT_ACCOUNTS.GSEC_TREASURY_BONDS, 'Treasury Bonds - Trading A/c'),
+        estimated_debit:  0,
+        estimated_credit: settlement,
+        ledger_description: desc,
+      },
+    ];
+  }
+
+  // Repo Purchase — DR Reverse-Repo Asset, CR Bank.
+  if (row.category === 'repo') {
+    const desc = `Repo Purchase - Deal ${dealNo}`;
+    return [
+      {
+        line_role: 'reverse_repo_asset',
+        account_code: SETTLEMENT_ACCOUNTS.REPO_REVERSE_ASSET,
+        account_name: lookup(SETTLEMENT_ACCOUNTS.REPO_REVERSE_ASSET, 'Reverse Repo with Banks and Other Financial Institutes'),
+        estimated_debit:  settlement,
+        estimated_credit: 0,
+        ledger_description: desc,
+      },
+      {
+        line_role: 'bank',
+        account_code: SETTLEMENT_ACCOUNTS.GSEC_BANK,
+        account_name: lookup(SETTLEMENT_ACCOUNTS.GSEC_BANK, 'Seylan Bank A/C - 0860-13374197-001'),
+        estimated_debit:  0,
+        estimated_credit: settlement,
+        ledger_description: desc,
+      },
+    ];
+  }
+
+  // Reverse Repo Borrowing — DR Bank, CR Repo Liability.
+  if (row.category === 'reverse_repo') {
+    const desc = `Reverse Repo Borrowing - Deal ${dealNo}`;
+    return [
+      {
+        line_role: 'bank',
+        account_code: SETTLEMENT_ACCOUNTS.GSEC_BANK,
+        account_name: lookup(SETTLEMENT_ACCOUNTS.GSEC_BANK, 'Seylan Bank A/C - 0860-13374197-001'),
+        estimated_debit:  settlement,
+        estimated_credit: 0,
+        ledger_description: desc,
+      },
+      {
+        line_role: 'repo_liability',
+        account_code: SETTLEMENT_ACCOUNTS.REPO_LIABILITY,
+        account_name: lookup(SETTLEMENT_ACCOUNTS.REPO_LIABILITY, 'Repo with Banks and Other Financial Institutes'),
+        estimated_debit:  0,
+        estimated_credit: settlement,
+        ledger_description: desc,
+      },
+    ];
+  }
+
+  return [];
 }
 
 router.get('/settlement-preview', auth, async (req, res) => {
@@ -583,85 +717,382 @@ router.get('/settlement-preview', auth, async (req, res) => {
       return res.status(400).json({ error: 'months must include at least one valid month (1-12)' });
     }
 
-    const categoryFilter = req.query.category ? req.query.category.toString() : null;
-    if (categoryFilter && !SETTLEMENT_CATEGORY_DEFS.some((c) => c.key === categoryFilter)) {
-      return res.status(400).json({ error: `Unknown category: ${categoryFilter}` });
-    }
+    const mp = months.map(() => '?').join(', ');
 
-    const excludeLikeClause = SETTLEMENT_EXCLUDED_DESCRIPTION_LIKE
-      .map(() => `le.description NOT LIKE ?`)
-      .join(' AND ');
-    const excludeExactPlaceholders = SETTLEMENT_EXCLUDED_DESCRIPTION_EXACT.map(() => '?').join(', ');
-    const monthPlaceholders = months.map(() => '?').join(', ');
+    // Exclusion clause applied in LEFT JOIN ON to avoid filtering out unposted rows.
+    const exclOn = SETTLEMENT_EXCL_LIKE.map(() => `le.description NOT LIKE ?`).join(' AND ');
 
-    const sql = `
-      SELECT le.*,
-             MONTH(le.entry_date) AS month_num,
-             COALESCE(coa_resolved.account_code, coa.account_code) AS account_code,
-             COALESCE(coa_resolved.name, coa.name) AS account_name,
-             at.category AS account_category
-      FROM ledger_entries le
-      LEFT JOIN chart_of_accounts coa ON le.account_id = coa.id
-      ${LEDGER_ACCOUNT_MAPPING_JOIN}
-      LEFT JOIN account_types at ON coa.account_type_id = at.id
-      WHERE YEAR(le.entry_date) = ?
-        AND MONTH(le.entry_date) IN (${monthPlaceholders})
-        AND ${excludeLikeClause}
-        AND le.description NOT IN (${excludeExactPlaceholders})
-      ORDER BY le.entry_date ASC, le.id ASC
-    `;
+    // Common per-deal columns we surface for the "estimated" calc on unposted rows.
+    // For gsec: settlement_amount = total DR = total CR (net of bonds + accrued vs. bank).
+    const [gsecBuyRows] = await db.query(`
+      SELECT
+        'gsec_buy'                  AS category,
+        g.deal_number,
+        g.transaction_type,
+        DATE(g.value_date)          AS transaction_date,
+        MONTH(g.value_date)         AS month_num,
+        g.status                    AS deal_status,
+        g.settlement_amount         AS deal_amount,
+        g.accrued_interest          AS accrued_interest,
+        (g.settlement_amount - IFNULL(g.accrued_interest, 0)) AS net_principal,
+        g.counterparty_id,
+        le.id                       AS ledger_id,
+        IFNULL(le.debit_amount,  0) AS debit_amount,
+        IFNULL(le.credit_amount, 0) AS credit_amount,
+        le.description              AS ledger_description,
+        ca.account_code,
+        ca.name                     AS account_name
+      FROM gsec g
+      LEFT JOIN ledger_entries le
+        ON  le.deal_number COLLATE utf8mb4_unicode_ci = g.deal_number COLLATE utf8mb4_unicode_ci
+        AND ${exclOn}
+      LEFT JOIN chart_of_accounts ca ON ca.id = le.account_id
+      WHERE g.transaction_type = 'Buy'
+        AND g.buyback_deal_id IS NULL
+        AND g.status != 'cancelled'
+        AND YEAR(g.value_date)  = ?
+        AND MONTH(g.value_date) IN (${mp})
+      ORDER BY g.value_date, g.deal_number, le.id
+    `, [...SETTLEMENT_EXCL_LIKE, year, ...months]);
 
-    const params = [
-      year,
-      ...months,
-      ...SETTLEMENT_EXCLUDED_DESCRIPTION_LIKE,
-      ...SETTLEMENT_EXCLUDED_DESCRIPTION_EXACT,
+    const [gsecSellRows] = await db.query(`
+      SELECT
+        'gsec_sell'                 AS category,
+        g.deal_number,
+        g.transaction_type,
+        DATE(g.value_date)          AS transaction_date,
+        MONTH(g.value_date)         AS month_num,
+        g.status                    AS deal_status,
+        g.settlement_amount         AS deal_amount,
+        g.accrued_interest          AS accrued_interest,
+        (g.settlement_amount - IFNULL(g.accrued_interest, 0)) AS net_principal,
+        g.counterparty_id,
+        le.id                       AS ledger_id,
+        IFNULL(le.debit_amount,  0) AS debit_amount,
+        IFNULL(le.credit_amount, 0) AS credit_amount,
+        le.description              AS ledger_description,
+        ca.account_code,
+        ca.name                     AS account_name
+      FROM gsec g
+      LEFT JOIN ledger_entries le
+        ON  le.deal_number COLLATE utf8mb4_unicode_ci = g.deal_number COLLATE utf8mb4_unicode_ci
+        AND ${exclOn}
+      LEFT JOIN chart_of_accounts ca ON ca.id = le.account_id
+      WHERE g.transaction_type = 'Sell'
+        AND g.buyback_deal_id IS NULL
+        AND g.status != 'cancelled'
+        AND YEAR(g.value_date)  = ?
+        AND MONTH(g.value_date) IN (${mp})
+      ORDER BY g.value_date, g.deal_number, le.id
+    `, [...SETTLEMENT_EXCL_LIKE, year, ...months]);
+
+    const [bbBuyRows] = await db.query(`
+      SELECT
+        'buyback_buy'               AS category,
+        g.deal_number,
+        g.transaction_type,
+        DATE(g.value_date)          AS transaction_date,
+        MONTH(g.value_date)         AS month_num,
+        g.status                    AS deal_status,
+        g.settlement_amount         AS deal_amount,
+        g.accrued_interest          AS accrued_interest,
+        (g.settlement_amount - IFNULL(g.accrued_interest, 0)) AS net_principal,
+        g.counterparty_id,
+        bd.deal_number              AS buyback_deal_number,
+        le.id                       AS ledger_id,
+        IFNULL(le.debit_amount,  0) AS debit_amount,
+        IFNULL(le.credit_amount, 0) AS credit_amount,
+        le.description              AS ledger_description,
+        ca.account_code,
+        ca.name                     AS account_name
+      FROM gsec g
+      JOIN buyback_deals bd ON bd.id = g.buyback_deal_id
+      LEFT JOIN ledger_entries le
+        ON  le.deal_number COLLATE utf8mb4_unicode_ci = g.deal_number COLLATE utf8mb4_unicode_ci
+        AND ${exclOn}
+      LEFT JOIN chart_of_accounts ca ON ca.id = le.account_id
+      WHERE g.transaction_type = 'Buy'
+        AND g.buyback_deal_id IS NOT NULL
+        AND g.status != 'cancelled'
+        AND YEAR(g.value_date)  = ?
+        AND MONTH(g.value_date) IN (${mp})
+      ORDER BY g.value_date, g.deal_number, le.id
+    `, [...SETTLEMENT_EXCL_LIKE, year, ...months]);
+
+    // Fallback buyback BUY rows for deals that do not have linked gsec buy rows.
+    // This captures patterns like BB20260402002 (leg1=Buy, leg2=Sell).
+    const [bbBuyFallbackRows] = await db.query(`
+      SELECT
+        'buyback_buy'                       AS category,
+        CONCAT(bd.deal_number, '/BB-L1')    AS deal_number,
+        'Buy'                               AS transaction_type,
+        DATE(bd.leg1_value_date)            AS transaction_date,
+        MONTH(bd.leg1_value_date)           AS month_num,
+        bd.deal_status                      AS deal_status,
+        bd.leg1_settlement_amount           AS deal_amount,
+        bd.leg1_accrued_interest            AS accrued_interest,
+        (bd.leg1_settlement_amount - IFNULL(bd.leg1_accrued_interest, 0)) AS net_principal,
+        bd.leg1_counterparty                AS counterparty_id,
+        bd.deal_number                      AS buyback_deal_number,
+        le.id                               AS ledger_id,
+        IFNULL(le.debit_amount,  0)         AS debit_amount,
+        IFNULL(le.credit_amount, 0)         AS credit_amount,
+        le.description                      AS ledger_description,
+        ca.account_code,
+        ca.name                             AS account_name
+      FROM buyback_deals bd
+      LEFT JOIN ledger_entries le
+        ON  le.deal_number COLLATE utf8mb4_unicode_ci LIKE CONCAT(bd.deal_number COLLATE utf8mb4_unicode_ci, '/BB-L1/%')
+        AND ${exclOn}
+      LEFT JOIN chart_of_accounts ca ON ca.id = le.account_id
+      WHERE bd.deal_status NOT IN ('Rejected', 'Draft')
+        AND bd.leg1_transaction_type = 'Buy'
+        AND YEAR(bd.leg1_value_date) = ?
+        AND MONTH(bd.leg1_value_date) IN (${mp})
+        AND NOT EXISTS (
+          SELECT 1 FROM gsec gx
+          WHERE gx.buyback_deal_id = bd.id
+            AND gx.transaction_type = 'Buy'
+            AND gx.status != 'cancelled'
+        )
+
+      UNION ALL
+
+      SELECT
+        'buyback_buy'                       AS category,
+        CONCAT(bd.deal_number, '/BB-L2')    AS deal_number,
+        'Buy'                               AS transaction_type,
+        DATE(bd.leg2_value_date)            AS transaction_date,
+        MONTH(bd.leg2_value_date)           AS month_num,
+        bd.deal_status                      AS deal_status,
+        bd.leg2_settlement_amount           AS deal_amount,
+        bd.leg2_accrued_interest            AS accrued_interest,
+        (bd.leg2_settlement_amount - IFNULL(bd.leg2_accrued_interest, 0)) AS net_principal,
+        bd.leg2_counterparty                AS counterparty_id,
+        bd.deal_number                      AS buyback_deal_number,
+        le.id                               AS ledger_id,
+        IFNULL(le.debit_amount,  0)         AS debit_amount,
+        IFNULL(le.credit_amount, 0)         AS credit_amount,
+        le.description                      AS ledger_description,
+        ca.account_code,
+        ca.name                             AS account_name
+      FROM buyback_deals bd
+      LEFT JOIN ledger_entries le
+        ON  le.deal_number COLLATE utf8mb4_unicode_ci LIKE CONCAT(bd.deal_number COLLATE utf8mb4_unicode_ci, '/BB-L2/%')
+        AND ${exclOn}
+      LEFT JOIN chart_of_accounts ca ON ca.id = le.account_id
+      WHERE bd.deal_status NOT IN ('Rejected', 'Draft')
+        AND bd.leg2_transaction_type = 'Buy'
+        AND YEAR(bd.leg2_value_date) = ?
+        AND MONTH(bd.leg2_value_date) IN (${mp})
+        AND NOT EXISTS (
+          SELECT 1 FROM gsec gx
+          WHERE gx.buyback_deal_id = bd.id
+            AND gx.transaction_type = 'Buy'
+            AND gx.status != 'cancelled'
+        )
+    `, [
+      ...SETTLEMENT_EXCL_LIKE, year, ...months,
+      ...SETTLEMENT_EXCL_LIKE, year, ...months,
+    ]);
+
+    // Include BUYBACK SELL for whichever leg is Sell (leg1 or leg2).
+    const [bbSellRows] = await db.query(`
+      SELECT
+        'buyback_sell'                      AS category,
+        CONCAT(bd.deal_number, '/BB-L1')    AS deal_number,
+        'Sell'                              AS transaction_type,
+        DATE(bd.leg1_value_date)            AS transaction_date,
+        MONTH(bd.leg1_value_date)           AS month_num,
+        bd.deal_status                      AS deal_status,
+        bd.leg1_settlement_amount           AS deal_amount,
+        bd.leg1_accrued_interest            AS accrued_interest,
+        (bd.leg1_settlement_amount - IFNULL(bd.leg1_accrued_interest, 0)) AS net_principal,
+        bd.leg1_counterparty                AS counterparty_id,
+        bd.deal_number                      AS buyback_deal_number,
+        le.id                               AS ledger_id,
+        IFNULL(le.debit_amount,  0)         AS debit_amount,
+        IFNULL(le.credit_amount, 0)         AS credit_amount,
+        le.description                      AS ledger_description,
+        ca.account_code,
+        ca.name                             AS account_name
+      FROM buyback_deals bd
+      LEFT JOIN ledger_entries le
+        ON  le.deal_number COLLATE utf8mb4_unicode_ci LIKE CONCAT(bd.deal_number COLLATE utf8mb4_unicode_ci, '/BB-L1/%')
+        AND ${exclOn}
+      LEFT JOIN chart_of_accounts ca ON ca.id = le.account_id
+      WHERE bd.deal_status NOT IN ('Rejected', 'Draft')
+        AND bd.leg1_transaction_type = 'Sell'
+        AND YEAR(bd.leg1_value_date) = ?
+        AND MONTH(bd.leg1_value_date) IN (${mp})
+
+      UNION ALL
+
+      SELECT
+        'buyback_sell'                      AS category,
+        CONCAT(bd.deal_number, '/BB-L2')    AS deal_number,
+        'Sell'                              AS transaction_type,
+        DATE(bd.leg2_value_date)            AS transaction_date,
+        MONTH(bd.leg2_value_date)           AS month_num,
+        bd.deal_status                      AS deal_status,
+        bd.leg2_settlement_amount           AS deal_amount,
+        bd.leg2_accrued_interest            AS accrued_interest,
+        (bd.leg2_settlement_amount - IFNULL(bd.leg2_accrued_interest, 0)) AS net_principal,
+        bd.leg2_counterparty                AS counterparty_id,
+        bd.deal_number                      AS buyback_deal_number,
+        le.id                               AS ledger_id,
+        IFNULL(le.debit_amount,  0)         AS debit_amount,
+        IFNULL(le.credit_amount, 0)         AS credit_amount,
+        le.description                      AS ledger_description,
+        ca.account_code,
+        ca.name                             AS account_name
+      FROM buyback_deals bd
+      LEFT JOIN ledger_entries le
+        ON  le.deal_number COLLATE utf8mb4_unicode_ci LIKE CONCAT(bd.deal_number COLLATE utf8mb4_unicode_ci, '/BB-L2/%')
+        AND ${exclOn}
+      LEFT JOIN chart_of_accounts ca ON ca.id = le.account_id
+      WHERE bd.deal_status NOT IN ('Rejected', 'Draft')
+        AND bd.leg2_transaction_type = 'Sell'
+        AND YEAR(bd.leg2_value_date) = ?
+        AND MONTH(bd.leg2_value_date) IN (${mp})
+    `, [
+      ...SETTLEMENT_EXCL_LIKE, year, ...months,
+      ...SETTLEMENT_EXCL_LIKE, year, ...months,
+    ]);
+
+    // ── 5. Repo / Reverse Repo – filtered by value_date ─────────────────────
+    // Ledger entries use deal_number = CAST(repo_deals.id AS CHAR)
+    const repoExcl = [
+      'Repo Daily Interest Accrual%',
+      'Reverse Repo Daily Interest Accrual%',
+      'Reverse Repo Borrowing (Backfill)%',
+      'Daily lending interest EOD',
+      'Daily borrowing interest EOD',
+    ];
+    const repoExclOn = repoExcl.map(() => `le.description NOT LIKE ?`).join(' AND ');
+
+    const [repoRows] = await db.query(`
+      SELECT
+        CASE WHEN rd.deal_type = 'Repo' THEN 'repo' ELSE 'reverse_repo' END AS category,
+        CAST(rd.id AS CHAR)         AS deal_number,
+        rd.deal_type                AS transaction_type,
+        DATE(rd.value_date)         AS transaction_date,
+        MONTH(rd.value_date)        AS month_num,
+        rd.approval_status          AS deal_status,
+        rd.principal_amount         AS deal_amount,
+        0                           AS accrued_interest,
+        rd.principal_amount         AS net_principal,
+        NULL                        AS counterparty_id,
+        le.id                       AS ledger_id,
+        IFNULL(le.debit_amount,  0) AS debit_amount,
+        IFNULL(le.credit_amount, 0) AS credit_amount,
+        le.description              AS ledger_description,
+        ca.account_code,
+        ca.name                     AS account_name
+      FROM repo_deals rd
+      LEFT JOIN ledger_entries le
+        ON  le.deal_number COLLATE utf8mb4_unicode_ci = CAST(rd.id AS CHAR) COLLATE utf8mb4_unicode_ci
+        AND ${repoExclOn}
+      LEFT JOIN chart_of_accounts ca ON ca.id = le.account_id
+      WHERE rd.approval_status NOT IN ('Rejected', 'Cancelled')
+        AND YEAR(rd.value_date)  = ?
+        AND MONTH(rd.value_date) IN (${mp})
+      ORDER BY rd.value_date, rd.id, le.id
+    `, [...repoExcl, year, ...months]);
+
+    // ── Aggregate into month buckets ─────────────────────────────────────────
+    const allRows = [
+      ...gsecBuyRows,
+      ...gsecSellRows,
+      ...bbBuyRows,
+      ...bbBuyFallbackRows,
+      ...bbSellRows,
+      ...repoRows,
     ];
 
-    const [rows] = await db.query(sql, params);
+    // Fetch friendly names for the standard settlement accounts used in
+    // expanded unposted entries.
+    const stdAccountCodes = Object.values(SETTLEMENT_ACCOUNTS);
+    const [stdAccountRows] = await db.query(
+      `SELECT account_code, name FROM chart_of_accounts WHERE account_code IN (${stdAccountCodes.map(() => '?').join(',')})`,
+      stdAccountCodes
+    );
+    const acctLabelMap = Object.fromEntries(stdAccountRows.map((r) => [r.account_code, r.name]));
 
     const monthBuckets = new Map();
     for (const m of months) {
       monthBuckets.set(m, {
         month: m,
         label: `${MONTH_LABELS[m]} ${year}`,
-        totals: { debit: 0, credit: 0, count: 0 },
+        totals: {
+          debit: 0,
+          credit: 0,
+          count: 0,
+          estimatedDebit: 0,
+          estimatedCredit: 0,
+          unposted: 0,
+        },
         groups: buildEmptyGroups(),
       });
     }
 
-    for (const row of rows) {
-      const category = classifyLedgerDescription(row.description);
-      if (categoryFilter && category !== categoryFilter) continue;
-
+    for (const row of allRows) {
       const bucket = monthBuckets.get(row.month_num);
       if (!bucket) continue;
 
-      const debit = parseFloat(row.debit_amount) || 0;
-      const credit = parseFloat(row.credit_amount) || 0;
+      const { category } = row;
+      const isPosted = row.ledger_id !== null;
+      const group = bucket.groups[category] || bucket.groups.gsec_buy;
 
-      const enriched = { ...row, category };
+      if (isPosted) {
+        const debit  = parseFloat(row.debit_amount)  || 0;
+        const credit = parseFloat(row.credit_amount) || 0;
+        group.entries.push({ ...row, posted: true });
+        group.totals.debit  += debit;
+        group.totals.credit += credit;
+        group.totals.count  += 1;
+        bucket.totals.debit  += debit;
+        bucket.totals.credit += credit;
+        bucket.totals.count  += 1;
+      } else {
+        // Expand each unposted deal into the journal lines that WILL be written
+        // when the deal reaches final approval. Mirrors postFinalApproved*.
+        const lines = expandUnpostedDeal(row, acctLabelMap);
+        if (lines.length === 0) {
+          // Fallback: single headline row (e.g. for unmapped categories).
+          const estAmount = computeEstimatedAmount(row);
+          group.entries.push({
+            ...row,
+            posted: false,
+            estimated_debit:  estAmount,
+            estimated_credit: estAmount,
+          });
+          group.totals.estimatedDebit  += estAmount;
+          group.totals.estimatedCredit += estAmount;
+        } else {
+          for (const line of lines) {
+            group.entries.push({
+              ...row,
+              ...line,
+              posted: false,
+            });
+            group.totals.estimatedDebit  += line.estimated_debit;
+            group.totals.estimatedCredit += line.estimated_credit;
+          }
+        }
 
-      const group = bucket.groups[category] || bucket.groups.other;
-      group.entries.push(enriched);
-      group.totals.debit += debit;
-      group.totals.credit += credit;
-      group.totals.count += 1;
-
-      bucket.totals.debit += debit;
-      bucket.totals.credit += credit;
-      bucket.totals.count += 1;
+        // Each deal counts as ONE unposted regardless of how many lines.
+        group.totals.unposted   += 1;
+        bucket.totals.unposted  += 1;
+        bucket.totals.estimatedDebit  += parseFloat(row.deal_amount) || 0;
+        bucket.totals.estimatedCredit += parseFloat(row.deal_amount) || 0;
+      }
     }
-
-    const monthsResp = Array.from(monthBuckets.values()).sort((a, b) => a.month - b.month);
 
     res.json({
       year,
-      months: monthsResp,
-      excludedPatterns: [
-        ...SETTLEMENT_EXCLUDED_DESCRIPTION_LIKE,
-        ...SETTLEMENT_EXCLUDED_DESCRIPTION_EXACT,
-      ],
+      months: Array.from(monthBuckets.values()).sort((a, b) => a.month - b.month),
+      excludedPatterns: SETTLEMENT_EXCL_LIKE,
       categories: SETTLEMENT_CATEGORY_DEFS,
     });
   } catch (error) {
