@@ -514,7 +514,10 @@ const RepoDeal = {
         newApprovalStatus = 'final_approved';
       }
     } else if (action === 'rejected') {
-      newApprovalLevel = 'rejected';
+      // Send rejected repo deals back to the front office checker queue so the
+      // originator can fix and resubmit. The 'rejected' status is preserved
+      // so the front-office blotter can flag the row visually.
+      newApprovalLevel = 'front_office';
       newApprovalStatus = 'rejected';
     } else {
       throw new Error('Invalid approval action');

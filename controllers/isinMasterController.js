@@ -520,8 +520,15 @@ module.exports = {
       const transaction = currentTransaction[0];
     
     // Pass approved/rejected; Gsec.updateStatus advances 3-tier (front_office -> back_office_verifier -> back_office_final -> final_approved)
+    // On rejection, persist the reviewer comment so the front-office checker can see why it was rejected.
     const updateData = { status };
-    
+    if (status === 'rejected' && typeof comment === 'string') {
+      updateData.comment = comment;
+    } else if (status === 'approved') {
+      // Clear any old rejection comment once the deal moves forward again
+      updateData.comment = null;
+    }
+
       const result = await Gsec.updateStatus(id, updateData);
       if (result.affectedRows === 0) {
         return res.status(404).json({ success: false, error: 'Transaction not found' });

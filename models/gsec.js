@@ -12,7 +12,8 @@ const ensureGsecColumns = async () => {
   if (!gsecColumnEnsurePromise) {
     gsecColumnEnsurePromise = (async () => {
       const requiredColumns = {
-        fund_movement: "VARCHAR(10) NULL DEFAULT 'no'"
+        fund_movement: "VARCHAR(10) NULL DEFAULT 'no'",
+        comment: 'TEXT NULL'
       };
 
       const columnNames = Object.keys(requiredColumns);
@@ -1164,25 +1165,46 @@ const Gsec = {
         newStatus = newStatus === 'final_approved' ? 'final_approved' : 'pending';
       }
     } else if (data.status === 'rejected') {
+      // Send rejected deals back to the front office checker queue so the
+      // originating user can fix and resubmit. We keep status='rejected'
+      // so the front-office blotter can flag the row visually.
       newStatus = 'rejected';
-      newApprovalLevel = 'rejected';
+      newApprovalLevel = 'front_office';
     } else {
       newApprovalLevel = currentLevel;
     }
     
-    const sql = `
-      UPDATE gsec 
-      SET 
-        status = ?,
-        current_approval_level = ?
-      WHERE id = ?
-    `;
-    
-    const values = [
-      newStatus,
-      newApprovalLevel,
-      id
-    ];
+    // Best-effort: make sure the `comment` column exists before we try to
+    // write to it. If the schema migration can't run (older DB, perms, etc.)
+    // we silently fall back to the legacy UPDATE without the comment column.
+    let commentColumnAvailable = true;
+    try {
+      await ensureGsecColumns();
+    } catch (ensureErr) {
+      console.warn('ensureGsecColumns failed during updateStatus; will skip comment column write:', ensureErr?.message || ensureErr);
+      commentColumnAvailable = false;
+    }
+    if (commentColumnAvailable) {
+      try {
+        const [colRows] = await db.query(
+          `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+           WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'gsec' AND COLUMN_NAME = 'comment'`
+        );
+        commentColumnAvailable = Array.isArray(colRows) && colRows.length > 0;
+      } catch (probeErr) {
+        commentColumnAvailable = false;
+      }
+    }
+
+    const wantsCommentWrite = Object.prototype.hasOwnProperty.call(data, 'comment') && data.comment !== undefined;
+    const hasComment = wantsCommentWrite && commentColumnAvailable;
+    const sql = hasComment
+      ? `UPDATE gsec SET status = ?, current_approval_level = ?, comment = ? WHERE id = ?`
+      : `UPDATE gsec SET status = ?, current_approval_level = ? WHERE id = ?`;
+
+    const values = hasComment
+      ? [newStatus, newApprovalLevel, data.comment || null, id]
+      : [newStatus, newApprovalLevel, id];
     
     try {
       const [result] = await db.query(sql, values);
