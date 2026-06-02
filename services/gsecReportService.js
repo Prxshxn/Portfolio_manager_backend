@@ -298,18 +298,32 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     // (e.g., buyback leg2 buys) do not offset today's sell-side deductions.
     const effectiveAsAtDate = asAtDate || new Date().toISOString().split('T')[0];
     const ph = uniqueIsins.map(() => '?').join(',');
+    // IMPORTANT: only deduct collateral for repo / reverse-repo deals that are
+    // (a) still Active/Pending, AND
+    // (b) not flagged as matured (the maturity flow sets matured=1 but does
+    //     NOT change `status`, so a status-only filter leaks matured deals),
+    // AND (c) whose maturity_date is still in the future relative to the
+    //     report's as-at date - this safety net catches deals whose maturity
+    //     processing was missed for whatever reason.
     const [childRows] = await db.query(`
       SELECT rdi.isin_number, COALESCE(SUM(rdi.face_value), 0) AS rc
       FROM repo_deal_isins rdi JOIN repo_deals rd ON rd.id = rdi.repo_deal_id
-      WHERE rdi.isin_number IN (${ph}) AND rd.status IN ('Active','Pending')
-      GROUP BY rdi.isin_number`, uniqueIsins);
+      WHERE rdi.isin_number IN (${ph})
+        AND rd.status IN ('Active','Pending')
+        AND COALESCE(rd.matured, 0) = 0
+        AND (rd.maturity_date IS NULL OR DATE(rd.maturity_date) > DATE(?))
+      GROUP BY rdi.isin_number`, [...uniqueIsins, effectiveAsAtDate]);
     childRows.forEach(r => { repoCollateralByIsin[r.isin_number] = Number(r.rc) || 0; });
 
     const [legacyRows] = await db.query(`
       SELECT rd.isin_number, COALESCE(SUM(rd.face_value), 0) AS rc
       FROM repo_deals rd LEFT JOIN repo_deal_isins rdi ON rdi.repo_deal_id = rd.id
-      WHERE rdi.id IS NULL AND rd.isin_number IN (${ph}) AND rd.status IN ('Active','Pending')
-      GROUP BY rd.isin_number`, uniqueIsins);
+      WHERE rdi.id IS NULL
+        AND rd.isin_number IN (${ph})
+        AND rd.status IN ('Active','Pending')
+        AND COALESCE(rd.matured, 0) = 0
+        AND (rd.maturity_date IS NULL OR DATE(rd.maturity_date) > DATE(?))
+      GROUP BY rd.isin_number`, [...uniqueIsins, effectiveAsAtDate]);
     legacyRows.forEach(r => {
       repoCollateralByIsin[r.isin_number] = (repoCollateralByIsin[r.isin_number] || 0) + (Number(r.rc) || 0);
     });
@@ -533,8 +547,12 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     // Calculate available balance: deal face value - repo_collateral (deal-wise calculation)
     const dealFaceValue = Number(row.effective_remaining_face ?? row.face_value) || 0;
     const repoCollateral = Number(row.repo_collateral) || 0;
-    const availableBalance = dealFaceValue - repoCollateral;
-    
+    // Clamp to >= 0. A negative number here would only happen if matured / closed
+    // repo deals are still being deducted (data drift), which is misleading for the
+    // user and breaks downstream balance validation. The matured-deal filter on the
+    // repo-collateral queries above is the primary defense; this clamp is a safety net.
+    const availableBalance = Math.max(0, dealFaceValue - repoCollateral);
+
     console.log(`Deal ${row.deal_number}: dealFaceValue=${dealFaceValue}, repoCollateral=${repoCollateral}, availableBalance=${availableBalance}`);
 
     // Recompute daily accrual for report date so stale persisted values do not leak into output.

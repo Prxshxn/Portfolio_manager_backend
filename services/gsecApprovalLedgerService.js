@@ -191,8 +191,28 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
   const perDayAmort = Number(buyDeal.per_day_amortization || 0);
   const amortToSell = truncate8(perDayAmort * holdingDays) * scale;
 
+  // Sell-side accrued interest must follow the senior-accounting convention:
+  //   Accrued Interest (money) = (Dirty Price - Clean Price) * Sell Face Value / 100
+  //                            = Accrued per 100 * Sell Face Value / 100
+  // Priority order:
+  //  1) transaction.accrued_interest from the form - the frontend already writes
+  //     this as `per100 * FV / 100`, so when the deal was entered with the
+  //     up-to-date form the value is exactly what the senior expects.
+  //  2) Derived from this sell row's own dirty/clean prices (same convention).
+  //  3) Last resort: per-day-accrual * days-since-last-coupon. Kept only for
+  //     legacy data where prices may be missing on the sell row.
   let couponAccruedToSell = truncate8(Number(transaction.accrued_interest || 0));
   if (!Number.isFinite(couponAccruedToSell) || couponAccruedToSell < 0) couponAccruedToSell = 0;
+
+  if (couponAccruedToSell === 0) {
+    const sellClean = Number(transaction.clean_price || 0);
+    const sellDirty = Number(transaction.dirty_price || 0);
+    if (sellFace > 0 && sellClean > 0 && sellDirty > 0 && sellDirty >= sellClean) {
+      // Senior-accountant convention: derive from this sell deal's own per-100 spread.
+      couponAccruedToSell = truncate8(((sellDirty - sellClean) * sellFace) / 100);
+    }
+  }
+
   if (couponAccruedToSell === 0) {
     try {
       const [isinRows] = await db.query(
