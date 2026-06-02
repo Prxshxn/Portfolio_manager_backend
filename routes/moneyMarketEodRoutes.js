@@ -1083,7 +1083,9 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
           const maturityKey = `${String(deal.id)}|${description}`;
           if (repoMaturityAlready.has(maturityKey)) {
             // If already posted previously (e.g., prior timed-out attempt), only mark matured.
-            await db.query('UPDATE repo_deals SET matured = 1 WHERE id = ?', [deal.id]);
+            // Also flip status so collateral / availability queries that filter by
+            // status (rather than matured) stop counting this deal.
+            await db.query("UPDATE repo_deals SET matured = 1, status = 'Matured' WHERE id = ?", [deal.id]);
             continue;
           }
 
@@ -1100,7 +1102,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
             continue;
           }
 
-          await db.query('UPDATE repo_deals SET matured = 1 WHERE id = ?', [deal.id]);
+          await db.query("UPDATE repo_deals SET matured = 1, status = 'Matured' WHERE id = ?", [deal.id]);
           repoMaturityAlready.add(maturityKey);
           repoMaturityCount++;
         } catch (err) {
