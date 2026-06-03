@@ -4,6 +4,18 @@
  */
 const db = require('../config/database');
 const { computeGsecPerDayAccrual, findCouponPeriodFromMaturity } = require('./gsecCouponPeriod');
+const { priceTripletAtYield } = require('./excelBondPricing');
+
+/** Format a Date / ISO string as 'YYYY-MM-DD' in UTC so day boundaries are stable. */
+function toYmdUtc(dateLike) {
+  if (!dateLike) return null;
+  const d = new Date(dateLike);
+  if (Number.isNaN(d.getTime())) return null;
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
 
 function utcDayDiffSigned(a, b) {
   const da = new Date(a);
@@ -68,7 +80,27 @@ async function postFinalApprovedBuyLedger(transaction, options = {}) {
   const dealId = options.dealIdOverride || transaction.deal_number;
 
   const settlementAmount = Number(transaction.settlement_amount || transaction.face_value || 0);
-  const accruedInterest = Number(transaction.accrued_interest || 0);
+  const faceVal = Number(transaction.face_value || 0);
+  const buyClean = Number(transaction.clean_price || 0);
+  const buyDirty = Number(transaction.dirty_price || 0);
+  let accruedInterest = Number(transaction.accrued_interest || 0);
+  if (!Number.isFinite(accruedInterest) || accruedInterest < 0) accruedInterest = 0;
+
+  // Senior buy convention: Accrued Interest (money) = (Dirty - Clean) * Face / 100.
+  // Also corrects legacy buyback rows that stored accrued per-100 in accrued_interest.
+  if (faceVal > 0 && buyClean > 0 && buyDirty > 0 && buyDirty >= buyClean) {
+    const fromSenior = truncate8(((buyDirty - buyClean) * faceVal) / 100);
+    if (fromSenior > 0) {
+      const looksLikePer100 =
+        accruedInterest > 0 &&
+        accruedInterest < 500 &&
+        fromSenior > accruedInterest * 10;
+      if (!accruedInterest || looksLikePer100) {
+        accruedInterest = fromSenior;
+      }
+    }
+  }
+
   const netAmount = settlementAmount - accruedInterest;
 
   const treasuryBondsAccount =
@@ -151,8 +183,10 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
   let buyDeal = null;
   if (transaction.buy_deal_number) {
     const [buyRows] = await db.query(
-      `SELECT deal_number, value_date, maturity_date, face_value, clean_price, last_coupon_date, per_day_amortization,
-              coupon_interest, remaining_face_value, isin_number
+      `SELECT deal_number, value_date, trade_date, maturity_date, issue_date,
+              face_value, clean_price, dirty_price, yield,
+              accrued_interest_calculation, last_coupon_date, next_coupon_date,
+              per_day_amortization, coupon_interest, remaining_face_value, isin_number
        FROM gsec
        WHERE transaction_type = 'Buy' AND deal_number = ?
        LIMIT 1`,
@@ -181,88 +215,106 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
     return { success: true, legacy: true };
   }
 
+  // ---------------------------------------------------------------------------
+  // Senior-accountant convention for a GSec Sell journal (effective-yield method):
+  //
+  //   Treasury Bonds OUT (CR 453)              = sellFace x buyClean / 100
+  //   Accrued Coupon Paid at Purchase (CR 458) = sellFace x (buyDirty - buyClean) / 100
+  //                                              = unwind of accrued you paid at buy
+  //   Amort (CR or DR 505)                     = sellFace x (carryClean - buyClean) / 100
+  //                                              carryClean = bond re-priced at the
+  //                                              BUY yield on the SELL date (pull-to-par
+  //                                              under the original yield curve).
+  //   Coupon Interest Income (CR 574)          = sellFace x (sellAccruedPer100 - buyAccruedPer100) / 100
+  //                                              i.e. the coupon income EARNED during the
+  //                                              holding period only (not the full sell accrued).
+  //   Capital Gain (CR or DR 502)              = sellFace x (sellClean - carryClean) / 100
+  //                                              clean-to-clean P&L vs carrying value.
+  //   Bank IN (DR settlement_account)          = sellFace x sellDirty / 100  (= settlement_amount)
+  //
+  //   Reversal pair:
+  //     DR Interest Income Accrued (570) and CR Accrued Receivable (568) =
+  //         holding-period Coupon Income (not the full sell accrued).
+  //
+  // If the buy row is missing yield / coupon dates required for carryClean,
+  // fall back to the legacy per_day_amortization x holdingDays x scale formula
+  // so older deals can still be posted.
+  // ---------------------------------------------------------------------------
+
   const sellFace = Number(transaction.face_value || 0);
   const buyFace = Number(buyDeal.face_value || 0);
   const scale = buyFace > 0 ? sellFace / buyFace : 1;
-  const purchaseCleanPct = Number(buyDeal.clean_price || 0);
-  const purchaseCleanAmt = truncate8((buyFace * purchaseCleanPct) / 100) * scale;
-
+  const buyClean = Number(buyDeal.clean_price || 0);
+  const buyDirty = Number(buyDeal.dirty_price || 0);
+  const sellClean = Number(transaction.clean_price || 0);
+  const sellDirty = Number(transaction.dirty_price || 0);
+  const sellSettlement = Number(transaction.settlement_amount || 0);
   const holdingDays = Math.max(0, utcDayDiffSigned(sellDate, buyDeal.value_date));
-  const perDayAmort = Number(buyDeal.per_day_amortization || 0);
-  const amortToSell = truncate8(perDayAmort * holdingDays) * scale;
 
-  // Sell-side accrued interest must follow the senior-accounting convention:
-  //   Accrued Interest (money) = (Dirty Price - Clean Price) * Sell Face Value / 100
-  //                            = Accrued per 100 * Sell Face Value / 100
-  // Priority order:
-  //  1) transaction.accrued_interest from the form - the frontend already writes
-  //     this as `per100 * FV / 100`, so when the deal was entered with the
-  //     up-to-date form the value is exactly what the senior expects.
-  //  2) Derived from this sell row's own dirty/clean prices (same convention).
-  //  3) Last resort: per-day-accrual * days-since-last-coupon. Kept only for
-  //     legacy data where prices may be missing on the sell row.
-  let couponAccruedToSell = truncate8(Number(transaction.accrued_interest || 0));
-  if (!Number.isFinite(couponAccruedToSell) || couponAccruedToSell < 0) couponAccruedToSell = 0;
+  // 1) Treasury Bonds reversal at buy clean price.
+  const treasuryBondsAmt = truncate8((sellFace * buyClean) / 100);
 
-  if (couponAccruedToSell === 0) {
-    const sellClean = Number(transaction.clean_price || 0);
-    const sellDirty = Number(transaction.dirty_price || 0);
-    if (sellFace > 0 && sellClean > 0 && sellDirty > 0 && sellDirty >= sellClean) {
-      // Senior-accountant convention: derive from this sell deal's own per-100 spread.
-      couponAccruedToSell = truncate8(((sellDirty - sellClean) * sellFace) / 100);
-    }
-  }
+  // 2) Buy-side accrued reversal (unwinds the accrued asset created when buy posted).
+  const buyAccruedPer100 = Math.max(0, buyDirty - buyClean);
+  const accruedAtPurchaseAmt = truncate8((sellFace * buyAccruedPer100) / 100);
 
-  if (couponAccruedToSell === 0) {
+  // 4) Holding-period coupon income (only what accrued WHILE we held the bond).
+  const sellAccruedPer100 = Math.max(0, sellDirty - sellClean);
+  const holdingPeriodAccruedPer100 = Math.max(0, sellAccruedPer100 - buyAccruedPer100);
+  const holdingCouponIncome = truncate8((sellFace * holdingPeriodAccruedPer100) / 100);
+
+  // 3) Amort via effective-yield: revalue the buy at the buy yield on the sell date.
+  //    For a discount bond carryClean > buyClean (income / CR);
+  //    for a premium bond carryClean < buyClean (expense / DR).
+  let amortToSell = 0;
+  let carryClean = null;
+  const buyYield = Number(buyDeal.yield || 0);
+  const annualCouponRate = Number(buyDeal.accrued_interest_calculation || 0) * 2;
+  if (
+    buyYield > 0 &&
+    annualCouponRate > 0 &&
+    buyDeal.maturity_date &&
+    sellFace > 0
+  ) {
     try {
-      const [isinRows] = await db.query(
-        `SELECT coupon_rate, coupon_date_1, coupon_date_2
-         FROM isin_master
-         WHERE isin_number COLLATE utf8mb4_unicode_ci = ? COLLATE utf8mb4_unicode_ci
-         LIMIT 1`,
-        [buyDeal.isin_number]
-      );
-      const isin = isinRows && isinRows[0] ? isinRows[0] : {};
-      const perDay = computeGsecPerDayAccrual(
-        {
-          face_value: buyDeal.face_value,
-          remaining_face_value: sellFace,
-          coupon_interest: buyDeal.coupon_interest,
-          coupon_rate: isin.coupon_rate,
-          maturity_date: buyDeal.maturity_date,
-          isin_number: buyDeal.isin_number,
-          coupon_date_1: isin.coupon_date_1,
-          coupon_date_2: isin.coupon_date_2
-        },
-        sellDate,
-        2
-      );
-      if (perDay.ok) {
-        let lastCoupon = buyDeal.last_coupon_date ? new Date(buyDeal.last_coupon_date) : null;
-        if (!lastCoupon || Number.isNaN(lastCoupon.getTime())) {
-          const r = findCouponPeriodFromMaturity(sellDate, buyDeal.maturity_date, 2);
-          lastCoupon = r.lastCoupon;
-        }
-        const daysAccrued = Math.max(0, utcDayDiffSigned(sellDate, lastCoupon));
-        couponAccruedToSell = truncate8(perDay.amount * daysAccrued);
+      const carry = priceTripletAtYield({
+        couponRate: annualCouponRate,
+        yieldRate: buyYield,
+        valueDate: sellDate,
+        maturityDate: toYmdUtc(buyDeal.maturity_date)
+      });
+      if (carry && Number.isFinite(carry.cleanPrice)) {
+        carryClean = Number(carry.cleanPrice);
+        amortToSell = truncate8((sellFace * (carryClean - buyClean)) / 100);
       }
     } catch (e) {
-      console.warn('Failed to compute coupon accrued-to-sell, defaulting to 0:', e.message);
-      couponAccruedToSell = 0;
+      console.warn(
+        `[gsecSellLedger] effective-yield carry calc failed for ${transaction.deal_number}:`,
+        e.message
+      );
     }
   }
+  if (amortToSell === 0 && carryClean == null) {
+    // Legacy fallback: straight-line per-day premium/discount amortisation.
+    const perDayAmort = Number(buyDeal.per_day_amortization || 0);
+    amortToSell = truncate8(perDayAmort * holdingDays) * scale;
+  }
 
-  const bookValueAtSell = truncate8(purchaseCleanAmt + amortToSell);
-  const sellDirtyAmt = truncate8(Number(transaction.settlement_amount || 0));
-  const sellCleanAmtEffective = truncate8(sellDirtyAmt - couponAccruedToSell);
-  const capitalGl = truncate8(sellCleanAmtEffective - bookValueAtSell);
-  // #region agent log
-  fetch('http://127.0.0.1:7392/ingest/b636a3d1-1bd5-46f2-b184-ba446816f4e4',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ea67d3'},body:JSON.stringify({sessionId:'ea67d3',location:'gsecApprovalLedgerService.js:235',message:'Capital gain calculation',data:{purchaseCleanAmt,amortToSell,bookValueAtSell,sellDirtyAmt,couponAccruedToSell,sellCleanAmtEffective,capitalGl,holdingDays},timestamp:Date.now(),hypothesisId:'C',runId:'verify'})}).catch(()=>{});
-  // #endregion
+  // 5) Capital gain as the plug, which equals sellFace * (sellClean - carryClean) / 100
+  //    (and sellFace * (sellClean - buyClean) / 100 - amortToSell on the legacy path).
+  const sumKnownCr = truncate8(
+    treasuryBondsAmt + accruedAtPurchaseAmt + holdingCouponIncome + Math.max(0, amortToSell)
+  );
+  const sumKnownDr = Math.max(0, -amortToSell);
+  // residual on the credit side; if negative, capital LOSS (post DR side)
+  const capitalGl = truncate8(sellSettlement - sumKnownCr + sumKnownDr);
 
   const tradingAccount =
     (await accountMapping.getAccountCodeOptional(accountMapping.MAPPING_KEYS.GSEC_TRADING_ACCOUNT)) ||
     '131-101-350-098-44';
+  const accruedAtPurchaseAccount =
+    (await accountMapping.getAccountCodeOptional(accountMapping.MAPPING_KEYS.GSEC_ACCRUED_INTEREST_PAID)) ||
+    '131-101-350-128-44';
   const amortAccount =
     (await accountMapping.getAccountCodeOptional(accountMapping.MAPPING_KEYS.GSEC_AMORTISATION_TRADING)) ||
     '358-101-130-416-44';
@@ -276,29 +328,39 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
   const accruedReceivableAccount =
     (await accountMapping.getAccountCodeOptional(accountMapping.MAPPING_KEYS.GSEC_ACCRUAL_ASSET)) ||
     '131-101-290-218-44';
-  // #region agent log
-  fetch('http://127.0.0.1:7392/ingest/b636a3d1-1bd5-46f2-b184-ba446816f4e4',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ea67d3'},body:JSON.stringify({sessionId:'ea67d3',location:'gsecApprovalLedgerService.js:258',message:'Account codes resolved',data:{drAccount,tradingAccount,amortAccount,couponIncomeAccount,capitalGainLossAccount,accruedIncomeAccount,accruedReceivableAccount},timestamp:Date.now(),hypothesisId:'E',runId:'verify'})}).catch(()=>{});
-  // #endregion
 
   const mainDescription = `${prefix}GSec Sale - Final Approval - ${transaction.deal_number}`;
   const mainDr = [
-    { account_code: drAccount, amount: Number(transaction.settlement_amount || 0), description: mainDescription }
+    { account_code: drAccount, amount: sellSettlement, description: mainDescription }
   ];
   const mainCr = [];
-  if (purchaseCleanAmt > 0) {
-    mainCr.push({ account_code: tradingAccount, amount: purchaseCleanAmt, description: mainDescription });
+
+  // CR Treasury Bonds at buy clean price.
+  if (treasuryBondsAmt > 0) {
+    mainCr.push({ account_code: tradingAccount, amount: treasuryBondsAmt, description: mainDescription });
   }
-  if (amortToSell > 0) {
-    const isPremium = Number(buyDeal.clean_price || 0) > 100;
-    if (isPremium) {
-      mainDr.push({ account_code: amortAccount, amount: amortToSell, description: mainDescription });
-    } else {
+  // CR Accrued Coupon Interest Paid at Purchase (unwinds the buy-side accrued asset).
+  if (accruedAtPurchaseAmt > 0) {
+    mainCr.push({
+      account_code: accruedAtPurchaseAccount,
+      amount: accruedAtPurchaseAmt,
+      description: mainDescription
+    });
+  }
+  // Effective-yield AMTZ: sign tells us CR (discount accretion -> income)
+  // vs DR (premium decay -> expense).
+  if (Number.isFinite(amortToSell) && Math.abs(amortToSell) > 0.00000001) {
+    if (amortToSell > 0) {
       mainCr.push({ account_code: amortAccount, amount: amortToSell, description: mainDescription });
+    } else {
+      mainDr.push({ account_code: amortAccount, amount: Math.abs(amortToSell), description: mainDescription });
     }
   }
-  if (couponAccruedToSell > 0) {
-    mainCr.push({ account_code: couponIncomeAccount, amount: couponAccruedToSell, description: mainDescription });
+  // CR holding-period Coupon Interest Income (only the part EARNED while we held the bond).
+  if (holdingCouponIncome > 0) {
+    mainCr.push({ account_code: couponIncomeAccount, amount: holdingCouponIncome, description: mainDescription });
   }
+  // Capital Gain (CR) or Loss (DR) - clean-to-clean P&L vs carrying value.
   if (Number.isFinite(capitalGl) && Math.abs(capitalGl) > 0.00000001) {
     if (capitalGl >= 0) {
       mainCr.push({ account_code: capitalGainLossAccount, amount: Math.abs(capitalGl), description: mainDescription });
@@ -334,17 +396,17 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
   }
 
   const reversalDescription = `${prefix}GSec Sale - Accrued Interest Reversal - ${transaction.deal_number}`;
+  // Reversal pair carries HOLDING-PERIOD coupon income only - what we accrued daily into
+  // 568/570 while holding the bond. Buy-side accrued (paid at purchase) is reversed
+  // separately via account 458 in the main entry above.
   const reversalDr =
-    couponAccruedToSell > 0
-      ? [{ account_code: accruedIncomeAccount, amount: couponAccruedToSell, description: reversalDescription }]
+    holdingCouponIncome > 0
+      ? [{ account_code: accruedIncomeAccount, amount: holdingCouponIncome, description: reversalDescription }]
       : [];
   const reversalCr =
-    couponAccruedToSell > 0
-      ? [{ account_code: accruedReceivableAccount, amount: couponAccruedToSell, description: reversalDescription }]
+    holdingCouponIncome > 0
+      ? [{ account_code: accruedReceivableAccount, amount: holdingCouponIncome, description: reversalDescription }]
       : [];
-  // #region agent log
-  fetch('http://127.0.0.1:7392/ingest/b636a3d1-1bd5-46f2-b184-ba446816f4e4',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ea67d3'},body:JSON.stringify({sessionId:'ea67d3',location:'gsecApprovalLedgerService.js:312',message:'Reversal entries prepared',data:{reversalDr,reversalCr,accruedIncomeAccount,accruedReceivableAccount},timestamp:Date.now(),hypothesisId:'D',runId:'verify'})}).catch(()=>{});
-  // #endregion
 
   const postMulti = ledgerController.postMultiLineLedgerEntry;
   if (typeof postMulti !== 'function') {
