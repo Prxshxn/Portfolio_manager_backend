@@ -647,6 +647,9 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       coupon_interest: formatPrice(row.coupon_interest, 4),
       clean_price: formatPrice(row.clean_price, 4),
       dirty_price: formatPrice(row.dirty_price, 4),
+      // Amount = price * (remaining/displayed) face value / 100
+      clean_price_amount: formatCurrency((Number(row.clean_price) || 0) * dealFaceValue / 100, 2),
+      dirty_price_amount: formatCurrency((Number(row.dirty_price) || 0) * dealFaceValue / 100, 2),
       yield: formatPercentage(row.yield, 4),
       dtm: dtm ? dtm.toLocaleString('en-US') : '',
       balance: formatPrice(isinBalances[row.isin], 4),

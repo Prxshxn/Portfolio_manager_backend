@@ -58,6 +58,11 @@ exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturi
   const hasVerifiedAt = cols.has('verified_at');
   const hasApprovedBy = cols.has('approved_by');
   const hasApprovedAt = cols.has('approved_at');
+  const hasLeg1Clean = cols.has('leg1_clean_price');
+  const hasLeg1Dirty = cols.has('leg1_dirty_price');
+  const hasLeg2Clean = cols.has('leg2_clean_price');
+  const hasLeg2Dirty = cols.has('leg2_dirty_price');
+  const hasLeg2Face = cols.has('leg2_face_value');
 
   const whereParts = [
     `(
@@ -108,6 +113,11 @@ exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturi
       bd.leg1_yield_rate,
       bd.leg1_settlement_amount,
       bd.leg1_currency,
+      ${hasLeg1Clean ? 'bd.leg1_clean_price' : 'NULL as leg1_clean_price'},
+      ${hasLeg1Dirty ? 'bd.leg1_dirty_price' : 'NULL as leg1_dirty_price'},
+      ${hasLeg2Clean ? 'bd.leg2_clean_price' : 'NULL as leg2_clean_price'},
+      ${hasLeg2Dirty ? 'bd.leg2_dirty_price' : 'NULL as leg2_dirty_price'},
+      ${hasLeg2Face ? 'bd.leg2_face_value' : 'NULL as leg2_face_value'},
       bd.leg2_trade_date,
       bd.leg2_value_date,
       bd.leg2_transaction_type,
@@ -164,10 +174,17 @@ exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturi
     counterparty: row.leg1_counterparty || row.leg2_counterparty || '',
     isin: row.leg1_isin || row.leg2_isin || '',
     face_value: Number(row.leg1_face_value) || 0,
+    leg1_clean_price: Number(row.leg1_clean_price) || 0,
+    leg1_dirty_price: Number(row.leg1_dirty_price) || 0,
+    // Clean Price Amount = clean price * (leg) face value / 100
+    leg1_clean_price_amount: (Number(row.leg1_clean_price) || 0) * (Number(row.leg1_face_value) || 0) / 100,
     value_date: row.leg1_value_date,
     maturity_date: row.leg2_value_date,
     settlement_value: Number(row.leg1_settlement_amount) || 0,
     maturity_value: Number(row.leg2_settlement_amount) || 0,
+    leg2_clean_price: Number(row.leg2_clean_price) || 0,
+    leg2_dirty_price: Number(row.leg2_dirty_price) || 0,
+    leg2_clean_price_amount: (Number(row.leg2_clean_price) || 0) * (Number(row.leg2_face_value) || 0) / 100,
     rate: Number(row.leg1_yield_rate) || 0,
     dtm: dateDiffInDays(row.leg1_value_date, row.leg2_value_date),
     transaction_type: toTxPairLabel(row.leg1_transaction_type, row.leg2_transaction_type),

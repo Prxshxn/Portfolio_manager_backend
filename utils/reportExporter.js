@@ -25,6 +25,8 @@ const EXPORT_COLUMNS = [
   { key: 'coupon_interest', label: 'Coupon Interest' },
   { key: 'clean_price', label: 'Clean Price' },
   { key: 'dirty_price', label: 'Dirty Price' },
+  { key: 'clean_price_amount', label: 'Clean Price Amount' },
+  { key: 'dirty_price_amount', label: 'Dirty Price Amount' },
   { key: 'nvp', label: 'NVP' },
   { key: 'yield', label: 'Yield' },
   { key: 'dtm', label: 'DTM' },
@@ -69,10 +71,16 @@ const BUYBACK_EXPORT_COLUMNS = [
   { key: 'deal_number', label: 'Deal Number' },
   { key: 'isin', label: 'ISIN' },
   { key: 'face_value', label: 'Face Value' },
+  { key: 'leg1_clean_price', label: 'Leg1 Clean Price' },
+  { key: 'leg1_dirty_price', label: 'Leg1 Dirty Price' },
+  { key: 'leg1_clean_price_amount', label: 'Leg1 Clean Price Amount' },
   { key: 'value_date', label: 'Value Date (1st Leg)' },
   { key: 'maturity_date', label: 'Maturity Date (2nd Leg)' },
   { key: 'settlement_value', label: 'Settlement Value' },
   { key: 'maturity_value', label: 'Maturity Value' },
+  { key: 'leg2_clean_price', label: 'Leg2 Clean Price' },
+  { key: 'leg2_dirty_price', label: 'Leg2 Dirty Price' },
+  { key: 'leg2_clean_price_amount', label: 'Leg2 Clean Price Amount' },
   { key: 'rate', label: 'Rate' },
   { key: 'dtm', label: 'DTM' },
   { key: 'transaction_type', label: 'Transaction Type' }
@@ -175,7 +183,8 @@ function preprocessExportData(data) {
         val = formatNumber4(val);
       }
       // Currency-style 2 decimals
-      if (col.key === 'face_value' || col.key === 'sell_back') {
+      if (col.key === 'face_value' || col.key === 'sell_back' ||
+          col.key === 'clean_price_amount' || col.key === 'dirty_price_amount') {
         val = formatNumber2(val);
       }
       // DTM: integer days (handle locale-formatted integers)
@@ -248,11 +257,13 @@ function preprocessBuybackExportData(data) {
         val = formatDate(val);
       }
 
-      if (['face_value', 'settlement_value', 'maturity_value'].includes(col.key)) {
+      if (['face_value', 'settlement_value', 'maturity_value',
+           'leg1_clean_price_amount', 'leg2_clean_price_amount'].includes(col.key)) {
         val = formatNumber2(val);
       }
 
-      if (col.key === 'rate') {
+      if (['rate', 'leg1_clean_price', 'leg1_dirty_price',
+           'leg2_clean_price', 'leg2_dirty_price'].includes(col.key)) {
         val = formatNumber4(val);
       }
 
@@ -291,7 +302,7 @@ exports.export = async (format, data) => {
     return parser.parse(processedData);
   }
   if (format === 'excel') {
-    const numeric2dpKeys = new Set(['face_value', 'sell_back']);
+    const numeric2dpKeys = new Set(['face_value', 'sell_back', 'clean_price_amount', 'dirty_price_amount']);
     const numeric4dpKeys = new Set([
       'coupon_interest',
       'yield',
@@ -365,6 +376,8 @@ exports.export = async (format, data) => {
       { key: 'coupon_interest', label: 'Coupon Interest', width: 60, align: 'right' },
       { key: 'clean_price', label: 'Clean Price', width: 50, align: 'right' },
       { key: 'dirty_price', label: 'Dirty Price', width: 50, align: 'right' },
+      { key: 'clean_price_amount', label: 'Clean Price Amount', width: 60, align: 'right' },
+      { key: 'dirty_price_amount', label: 'Dirty Price Amount', width: 60, align: 'right' },
       { key: 'nvp', label: 'NVP', width: 50, align: 'right' },
       { key: 'yield', label: 'Yield', width: 40, align: 'right' },
       { key: 'dtm', label: 'DTM', width: 40, align: 'center' },
@@ -649,8 +662,10 @@ exports.exportBuyback = async (format, data) => {
       key: col.key
     }));
 
-    const numeric2dpKeys = new Set(['face_value', 'settlement_value', 'maturity_value']);
-    const numeric4dpKeys = new Set(['rate']);
+    const numeric2dpKeys = new Set(['face_value', 'settlement_value', 'maturity_value',
+      'leg1_clean_price_amount', 'leg2_clean_price_amount']);
+    const numeric4dpKeys = new Set(['rate', 'leg1_clean_price', 'leg1_dirty_price',
+      'leg2_clean_price', 'leg2_dirty_price']);
     const intKeys = new Set(['dtm']);
 
     const excelRows = processedData.map(row => {
@@ -695,7 +710,9 @@ exports.exportBuyback = async (format, data) => {
       key: col.key,
       label: col.label,
       width: ['portfolio', 'counterparty', 'deal_number', 'isin'].includes(col.key) ? 90 : 75,
-      align: ['face_value', 'settlement_value', 'maturity_value', 'rate', 'dtm'].includes(col.key)
+      align: ['face_value', 'settlement_value', 'maturity_value', 'rate', 'dtm',
+        'leg1_clean_price', 'leg1_dirty_price', 'leg1_clean_price_amount',
+        'leg2_clean_price', 'leg2_dirty_price', 'leg2_clean_price_amount'].includes(col.key)
         ? 'right'
         : 'left'
     }));
