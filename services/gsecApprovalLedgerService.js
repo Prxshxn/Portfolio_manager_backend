@@ -79,29 +79,29 @@ async function postFinalApprovedBuyLedger(transaction, options = {}) {
   const prefix = options.descriptionPrefix || '';
   const dealId = options.dealIdOverride || transaction.deal_number;
 
-  const settlementAmount = Number(transaction.settlement_amount || transaction.face_value || 0);
   const faceVal = Number(transaction.face_value || 0);
   const buyClean = Number(transaction.clean_price || 0);
   const buyDirty = Number(transaction.dirty_price || 0);
   let accruedInterest = Number(transaction.accrued_interest || 0);
   if (!Number.isFinite(accruedInterest) || accruedInterest < 0) accruedInterest = 0;
 
-  // Senior buy convention: Accrued Interest (money) = (Dirty - Clean) * Face / 100.
-  // Also corrects legacy buyback rows that stored accrued per-100 in accrued_interest.
-  if (faceVal > 0 && buyClean > 0 && buyDirty > 0 && buyDirty >= buyClean) {
-    const fromSenior = truncate8(((buyDirty - buyClean) * faceVal) / 100);
-    if (fromSenior > 0) {
-      const looksLikePer100 =
-        accruedInterest > 0 &&
-        accruedInterest < 500 &&
-        fromSenior > accruedInterest * 10;
-      if (!accruedInterest || looksLikePer100) {
-        accruedInterest = fromSenior;
-      }
-    }
-  }
+  let netAmount = 0;
+  let bankTotal = Number(transaction.settlement_amount || transaction.face_value || 0);
 
-  const netAmount = settlementAmount - accruedInterest;
+  // Senior buy convention (price-derived, not stored settlement_amount):
+  //   Accrued (458)  = Face × (Dirty − Clean) / 100
+  //   Treasury (453) = Face × Clean / 100
+  //   Bank (464) CR  = Face × Dirty / 100  (= Treasury + Accrued)
+  // Stored settlement_amount can differ slightly from Face×Dirty/100 on buyback legs.
+  if (faceVal > 0 && buyClean > 0 && buyDirty > 0 && buyDirty >= buyClean) {
+    accruedInterest = truncate8(((buyDirty - buyClean) * faceVal) / 100);
+    netAmount = truncate8((buyClean * faceVal) / 100);
+    bankTotal = truncate8((buyDirty * faceVal) / 100);
+  } else {
+    // Fallback when prices missing: split stored settlement.
+    if (!accruedInterest && bankTotal > 0) accruedInterest = 0;
+    netAmount = truncate8(bankTotal - accruedInterest);
+  }
 
   const treasuryBondsAccount =
     (await accountMapping.getAccountCodeOptional(accountMapping.MAPPING_KEYS.GSEC_TRADING_ACCOUNT)) ||
@@ -153,7 +153,7 @@ async function postFinalApprovedBuyLedger(transaction, options = {}) {
     return { success: false, error: ledgerResult.error };
   }
   console.log(`Successfully created compound ledger entries for GSEC Buy transaction ${dealId}`);
-  console.log(`  Treasury Bonds (net): ${netAmount}, Accrued Interest: ${accruedInterest}, Total: ${settlementAmount}`);
+  console.log(`  Treasury Bonds (net): ${netAmount}, Accrued Interest: ${accruedInterest}, Bank total: ${bankTotal}`);
   return { success: true };
 }
 
@@ -250,54 +250,63 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
   const sellDirty = Number(transaction.dirty_price || 0);
   const sellSettlement = Number(transaction.settlement_amount || 0);
   const holdingDays = Math.max(0, utcDayDiffSigned(sellDate, buyDeal.value_date));
+  const sellAccruedPer100 = Math.max(0, sellDirty - sellClean);
 
   // 1) Treasury Bonds reversal at buy clean price.
   const treasuryBondsAmt = truncate8((sellFace * buyClean) / 100);
 
   // 2) Buy-side accrued reversal (unwinds the accrued asset created when buy posted).
-  const buyAccruedPer100 = Math.max(0, buyDirty - buyClean);
-  const accruedAtPurchaseAmt = truncate8((sellFace * buyAccruedPer100) / 100);
+  // Prefer linked buy dirty/clean. On same-day exit (e.g. buyback leg1) when buy prices
+  // are missing on the row, the sell-side accrued spread equals what was paid at purchase.
+  let buyAccruedPer100 = Math.max(0, buyDirty - buyClean);
+  if (buyAccruedPer100 <= 0 && sellAccruedPer100 > 0 && holdingDays === 0) {
+    buyAccruedPer100 = sellAccruedPer100;
+  }
+  let accruedAtPurchaseAmt = truncate8((sellFace * buyAccruedPer100) / 100);
 
-  // 4) Holding-period coupon income (only what accrued WHILE we held the bond).
-  const sellAccruedPer100 = Math.max(0, sellDirty - sellClean);
-  const holdingPeriodAccruedPer100 = Math.max(0, sellAccruedPer100 - buyAccruedPer100);
-  const holdingCouponIncome = truncate8((sellFace * holdingPeriodAccruedPer100) / 100);
+  // 4) Holding-period coupon income — only what accrued WHILE we held the bond.
+  // Same-day buy/sell (buyback): nothing earned; full spread unwinds via 458, not 574.
+  let holdingPeriodAccruedPer100 = holdingDays === 0
+    ? 0
+    : Math.max(0, sellAccruedPer100 - buyAccruedPer100);
+  let holdingCouponIncome = truncate8((sellFace * holdingPeriodAccruedPer100) / 100);
 
-  // 3) Amort via effective-yield: revalue the buy at the buy yield on the sell date.
-  //    For a discount bond carryClean > buyClean (income / CR);
-  //    for a premium bond carryClean < buyClean (expense / DR).
+  // 3) Amort via effective-yield — only when the bond was actually held (holdingDays > 0).
+  // Same-day buyback has no premium/discount amortisation to recognise.
   let amortToSell = 0;
   let carryClean = null;
-  const buyYield = Number(buyDeal.yield || 0);
-  const annualCouponRate = Number(buyDeal.accrued_interest_calculation || 0) * 2;
-  if (
-    buyYield > 0 &&
-    annualCouponRate > 0 &&
-    buyDeal.maturity_date &&
-    sellFace > 0
-  ) {
-    try {
-      const carry = priceTripletAtYield({
-        couponRate: annualCouponRate,
-        yieldRate: buyYield,
-        valueDate: sellDate,
-        maturityDate: toYmdUtc(buyDeal.maturity_date)
-      });
-      if (carry && Number.isFinite(carry.cleanPrice)) {
-        carryClean = Number(carry.cleanPrice);
-        amortToSell = truncate8((sellFace * (carryClean - buyClean)) / 100);
+  if (holdingDays > 0) {
+    const buyYield = Number(buyDeal.yield || 0);
+    const annualCouponRate = Number(buyDeal.accrued_interest_calculation || 0) * 2;
+    if (
+      buyYield > 0 &&
+      annualCouponRate > 0 &&
+      buyDeal.maturity_date &&
+      sellFace > 0
+    ) {
+      try {
+        const carry = priceTripletAtYield({
+          couponRate: annualCouponRate,
+          yieldRate: buyYield,
+          valueDate: sellDate,
+          maturityDate: toYmdUtc(buyDeal.maturity_date)
+        });
+        if (carry && Number.isFinite(carry.cleanPrice)) {
+          carryClean = Number(carry.cleanPrice);
+          amortToSell = truncate8((sellFace * (carryClean - buyClean)) / 100);
+        }
+      } catch (e) {
+        console.warn(
+          `[gsecSellLedger] effective-yield carry calc failed for ${transaction.deal_number}:`,
+          e.message
+        );
       }
-    } catch (e) {
-      console.warn(
-        `[gsecSellLedger] effective-yield carry calc failed for ${transaction.deal_number}:`,
-        e.message
-      );
     }
-  }
-  if (amortToSell === 0 && carryClean == null) {
-    // Legacy fallback: straight-line per-day premium/discount amortisation.
-    const perDayAmort = Number(buyDeal.per_day_amortization || 0);
-    amortToSell = truncate8(perDayAmort * holdingDays) * scale;
+    if (amortToSell === 0 && carryClean == null) {
+      // Legacy fallback: straight-line per-day premium/discount amortisation.
+      const perDayAmort = Number(buyDeal.per_day_amortization || 0);
+      amortToSell = truncate8(perDayAmort * holdingDays) * scale;
+    }
   }
 
   // 5) Capital gain as the plug, which equals sellFace * (sellClean - carryClean) / 100
