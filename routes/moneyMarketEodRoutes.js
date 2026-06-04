@@ -1037,8 +1037,9 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
          FROM ledger_entries
          WHERE DATE(entry_date) = DATE(?)
            AND (description LIKE 'Repo Maturity - Deal %'
-                OR description LIKE 'Reverse Repo Maturity - Deal %')`,
-        [systemDay]
+                OR description LIKE 'Reverse Repo Maturity - Deal %'
+                OR description LIKE 'Reverse Repo Interest Accrual Reversal - Deal %')`,
+        [tomorrowStr]
       );
       const repoMaturityAlready = new Set(
         (repoMaturityAlreadyRows || []).map((r) => `${String(r.deal_number)}|${String(r.description)}`)
@@ -1060,51 +1061,125 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
             console.warn(`Skipping maturity entry for repo deal ${deal.id}: no settlement bank account resolved`);
             continue;
           }
-          const maturityAmount = Number(deal.principal_amount) + Number(deal.interest_amount);
+          const principalAmount = Number(deal.principal_amount) || 0;
+          const interestAmount = Number(deal.interest_amount) || 0;
+          const maturityAmount = principalAmount + interestAmount;
 
-          let drAccount;
-          let crAccount;
-          let description;
+          // Maturity ledger entry must be dated on the MATURITY date (tomorrow),
+          // not the system day this EOD runs on. The deal is selected because it
+          // matures tomorrow (maturity_date = tomorrowStr), so the principal/
+          // interest repayment booking belongs to that date. (Daily accruals
+          // above are correctly dated systemDay.)
+          const maturityEntryDate = deal.maturity_date
+            ? new Date(deal.maturity_date).toISOString().slice(0, 10)
+            : tomorrowStr;
 
           if (deal.deal_type === 'Repo') {
             const repoAsset = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REPO_REVERSE_REPO_ASSET);
-            drAccount = bankAccount;
-            crAccount = repoAsset;
-            description = `Repo Maturity - Deal ${deal.id}`;
+            const description = `Repo Maturity - Deal ${deal.id}`;
+            const maturityKey = `${String(deal.id)}|${description}`;
+            if (repoMaturityAlready.has(maturityKey)) {
+              await db.query("UPDATE repo_deals SET matured = 1, status = 'Matured' WHERE id = ?", [deal.id]);
+              continue;
+            }
+            const lr = await postLedgerEntry({
+              date: maturityEntryDate,
+              dr_account: bankAccount,
+              cr_account: repoAsset,
+              amount: maturityAmount,
+              deal_id: String(deal.id),
+              description
+            });
+            if (!isLedgerPostOk(lr)) {
+              console.error('Repo maturity ledger post failed:', deal.id, lr && lr.error);
+              continue;
+            }
+            await db.query("UPDATE repo_deals SET matured = 1, status = 'Matured' WHERE id = ?", [deal.id]);
+            repoMaturityAlready.add(maturityKey);
+            repoMaturityCount++;
           } else if (deal.deal_type === 'Reverse Repo') {
+            const description = `Reverse Repo Maturity - Deal ${deal.id}`;
+            const reversalDescription = `Reverse Repo Interest Accrual Reversal - Deal ${deal.id}`;
+            const maturityKey = `${String(deal.id)}|${description}`;
+            if (repoMaturityAlready.has(maturityKey)) {
+              // If already posted previously (e.g., prior timed-out attempt), only mark matured.
+              // Also flip status so collateral / availability queries that filter by
+              // status (rather than matured) stop counting this deal.
+              await db.query("UPDATE repo_deals SET matured = 1, status = 'Matured' WHERE id = ?", [deal.id]);
+              continue;
+            }
+
+            // Reverse Repo maturity is booked as three balanced pairs so the interest
+            // is recognised in its own expense account and the daily accrual is unwound:
+            //   1. Reverse accrued interest: DR Interest Payable (780) / CR daily-accrual Interest Expense (752)
+            //   2. Settle principal:         DR Repo Liability (308)    / CR Bank
+            //   3. Recognise interest:       DR Intrest Expense R/Repo (768) / CR Bank
             const liabilityAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REVERSE_REPO_LIABILITY);
-            drAccount = liabilityAccount;
-            crAccount = bankAccount;
-            description = `Reverse Repo Maturity - Deal ${deal.id}`;
+            const interestPayable = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REVERSE_REPO_INTEREST_PAYABLE);
+            const accrualInterestExpense = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REVERSE_REPO_INTEREST_EXPENSE);
+            const maturityInterestExpense = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REVERSE_REPO_MATURITY_INTEREST_EXPENSE);
+
+            let postOk = true;
+
+            const reversalKey = `${String(deal.id)}|${reversalDescription}`;
+            if (interestAmount > 0 && !repoMaturityAlready.has(reversalKey)) {
+              const reversal = await postLedgerEntry({
+                date: maturityEntryDate,
+                dr_account: interestPayable,
+                cr_account: accrualInterestExpense,
+                amount: interestAmount,
+                deal_id: String(deal.id),
+                description: reversalDescription
+              });
+              if (!isLedgerPostOk(reversal)) {
+                console.error('Reverse repo interest accrual reversal post failed:', deal.id, reversal && reversal.error);
+                postOk = false;
+              } else {
+                repoMaturityAlready.add(reversalKey);
+              }
+            }
+
+            if (postOk && principalAmount > 0) {
+              const principalLeg = await postLedgerEntry({
+                date: maturityEntryDate,
+                dr_account: liabilityAccount,
+                cr_account: bankAccount,
+                amount: principalAmount,
+                deal_id: String(deal.id),
+                description
+              });
+              if (!isLedgerPostOk(principalLeg)) {
+                console.error('Reverse repo principal maturity post failed:', deal.id, principalLeg && principalLeg.error);
+                postOk = false;
+              }
+            }
+
+            if (postOk && interestAmount > 0) {
+              const interestLeg = await postLedgerEntry({
+                date: maturityEntryDate,
+                dr_account: maturityInterestExpense,
+                cr_account: bankAccount,
+                amount: interestAmount,
+                deal_id: String(deal.id),
+                description
+              });
+              if (!isLedgerPostOk(interestLeg)) {
+                console.error('Reverse repo interest maturity post failed:', deal.id, interestLeg && interestLeg.error);
+                postOk = false;
+              }
+            }
+
+            if (!postOk) {
+              continue;
+            }
+
+            await db.query("UPDATE repo_deals SET matured = 1, status = 'Matured' WHERE id = ?", [deal.id]);
+            repoMaturityAlready.add(maturityKey);
+            repoMaturityCount++;
           } else {
             console.warn(`Skipping maturity entry for repo deal ${deal.id}: unsupported deal_type=${deal.deal_type}`);
             continue;
           }
-          const maturityKey = `${String(deal.id)}|${description}`;
-          if (repoMaturityAlready.has(maturityKey)) {
-            // If already posted previously (e.g., prior timed-out attempt), only mark matured.
-            // Also flip status so collateral / availability queries that filter by
-            // status (rather than matured) stop counting this deal.
-            await db.query("UPDATE repo_deals SET matured = 1, status = 'Matured' WHERE id = ?", [deal.id]);
-            continue;
-          }
-
-          const lr = await postLedgerEntry({
-            date: systemDay,
-            dr_account: drAccount,
-            cr_account: crAccount,
-            amount: maturityAmount,
-            deal_id: String(deal.id),
-            description
-          });
-          if (!isLedgerPostOk(lr)) {
-            console.error('Repo maturity ledger post failed:', deal.id, lr && lr.error);
-            continue;
-          }
-
-          await db.query("UPDATE repo_deals SET matured = 1, status = 'Matured' WHERE id = ?", [deal.id]);
-          repoMaturityAlready.add(maturityKey);
-          repoMaturityCount++;
         } catch (err) {
           console.error('Failed to post repo maturity for deal:', deal.id, err);
         }
