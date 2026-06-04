@@ -776,7 +776,9 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
            AND g.value_date IS NOT NULL
            AND DATE(g.value_date) <= DATE(?)
            AND NOT EXISTS (
-             SELECT 1 FROM ledger_entries le WHERE le.deal_number = g.deal_number
+             SELECT 1 FROM ledger_entries le
+             WHERE le.deal_number COLLATE utf8mb4_unicode_ci = g.deal_number COLLATE utf8mb4_unicode_ci
+               AND le.description LIKE '%GSec Purchase%'
            )`,
         [systemDay]
       );
