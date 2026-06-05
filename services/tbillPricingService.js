@@ -42,8 +42,10 @@ function compute({ valueDate, maturityDate, faceValue, discountRatePercent }) {
     return { ok: false, error: 'Invalid discount — check rate and days' };
   }
   const factor = 1 / denominator;
-  const cashPrice = fv * factor;
-  const pricePer100 = 100 * factor;
+  // Round quoted price per 100 to 4 decimals, then derive settlement from it
+  // so the cash amount matches the displayed price exactly.
+  const pricePer100 = Math.round(100 * factor * 10000) / 10000;
+  const cashPrice = fv * (pricePer100 / 100);
   return {
     ok: true,
     days,
