@@ -20,7 +20,7 @@ exports.getCouponMaturityBlotter = async (startDate, endDate, counterparty = nul
   // 2. The deal's value_date is before or equal to the end date (deal was active)
   // 3. The deal's maturity_date is after or equal to the start date (deal hasn't matured yet)
   // 4. OR the maturity date falls within the date range (final coupon)
-  const counterpartyFilter = counterparty ? 'AND g.counterparty = ?' : '';
+  const counterpartyFilter = counterparty ? 'AND g.counterparty_id = ?' : '';
   const sql = `
     SELECT DISTINCT
       g.id,
@@ -33,7 +33,7 @@ exports.getCouponMaturityBlotter = async (startDate, endDate, counterparty = nul
       g.next_coupon_date,
       g.last_coupon_date,
       g.maturity_date,
-      g.counterparty,
+      g.counterparty_id,
       g.portfolio,
       g.value_date,
       g.trade_date,
@@ -45,7 +45,7 @@ exports.getCouponMaturityBlotter = async (startDate, endDate, counterparty = nul
         corp.short_name,
         ind.short_name,
         joint.short_name,
-        g.counterparty
+        CONCAT('ID:', g.counterparty_id)
       ) as counterparty_name,
       -- Check if this is a final coupon (maturity date falls within range)
       CASE WHEN DATE(g.maturity_date) BETWEEN ? AND ? THEN 1 ELSE 0 END as is_maturity_coupon,
@@ -60,10 +60,10 @@ exports.getCouponMaturityBlotter = async (startDate, endDate, counterparty = nul
       ) as coupon_date
     FROM gsec g
     LEFT JOIN isin_master im ON g.isin_number COLLATE utf8mb4_unicode_ci = im.isin_number COLLATE utf8mb4_unicode_ci
-    LEFT JOIN counterparty_master_corporate corp ON CONCAT('c', corp.id) = g.counterparty
-    LEFT JOIN counterparty_master_individual ind ON CONCAT('i', ind.id) = g.counterparty
-    LEFT JOIN counterparty_master_joint joint ON CONCAT('j', joint.id) = g.counterparty
-    WHERE g.status IN ('approved', 'pending', 'verified', 'settled')
+    LEFT JOIN counterparty_master_corporate corp ON (g.counterparty_id LIKE 'c%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = corp.id) OR (g.counterparty_id = corp.id)
+    LEFT JOIN counterparty_master_individual ind ON (g.counterparty_id LIKE 'i%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = ind.id) OR (g.counterparty_id = ind.id)
+    LEFT JOIN counterparty_master_joint joint ON (g.counterparty_id LIKE 'j%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = joint.id) OR (g.counterparty_id = joint.id)
+    WHERE g.status IN ('approved', 'final_approved', 'pending', 'verified', 'settled')
       AND g.transaction_type IN ('Buy', 'Sell')
       AND DATE(g.value_date) <= ?
       AND DATE(g.maturity_date) >= ?
@@ -172,8 +172,8 @@ exports.getCouponMaturityBlotter = async (startDate, endDate, counterparty = nul
       last_coupon_date: row.last_coupon_date,
       maturity_date: row.maturity_date,
       is_final_coupon: isFinalCoupon,
-      counterparty: row.counterparty,
-      counterparty_name: row.counterparty_name || row.counterparty,
+      counterparty: row.counterparty_id,
+      counterparty_name: row.counterparty_name || row.counterparty_id,
       portfolio: row.portfolio,
       value_date: row.value_date,
       trade_date: row.trade_date,
