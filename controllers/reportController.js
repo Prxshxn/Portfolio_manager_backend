@@ -19,8 +19,11 @@ exports.getGsecReport = async (req, res) => {
       maturityDate,
       format,
       page,
-      pageSize
+      pageSize,
+      summaryOnly
     } = req.query;
+
+    const isSummaryOnly = summaryOnly === '1' || summaryOnly === 'true';
 
     // Validate required params
     if (!asAtDate && !isin) {
@@ -42,7 +45,7 @@ exports.getGsecReport = async (req, res) => {
       reportParams.pageSize = Number(pageSize);
     }
     
-    const { data, total, totalPortfolioBalance } = await gsecReportService.getGsecReport(reportParams);
+    const { data, total, totalPortfolioBalance, summary } = await gsecReportService.getGsecReport(reportParams);
 
     console.log('GSEC Report Service returned:');
     console.log('Data length:', data.length);
@@ -53,6 +56,13 @@ exports.getGsecReport = async (req, res) => {
 
     // Handle export formats
     if (format === 'csv' || format === 'excel' || format === 'pdf') {
+      if (isSummaryOnly) {
+        // ISIN-wise summary report (its own tab) – export summary only
+        const fileBuffer = await reportExporter.exportGsecSummary(format, summary || []);
+        res.setHeader('Content-Disposition', `attachment; filename=gsec_summary_report.${format === 'excel' ? 'xlsx' : format}`);
+        res.setHeader('Content-Type', reportExporter.getMimeType(format));
+        return res.send(fileBuffer);
+      }
       // Use GSec exporter so all GSec report fields are included
       const fileBuffer = await reportExporter.export(format, data);
       res.setHeader('Content-Disposition', `attachment; filename=gsec_report.${format === 'excel' ? 'xlsx' : format}`);
@@ -68,6 +78,9 @@ exports.getGsecReport = async (req, res) => {
     }
     if (totalPortfolioBalance !== null) {
       response.totalPortfolioBalance = totalPortfolioBalance;
+    }
+    if (summary) {
+      response.summary = summary;
     }
     res.json(response);
   } catch (err) {

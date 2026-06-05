@@ -53,7 +53,8 @@ const MAPPING_KEYS = {
   REPO_INTEREST_INCOME: 'REPO_INTEREST_INCOME',           // 467-101-190-440-44 Interest Received on R/Repo with Banks and Other Financial Institutes
   REVERSE_REPO_LIABILITY: 'REVERSE_REPO_LIABILITY',       // 249-101-330-308-44 Repo with Banks and Other Financial Institutes (principal borrowing CR, maturity, etc.)
   REVERSE_REPO_INTEREST_PAYABLE: 'REVERSE_REPO_INTEREST_PAYABLE', // 249-101-330-780-44 Interest Payable Repo Borrowing (Reverse Repo daily interest accrual CR)
-  REVERSE_REPO_INTEREST_EXPENSE: 'REVERSE_REPO_INTEREST_EXPENSE', // 669-101-240-752-44 Interest Paid on Repo with Banks and Other Financial Institutes
+  REVERSE_REPO_INTEREST_EXPENSE: 'REVERSE_REPO_INTEREST_EXPENSE', // 669-101-240-752-44 Interest Paid on Repo with Banks and Other Financial Institutes (daily accrual DR)
+  REVERSE_REPO_MATURITY_INTEREST_EXPENSE: 'REVERSE_REPO_MATURITY_INTEREST_EXPENSE', // 669-101-240-768-44 Intrest Expense R/Repo (interest expense recognised at maturity DR)
 
   // General Accounts
   CASH_BANK_ASSET: 'CASH_BANK_ASSET',

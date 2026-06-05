@@ -1017,7 +1017,7 @@ async function handlePrincipalInterestFullPayment(dealIds, processDate, bankAcco
       } else if (deal.deal_type === 'repo') {
         await connection.query(`
           UPDATE repo_deals 
-          SET matured = 1, maturity_action = 'principal_interest_full_payment'
+          SET matured = 1, status = 'Matured', maturity_action = 'principal_interest_full_payment'
           WHERE id = ?
         `, [dealId]);
       } else {
@@ -1262,7 +1262,7 @@ async function handlePrincipalReinvestInterestPaid(dealIds, processDate, bankAcc
       } else if (deal.deal_type === 'repo') {
         await connection.query(`
           UPDATE repo_deals 
-          SET matured = 1, maturity_action = 'principal_reinvest_interest_paid'
+          SET matured = 1, status = 'Matured', maturity_action = 'principal_reinvest_interest_paid'
           WHERE id = ?
         `, [dealId]);
       } else {
@@ -1386,7 +1386,7 @@ async function handlePrincipalInterestReinvest(dealIds, processDate, res) {
       } else if (deal.deal_type === 'repo') {
         await connection.query(`
           UPDATE repo_deals 
-          SET matured = 1, maturity_action = 'principal_interest_reinvest'
+          SET matured = 1, status = 'Matured', maturity_action = 'principal_interest_reinvest'
           WHERE id = ?
         `, [dealId]);
       } else {
@@ -1511,7 +1511,7 @@ async function handleDifferentAmountReinvest(dealIds, processDate, res) {
       } else if (deal.deal_type === 'repo') {
         await connection.query(`
           UPDATE repo_deals 
-          SET matured = 1, maturity_action = 'different_amount_reinvest'
+          SET matured = 1, status = 'Matured', maturity_action = 'different_amount_reinvest'
           WHERE id = ?
         `, [dealId]);
       } else {

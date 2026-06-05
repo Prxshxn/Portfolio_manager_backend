@@ -492,7 +492,10 @@ const buybackDealController = {
                     couponInterest: couponInterest,
                     cleanPrice: buybackDeal.leg2_clean_price,
                     dirtyPrice: buybackDeal.leg2_dirty_price,
-                    accruedInterestCalculation: buybackDeal.leg2_accrued_interest || null,
+                    accruedInterestCalculation:
+                      couponRate != null && Number(couponRate) > 0
+                        ? Number(couponRate) / 2
+                        : null,
                     accruedInterestSixDecimals: null,
                     accruedInterestFor100: null,
                     accruedInterestBase: null,
