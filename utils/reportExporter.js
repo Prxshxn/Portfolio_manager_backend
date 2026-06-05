@@ -43,6 +43,15 @@ const EXPORT_COLUMNS = [
   { key: 'transaction_type', label: 'Transaction Type' }
 ];
 
+// ISIN-wise summary columns (GSec summary section)
+const GSEC_SUMMARY_COLUMNS = [
+  { key: 'isin', label: 'ISIN' },
+  { key: 'total_face_value', label: 'Total Face Value' },
+  { key: 'weighted_avg_price', label: 'Weighted Average Price' },
+  { key: 'weighted_yield', label: 'Weighted Yield' },
+  { key: 'deal_count', label: 'Deals' }
+];
+
 // Columns for Portfolio report exports – mirror the on-screen Portfolio report
 const PORTFOLIO_EXPORT_COLUMNS = [
   { key: 'product_type', label: 'Product Type' },
@@ -293,13 +302,22 @@ function preprocessRepoExportData(data) {
   });
 }
 
-exports.export = async (format, data) => {
+exports.export = async (format, data, summary = []) => {
   // Always format dates for export
   const processedData = preprocessExportData(data);
+  const summaryRows = Array.isArray(summary) ? summary : [];
 
   if (format === 'csv') {
     const parser = new Parser({ fields: EXPORT_COLUMNS.map(col => ({ label: col.label, value: col.key })) });
-    return parser.parse(processedData);
+    let csv = parser.parse(processedData);
+    if (summaryRows.length) {
+      const summaryParser = new Parser({
+        fields: GSEC_SUMMARY_COLUMNS.map(col => ({ label: col.label, value: col.key }))
+      });
+      const summaryCsv = summaryParser.parse(summaryRows);
+      csv = `${csv}\n\n"ISIN-wise Summary"\n${summaryCsv}`;
+    }
+    return csv;
   }
   if (format === 'excel') {
     const numeric2dpKeys = new Set(['face_value', 'sell_back', 'clean_price_amount', 'dirty_price_amount']);
@@ -349,6 +367,38 @@ exports.export = async (format, data) => {
     for (const k of intKeys) {
       const col = sheet.getColumn(k);
       if (col) col.numFmt = '0';
+    }
+
+    // ISIN-wise summary on its own worksheet
+    if (summaryRows.length) {
+      const summarySheet = workbook.addWorksheet('ISIN Summary');
+      summarySheet.columns = GSEC_SUMMARY_COLUMNS.map(col => ({ header: col.label, key: col.key }));
+      const summaryNumeric2dp = new Set(['total_face_value']);
+      const summaryNumeric4dp = new Set(['weighted_avg_price', 'weighted_yield']);
+      const summaryInt = new Set(['deal_count']);
+      const summaryExcelRows = summaryRows.map(row => {
+        const next = { ...row };
+        for (const k of summaryNumeric2dp) next[k] = toExcelNumber(next[k]);
+        for (const k of summaryNumeric4dp) next[k] = toExcelNumber(next[k]);
+        for (const k of summaryInt) {
+          const n = toExcelNumber(next[k]);
+          next[k] = n === null ? null : Math.trunc(n);
+        }
+        return next;
+      });
+      summarySheet.addRows(summaryExcelRows);
+      for (const k of summaryNumeric2dp) {
+        const col = summarySheet.getColumn(k);
+        if (col) col.numFmt = '#,##0.00';
+      }
+      for (const k of summaryNumeric4dp) {
+        const col = summarySheet.getColumn(k);
+        if (col) col.numFmt = '#,##0.0000';
+      }
+      for (const k of summaryInt) {
+        const col = summarySheet.getColumn(k);
+        if (col) col.numFmt = '0';
+      }
     }
 
     return workbook.xlsx.writeBuffer();
@@ -488,7 +538,56 @@ exports.export = async (format, data) => {
     
     doc.fontSize(12).font('Helvetica').text(`Total Records: ${data.length}`, { align: 'left' });
     doc.text(`Total Balance: ${formattedTotalBalance}`, { align: 'left' });
-    
+
+    // ISIN-wise summary table
+    if (summaryRows.length) {
+      doc.moveDown(1.5);
+      doc.fontSize(14).font('Helvetica-Bold').text('ISIN-wise Summary', { align: 'left' });
+      doc.moveDown(0.5);
+
+      const sumCols = [
+        { key: 'isin', label: 'ISIN', width: 140, align: 'left' },
+        { key: 'total_face_value', label: 'Total Face Value', width: 140, align: 'right' },
+        { key: 'weighted_avg_price', label: 'Weighted Average Price', width: 150, align: 'right' },
+        { key: 'weighted_yield', label: 'Weighted Yield', width: 120, align: 'right' },
+        { key: 'deal_count', label: 'Deals', width: 60, align: 'right' }
+      ];
+      const sRowHeight = 22;
+      const sCellPad = 4;
+      const sStartX = doc.page.margins.left;
+
+      const drawSummaryHeader = (y) => {
+        const w = sumCols.reduce((a, c) => a + c.width, 0);
+        doc.rect(sStartX, y, w, sRowHeight).fillAndStroke('#f0f0f0', '#000000');
+        doc.fillColor('#000000').fontSize(9).font('Helvetica-Bold');
+        let x = sStartX;
+        sumCols.forEach(col => {
+          doc.text(col.label, x + sCellPad, y + 6, { width: col.width - 2 * sCellPad, align: col.align });
+          x += col.width;
+        });
+        return y + sRowHeight;
+      };
+
+      let sy = drawSummaryHeader(doc.y);
+      summaryRows.forEach((row, idx) => {
+        if (sy + sRowHeight > doc.page.height - doc.page.margins.bottom) {
+          doc.addPage();
+          sy = drawSummaryHeader(doc.page.margins.top);
+        }
+        const w = sumCols.reduce((a, c) => a + c.width, 0);
+        if (idx % 2 === 1) doc.rect(sStartX, sy, w, sRowHeight).fill('#f8f8f8');
+        doc.font('Helvetica').fontSize(8).fillColor('#000000');
+        let x = sStartX;
+        sumCols.forEach(col => {
+          const text = row[col.key] !== undefined && row[col.key] !== null ? String(row[col.key]) : '';
+          doc.text(text, x + sCellPad, sy + 6, { width: col.width - 2 * sCellPad, align: col.align });
+          x += col.width;
+        });
+        doc.rect(sStartX, sy, w, sRowHeight).stroke('#cccccc');
+        sy += sRowHeight;
+      });
+    }
+
     doc.end();
     return await new Promise(resolve => {
       doc.on('end', () => {
@@ -497,6 +596,116 @@ exports.export = async (format, data) => {
       });
     });
   }
+  throw new Error('Unsupported export format');
+};
+
+// GSec ISIN-wise summary report export (Excel/CSV/PDF) – summary only
+exports.exportGsecSummary = async (format, summary) => {
+  const summaryRows = Array.isArray(summary) ? summary : [];
+
+  if (format === 'csv') {
+    const parser = new Parser({
+      fields: GSEC_SUMMARY_COLUMNS.map(col => ({ label: col.label, value: col.key }))
+    });
+    return parser.parse(summaryRows);
+  }
+
+  if (format === 'excel') {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('ISIN Summary');
+    sheet.columns = GSEC_SUMMARY_COLUMNS.map(col => ({ header: col.label, key: col.key }));
+
+    const numeric2dp = new Set(['total_face_value']);
+    const numeric4dp = new Set(['weighted_avg_price', 'weighted_yield']);
+    const intKeys = new Set(['deal_count']);
+
+    const excelRows = summaryRows.map(row => {
+      const next = { ...row };
+      for (const k of numeric2dp) next[k] = toExcelNumber(next[k]);
+      for (const k of numeric4dp) next[k] = toExcelNumber(next[k]);
+      for (const k of intKeys) {
+        const n = toExcelNumber(next[k]);
+        next[k] = n === null ? null : Math.trunc(n);
+      }
+      return next;
+    });
+
+    sheet.addRows(excelRows);
+
+    for (const k of numeric2dp) {
+      const col = sheet.getColumn(k);
+      if (col) col.numFmt = '#,##0.00';
+    }
+    for (const k of numeric4dp) {
+      const col = sheet.getColumn(k);
+      if (col) col.numFmt = '#,##0.0000';
+    }
+    for (const k of intKeys) {
+      const col = sheet.getColumn(k);
+      if (col) col.numFmt = '0';
+    }
+
+    return workbook.xlsx.writeBuffer();
+  }
+
+  if (format === 'pdf') {
+    const doc = new PDFDocument({ margin: 30, size: 'A4', layout: 'landscape' });
+    const buffers = [];
+    doc.on('data', buffers.push.bind(buffers));
+    doc.on('end', () => {});
+
+    doc.fontSize(20).font('Helvetica-Bold').text('GSec ISIN-wise Summary Report', { align: 'center' });
+    doc.moveDown(1);
+
+    const columns = [
+      { key: 'isin', label: 'ISIN', width: 150, align: 'left' },
+      { key: 'total_face_value', label: 'Total Face Value', width: 150, align: 'right' },
+      { key: 'weighted_avg_price', label: 'Weighted Average Price', width: 160, align: 'right' },
+      { key: 'weighted_yield', label: 'Weighted Yield', width: 130, align: 'right' },
+      { key: 'deal_count', label: 'Deals', width: 70, align: 'right' }
+    ];
+
+    const rowHeight = 24;
+    const cellPadding = 4;
+    const startX = doc.page.margins.left;
+
+    const drawHeader = (y) => {
+      const w = columns.reduce((a, c) => a + c.width, 0);
+      doc.rect(startX, y, w, rowHeight).fillAndStroke('#f0f0f0', '#000000');
+      doc.fillColor('#000000').fontSize(10).font('Helvetica-Bold');
+      let x = startX;
+      columns.forEach(col => {
+        doc.text(col.label, x + cellPadding, y + 7, { width: col.width - 2 * cellPadding, align: col.align });
+        x += col.width;
+      });
+      return y + rowHeight;
+    };
+
+    let y = drawHeader(doc.y);
+    summaryRows.forEach((row, index) => {
+      if (y + rowHeight > doc.page.height - doc.page.margins.bottom) {
+        doc.addPage();
+        y = drawHeader(doc.page.margins.top);
+      }
+      const w = columns.reduce((a, c) => a + c.width, 0);
+      if (index % 2 === 1) doc.rect(startX, y, w, rowHeight).fill('#f8f8f8');
+      doc.font('Helvetica').fontSize(9).fillColor('#000000');
+      let x = startX;
+      columns.forEach(col => {
+        const text = row[col.key] !== undefined && row[col.key] !== null ? String(row[col.key]) : '';
+        doc.text(text, x + cellPadding, y + 7, { width: col.width - 2 * cellPadding, align: col.align });
+        x += col.width;
+      });
+      doc.rect(startX, y, w, rowHeight).stroke('#cccccc');
+      y += rowHeight;
+    });
+
+    doc.end();
+    return await new Promise(resolve => {
+      doc.on('end', () => resolve(Buffer.concat(buffers)));
+    });
+  }
+
   throw new Error('Unsupported export format');
 };
 
