@@ -1,9 +1,12 @@
 /**
  * T-Bill discount pricing (server-side validation).
- * cashPrice = FV × (1 − (r × days / 365)), r = annual discount as decimal, days = ACT calendar days.
+ * cashPrice = FV × (1 − (r × days / 364)), r = annual discount as decimal, days = ACT calendar days.
  */
 
 const MS_PER_DAY = 86400000;
+
+// Day-count basis for T-Bill discounting (Sri Lanka T-bill convention).
+const TBILL_YEAR_BASIS = 364;
 
 function parseYMDUtc(ymd) {
   if (!ymd || typeof ymd !== 'string') return null;
@@ -34,7 +37,7 @@ function compute({ valueDate, maturityDate, faceValue, discountRatePercent }) {
     return { ok: false, error: 'Value date must be before maturity date' };
   }
   const r = pct / 100;
-  const factor = 1 - (r * days) / 365;
+  const factor = 1 - (r * days) / TBILL_YEAR_BASIS;
   if (!Number.isFinite(factor) || factor < 0) {
     return { ok: false, error: 'Invalid discount — check rate and days' };
   }
