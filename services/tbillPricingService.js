@@ -1,6 +1,6 @@
 /**
- * T-Bill discount pricing (server-side validation).
- * cashPrice = FV × (1 − (r × days / 364)), r = annual discount as decimal, days = ACT calendar days.
+ * T-Bill present-value (yield) pricing (server-side validation).
+ * cashPrice = FV / (1 + (r × days / 364)), r = annual discount as decimal, days = ACT calendar days.
  */
 
 const MS_PER_DAY = 86400000;
@@ -37,10 +37,11 @@ function compute({ valueDate, maturityDate, faceValue, discountRatePercent }) {
     return { ok: false, error: 'Value date must be before maturity date' };
   }
   const r = pct / 100;
-  const factor = 1 - (r * days) / TBILL_YEAR_BASIS;
-  if (!Number.isFinite(factor) || factor < 0) {
+  const denominator = 1 + (r * days) / TBILL_YEAR_BASIS;
+  if (!Number.isFinite(denominator) || denominator <= 0) {
     return { ok: false, error: 'Invalid discount — check rate and days' };
   }
+  const factor = 1 / denominator;
   const cashPrice = fv * factor;
   const pricePer100 = 100 * factor;
   return {
