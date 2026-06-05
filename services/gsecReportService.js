@@ -675,6 +675,40 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     };
   });
 
+  // ── ISIN-wise summary ──────────────────────────────────────────────────────
+  // One row per ISIN across ALL outstanding buy rows for the applied filters
+  // (independent of pagination). Per business decision:
+  //   - total_face_value      = sum of remaining/outstanding face for the ISIN
+  //   - weighted_avg_price    = SIMPLE arithmetic average of clean price across deals
+  //   - weighted_yield        = SIMPLE arithmetic average of yield across deals
+  // (Every outstanding deal counts equally; not face-weighted.)
+  const summaryByIsin = {};
+  visibleRows.forEach(row => {
+    const key = row.isin;
+    if (!key) return;
+    const face = Number(row.effective_remaining_face ?? row.face_value) || 0;
+    const clean = Number(row.clean_price) || 0;
+    const yld = Number(row.yield) || 0;
+    if (!summaryByIsin[key]) {
+      summaryByIsin[key] = { isin: key, totalFace: 0, sumClean: 0, sumYield: 0, dealCount: 0 };
+    }
+    const s = summaryByIsin[key];
+    s.totalFace += face;
+    s.sumClean += clean;
+    s.sumYield += yld;
+    s.dealCount += 1;
+  });
+
+  const summary = Object.values(summaryByIsin)
+    .sort((a, b) => String(a.isin).localeCompare(String(b.isin)))
+    .map(s => ({
+      isin: s.isin,
+      deal_count: s.dealCount,
+      total_face_value: formatCurrency(s.totalFace, 2),
+      weighted_avg_price: formatPrice(s.dealCount ? s.sumClean / s.dealCount : 0, 4),
+      weighted_yield: formatPrice(s.dealCount ? s.sumYield / s.dealCount : 0, 4)
+    }));
+
   // Calculate total portfolio balance when portfolio filter is applied
   let totalPortfolioBalance = null;
   if (portfolio) {
@@ -941,7 +975,7 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     paginatedData = data.slice(offset, offset + pageSizeNum);
   }
 
-  return { data: paginatedData, total, totalPortfolioBalance };
+  return { data: paginatedData, total, totalPortfolioBalance, summary };
   } catch (error) {
     console.error('[GSEC Report Service] Error:', error);
     console.error('[GSEC Report Service] Error message:', error.message);
