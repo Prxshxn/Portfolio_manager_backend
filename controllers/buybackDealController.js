@@ -424,8 +424,10 @@ const buybackDealController = {
                   }
 
                   const couponRate = buybackDeal.coupon_rate || isin.coupon_rate || 0;
+                  // Semi-annual coupon: divide the annual coupon by 2 so it matches the
+                  // per-period coupon stored by the manual GSEC entry page.
                   const couponInterest =
-                    (leg2EffectiveFace * parseFloat(couponRate || 0)) / 100;
+                    (leg2EffectiveFace * parseFloat(couponRate || 0)) / 100 / 2;
 
                   let numberOfDaysInterestAccrued = null;
                   let numberOfDaysForCouponPeriod = null;
