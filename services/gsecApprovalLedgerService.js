@@ -195,6 +195,13 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
     buyDeal = buyRows && buyRows[0] ? buyRows[0] : null;
   }
 
+  // Allow callers (e.g. Buy/Sell buybacks that don't persist a GSec holding) to
+  // supply the buy-side context so the full P&L sell journal is produced instead
+  // of the simplified legacy entry.
+  if (!buyDeal && options.buyDealOverride) {
+    buyDeal = options.buyDealOverride;
+  }
+
   if (!buyDeal) {
     const crAccount =
       (await accountMapping.getAccountCodeOptional(accountMapping.MAPPING_KEYS.GSEC_ASSET_TBONDS)) ||

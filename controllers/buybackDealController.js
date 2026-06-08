@@ -13,6 +13,7 @@ const {
   resolveIsinCouponDates,
   getCouponPeriodEOverride
 } = require('../services/gsecCouponPeriod');
+const { postBuySellBuybackLedger } = require('../services/buybackBuySellLedgerService');
 
 // Helper function to convert empty strings to null for numeric fields
 const sanitizeNumeric = (value) => {
@@ -768,6 +769,32 @@ const buybackDealController = {
                 }
               } catch (leg1GlErr) {
                 console.error('Buyback leg1 sell ledger posting error:', leg1GlErr);
+              }
+            }
+
+            // --- Buy/Sell buyback (leg1 = Buy, leg2 = Sell): ledger-only entries ---
+            // Complements the Sell/Buy logic above. Mutually exclusive per leg, so a
+            // standard Sell/Buy buyback never reaches this branch.
+            if (
+              buybackDeal.leg1_transaction_type === 'Buy' ||
+              buybackDeal.leg2_transaction_type === 'Sell'
+            ) {
+              try {
+                const buySell = await postBuySellBuybackLedger(buybackDeal);
+                buySell.actions.forEach((a) => {
+                  if (a.status === 'failed') {
+                    console.error(
+                      `Buyback ${buybackDeal.deal_number} ${a.leg} ${a.type} ledger failed:`,
+                      a.error
+                    );
+                  } else {
+                    console.log(
+                      `Buyback ${buybackDeal.deal_number} ${a.leg} ${a.type} ledger (${a.deal_number}): ${a.status}`
+                    );
+                  }
+                });
+              } catch (buySellErr) {
+                console.error('Buyback buy/sell ledger posting error:', buySellErr);
               }
             }
           }
