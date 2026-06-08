@@ -6,6 +6,11 @@ const { checkAuth, checkAdmin } = require('../middleware/auth');
 const accountMapping = require('../services/accountMappingService');
 const { computeGsecPerDayAccrual, computeGsecDailyAmortization } = require('../services/gsecCouponPeriod');
 const { postFinalApprovedBuyLedger } = require('../services/gsecApprovalLedgerService');
+const { postBuySellBuybackLedger } = require('../services/buybackBuySellLedgerService');
+const {
+  getBuyRowsForDeal: getGsecBuyRowsForDeal,
+  postGsecMaturityLedger
+} = require('../services/gsecMaturityLedgerService');
 // You may need to adjust this path to your ledger posting API
 const postLedgerEntry = require('../controllers/ledgerController').postLedgerEntry;
 console.log ("started eod page");
@@ -247,6 +252,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
     let postedCount = 0;
     let mmSkippedAlreadyPosted = 0;
     let buybackLeg2BuyPosted = 0;
+    let buybackBuySellPosted = 0;
     for (const deal of deals) {
       let amount = Number(deal.per_day_interest);
       if (isNaN(amount) || amount === undefined) {
@@ -809,6 +815,48 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
       console.error('Buyback leg2 buy ledger (EOD) block failed:', buybackLeg2EodErr);
     }
 
+    // Buy/Sell buyback (leg1 Buy + leg2 Sell): ledger-only legs that were deferred
+    // at approval because their value date was in the future now post once the
+    // system day reaches each leg's value date. The service is idempotent (skips
+    // already-posted legs) and re-applies the same value-date deferral rule.
+    try {
+      const [buySellBuybacks] = await db.query(
+        `SELECT * FROM buyback_deals
+         WHERE deal_status = 'Approved'
+           AND (leg1_transaction_type = 'Buy' OR leg2_transaction_type = 'Sell')
+           AND (
+             DATE(leg1_value_date) <= DATE(?)
+             OR DATE(leg2_value_date) <= DATE(?)
+           )`,
+        [systemDay, systemDay]
+      );
+      for (const bb of buySellBuybacks || []) {
+        try {
+          const result = await postBuySellBuybackLedger(bb, { systemDate: systemDay });
+          result.actions.forEach((a) => {
+            if (a.status === 'posted' || a.status === 'posted_legacy') {
+              buybackBuySellPosted++;
+              console.log(`Buyback buy/sell ledger (EOD): ${bb.deal_number} ${a.leg}/${a.type} posted`);
+            } else if (a.status === 'failed') {
+              console.error(
+                `Buyback buy/sell ledger (EOD) failed: ${bb.deal_number} ${a.leg}/${a.type}`,
+                a.error
+              );
+            }
+          });
+        } catch (bbErr) {
+          console.error('Buyback buy/sell ledger (EOD) error:', bb.deal_number, bbErr);
+        }
+      }
+      if ((buySellBuybacks || []).length > 0) {
+        console.log(
+          `Buyback buy/sell ledger (EOD): candidates=${buySellBuybacks.length}, posted=${buybackBuySellPosted}`
+        );
+      }
+    } catch (buySellEodErr) {
+      console.error('Buyback buy/sell ledger (EOD) block failed:', buySellEodErr);
+    }
+
     // Clear per_day_accrual for Buy deals whose value date is still in the future (or was posted before this rule)
     await db.query(
       `UPDATE gsec SET per_day_accrual = 0
@@ -1190,10 +1238,59 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
       console.error('Error in repo maturity block:', err);
     }
 
+    // --- GSec outright-purchase maturity (redemption) posting ---
+    // Mirrors the repo maturity block: book the par redemption journal for Buy
+    // holdings maturing on (or overdue up to) the maturity date, dated on each
+    // deal's own maturity_date. The shared service is idempotent (skips deals that
+    // already have a redemption entry) and flags gsec.matured = 1 after posting.
+    //   DR Bank (par) / CR Treasury Bonds - Trading (clean cost)
+    //   / CR Amortised Discount Received (discount)   [premium flips the discount line to DR]
+    console.log('--- GSec maturity (redemption) posting block reached ---');
+    let gsecMaturityPostedCount = 0;
+    let gsecMaturitySkippedCount = 0;
+    try {
+      const [maturingGsecDeals] = await db.query(
+        `SELECT DISTINCT TRIM(deal_number) AS deal_number
+         FROM gsec
+         WHERE transaction_type = 'Buy'
+           AND status = 'final_approved'
+           AND COALESCE(matured, 0) = 0
+           AND maturity_date IS NOT NULL
+           AND DATE(maturity_date) <= DATE(?)
+           AND COALESCE(remaining_face_value, face_value, 0) > 0`,
+        [tomorrowStr]
+      );
+      console.log('GSec deals due for maturity redemption:', maturingGsecDeals.length);
+
+      for (const row of maturingGsecDeals) {
+        const dealNumber = row.deal_number;
+        try {
+          const buyRows = await getGsecBuyRowsForDeal(dealNumber);
+          if (!buyRows.length) continue;
+          const result = await postGsecMaturityLedger(buyRows);
+          if (result.posted) {
+            gsecMaturityPostedCount++;
+            console.log(`GSec maturity redemption posted: ${dealNumber}`);
+          } else if (result.skipped) {
+            gsecMaturitySkippedCount++;
+          } else if (!result.success) {
+            console.error('GSec maturity redemption post failed:', dealNumber, result.error);
+          }
+        } catch (gsecMatErr) {
+          console.error('Failed to post GSec maturity for deal:', dealNumber, gsecMatErr);
+        }
+      }
+      console.log(
+        `GSec maturity summary: posted=${gsecMaturityPostedCount}, already_posted_skipped=${gsecMaturitySkippedCount}`
+      );
+    } catch (err) {
+      console.error('Error in GSec maturity block:', err);
+    }
+
     await setSystemDay(tomorrowStr);
     res.json({
       success: true,
-      message: `EOD complete. Posted for ${postedCount} money market deals, ${gsecPostedCount} GSec accrual deals, ${gsecAmortPostedCount} GSec amortization, ${gsecCouponPostedCount} GSec coupon settlements, ${fdPostedCount} fixed deposit deals, and ${repoAccrualCount} repo accrual + ${repoMaturityCount} repo maturity + ${repoBackfillCount} repo backfill entries.`,
+      message: `EOD complete. Posted for ${postedCount} money market deals, ${gsecPostedCount} GSec accrual deals, ${gsecAmortPostedCount} GSec amortization, ${gsecCouponPostedCount} GSec coupon settlements, ${gsecMaturityPostedCount} GSec maturity redemptions, ${fdPostedCount} fixed deposit deals, and ${repoAccrualCount} repo accrual + ${repoMaturityCount} repo maturity + ${repoBackfillCount} repo backfill entries.`,
       next_system_day: tomorrowStr,
       gsec_eod: {
         daily_accrual: {
@@ -1208,7 +1305,12 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
           enabled: gsecAmortEodResult.enabled,
           deals_loaded: gsecAmortEodResult.deals_loaded
         },
-        buyback_leg2_buy_posted: buybackLeg2BuyPosted
+        maturity_redemption: {
+          posted: gsecMaturityPostedCount,
+          skipped_already_posted: gsecMaturitySkippedCount
+        },
+        buyback_leg2_buy_posted: buybackLeg2BuyPosted,
+        buyback_buy_sell_posted: buybackBuySellPosted
       }
     });
   } catch (err) {

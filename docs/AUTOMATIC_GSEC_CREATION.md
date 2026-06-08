@@ -64,7 +64,7 @@ The automatic GSec creation is triggered when:
 
 - **nextCouponDate:** Calculated from coupon schedule based on value date
 - **lastCouponDate:** Calculated from coupon schedule based on value date
-- **couponInterest:** `(faceValue * couponRate) / 100`
+- **couponInterest:** `(faceValue * couponRate) / 100 / 2` (semi-annual coupon, matching the manual GSEC entry page)
 - **numberOfDaysInterestAccrued:** Days between last coupon and value date
 - **numberOfDaysForCouponPeriod:** Days between last and next coupon
 

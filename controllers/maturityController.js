@@ -3380,7 +3380,9 @@ const {
           }
 
           const couponRate = deal.coupon_rate || isin.coupon_rate || 0;
-          const couponInterest = (effectiveLeg2Face * parseFloat(couponRate || 0)) / 100;
+          // Semi-annual coupon: divide the annual coupon by 2 so it matches the
+          // per-period coupon stored by the manual GSEC entry page.
+          const couponInterest = (effectiveLeg2Face * parseFloat(couponRate || 0)) / 100 / 2;
 
           const gsecDealData = {
             tradeType: deal.leg2_trade_type || 'BuyBack',
