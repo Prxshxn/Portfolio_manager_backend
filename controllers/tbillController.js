@@ -1,40 +1,40 @@
+const db = require('../config/db');
 const Tbill = require('../models/tbillModel');
 const tbillPricing = require('../services/tbillPricingService');
 
-exports.create = async (req, res) => {
-  try {
-    const body = req.body || {};
+function normalizeTransactionType(body) {
+  return String(body.transactionType || body.transaction_type || 'Buy');
+}
 
-    const {
-      tradeDate,
-      valueDate,
-      maturityDate,
-      faceValue,
-      yield: yieldField,
-      discountRatePercent
-    } = body;
+function buildPricedPayload(body, faceValueOverride) {
+  const {
+    tradeDate,
+    valueDate,
+    maturityDate,
+    faceValue,
+    yield: yieldField,
+    discountRatePercent
+  } = body;
 
-    if (!valueDate || !maturityDate || !faceValue || (yieldField == null && discountRatePercent == null)) {
-      return res.status(400).json({
-        success: false,
-        message: 'valueDate, maturityDate, faceValue, and yield (discount rate %) are required'
-      });
-    }
+  const fv = faceValueOverride != null ? faceValueOverride : faceValue;
+  const ratePct = discountRatePercent != null ? discountRatePercent : yieldField;
 
-    const ratePct = discountRatePercent != null ? discountRatePercent : yieldField;
-    const priced = tbillPricing.compute({
-      valueDate,
-      maturityDate,
-      faceValue,
-      discountRatePercent: ratePct
-    });
+  const priced = tbillPricing.compute({
+    valueDate,
+    maturityDate,
+    faceValue: fv,
+    discountRatePercent: ratePct
+  });
 
-    if (!priced.ok) {
-      return res.status(400).json({ success: false, message: priced.error || 'Pricing validation failed' });
-    }
+  if (!priced.ok) {
+    return { ok: false, error: priced.error || 'Pricing validation failed' };
+  }
 
-    const enriched = {
+  return {
+    ok: true,
+    payload: {
       ...body,
+      faceValue: fv,
       daysToMaturity: priced.days,
       pricePer100: priced.pricePer100,
       settlementAmount: priced.cashPrice,
@@ -44,9 +44,121 @@ exports.create = async (req, res) => {
       tradeDate: tradeDate || valueDate,
       status: 'pending',
       current_approval_level: 'front_office'
-    };
+    }
+  };
+}
 
-    const { insertId, dealNumber } = await Tbill.create(enriched);
+exports.create = async (req, res) => {
+  const connection = await db.getConnection();
+  try {
+    const body = req.body || {};
+    const transactionType = normalizeTransactionType(body);
+    const { sell_deals: sellDeals } = body;
+
+    const {
+      valueDate,
+      maturityDate,
+      faceValue,
+      yield: yieldField,
+      discountRatePercent
+    } = body;
+
+    if (!valueDate || !maturityDate || (yieldField == null && discountRatePercent == null)) {
+      return res.status(400).json({
+        success: false,
+        message: 'valueDate, maturityDate, and yield (discount rate %) are required'
+      });
+    }
+
+    await connection.beginTransaction();
+
+    if (Array.isArray(sellDeals) && sellDeals.length > 0 && transactionType.toLowerCase() === 'sell') {
+      let firstResult = null;
+      const created = [];
+
+      for (const sell of sellDeals) {
+        if (!sell?.buy_deal_number) {
+          await connection.rollback();
+          return res.status(400).json({
+            success: false,
+            message: 'Invalid sell_deals payload: buy_deal_number is required for each sell leg'
+          });
+        }
+
+        const amountToSell = parseFloat(sell.amountToSell);
+        if (!Number.isFinite(amountToSell) || amountToSell <= 0) {
+          await connection.rollback();
+          return res.status(400).json({
+            success: false,
+            message: `Invalid sell amount for buy deal ${sell.buy_deal_number}`
+          });
+        }
+
+        const priced = buildPricedPayload(body, amountToSell);
+        if (!priced.ok) {
+          await connection.rollback();
+          return res.status(400).json({ success: false, message: priced.error });
+        }
+
+        const legPayload = {
+          ...priced.payload,
+          dealNumber: null,
+          transactionType: 'Sell',
+          buyDealNumber: sell.buy_deal_number,
+          portfolio: sell.portfolio || body.portfolio
+        };
+
+        const result = await Tbill.createWithConnection(legPayload, connection);
+        if (!firstResult) firstResult = result;
+
+        await Tbill.updateBuyRemainingFaceValue(sell.buy_deal_number, amountToSell, connection);
+
+        created.push({
+          id: result.insertId,
+          deal_number: result.dealNumber,
+          buy_deal_number: sell.buy_deal_number,
+          amountToSell
+        });
+      }
+
+      await connection.commit();
+
+      return res.status(201).json({
+        success: true,
+        message: `Created ${created.length} T-Bill sell transaction(s)`,
+        data: {
+          id: firstResult?.insertId,
+          deal_number: firstResult?.dealNumber,
+          dealNumber: firstResult?.dealNumber,
+          legs: created
+        }
+      });
+    }
+
+    if (transactionType.toLowerCase() === 'sell') {
+      await connection.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'Sell transactions require sell_deals from the holdings picker'
+      });
+    }
+
+    if (!faceValue) {
+      await connection.rollback();
+      return res.status(400).json({
+        success: false,
+        message: 'faceValue is required for Buy transactions'
+      });
+    }
+
+    const priced = buildPricedPayload(body);
+    if (!priced.ok) {
+      await connection.rollback();
+      return res.status(400).json({ success: false, message: priced.error });
+    }
+
+    const { insertId, dealNumber } = await Tbill.createWithConnection(priced.payload, connection);
+    await connection.commit();
 
     return res.status(201).json({
       success: true,
@@ -54,10 +166,31 @@ exports.create = async (req, res) => {
       data: { id: insertId, deal_number: dealNumber, dealNumber }
     });
   } catch (err) {
+    try {
+      await connection.rollback();
+    } catch (_) {
+      /* ignore */
+    }
     console.error('tbill create error:', err);
-    return res.status(500).json({
+    return res.status(err.status || 500).json({
       success: false,
       message: err.message || 'Failed to save T-Bill deal'
+    });
+  } finally {
+    connection.release();
+  }
+};
+
+exports.getBuyDealsWithBalance = async (req, res) => {
+  try {
+    const { isin, portfolio, asAtDate } = req.query;
+    const deals = await Tbill.getBuyDealsWithBalance(isin, portfolio, asAtDate || null);
+    return res.json({ success: true, data: deals });
+  } catch (err) {
+    console.error('tbill getBuyDealsWithBalance error:', err);
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Failed to fetch T-Bill buy deals'
     });
   }
 };

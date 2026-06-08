@@ -16,7 +16,7 @@ const REQUIRED_COLUMNS = {
   settlement_amount: 'DECIMAL(20,4) NULL',
   currency: 'VARCHAR(16) NULL',
   broker_id: 'INT NULL',
-  portfolio_id: 'INT NULL',
+  portfolio_id: 'VARCHAR(64) NULL',
   strategy_id: 'VARCHAR(64) NULL',
   custodian: 'VARCHAR(255) NULL',
   settlement_mode: 'VARCHAR(128) NULL',
@@ -29,7 +29,9 @@ const REQUIRED_COLUMNS = {
   current_approval_level: "VARCHAR(32) NULL DEFAULT 'front_office'",
   comment: 'TEXT NULL',
   authorized_by: 'VARCHAR(128) NULL',
-  authorized_at: 'DATETIME NULL'
+  authorized_at: 'DATETIME NULL',
+  buy_deal_number: 'VARCHAR(64) NULL',
+  remaining_face_value: 'DECIMAL(20,4) NULL'
 };
 
 const UPDATE_WHITELIST = [
@@ -56,7 +58,9 @@ const UPDATE_WHITELIST = [
   'dirty_price',
   'formula_text',
   'status',
-  'current_approval_level'
+  'current_approval_level',
+  'buy_deal_number',
+  'remaining_face_value'
 ];
 
 const PAYLOAD_TO_COLUMN = {
@@ -86,7 +90,11 @@ const PAYLOAD_TO_COLUMN = {
   formula_text: 'formula_text',
   status: 'status',
   current_approval_level: 'current_approval_level',
-  currentApprovalLevel: 'current_approval_level'
+  currentApprovalLevel: 'current_approval_level',
+  buyDealNumber: 'buy_deal_number',
+  buy_deal_number: 'buy_deal_number',
+  remainingFaceValue: 'remaining_face_value',
+  remaining_face_value: 'remaining_face_value'
 };
 
 async function ensureTbillSchema() {
@@ -111,7 +119,7 @@ async function ensureTbillSchema() {
         settlement_amount DECIMAL(20,4) NULL,
         currency VARCHAR(16) NULL,
         broker_id INT NULL,
-        portfolio_id INT NULL,
+        portfolio_id VARCHAR(64) NULL,
         strategy_id VARCHAR(64) NULL,
         custodian VARCHAR(255) NULL,
         settlement_mode VARCHAR(128) NULL,
@@ -124,7 +132,9 @@ async function ensureTbillSchema() {
         current_approval_level VARCHAR(32) NULL DEFAULT 'front_office',
         comment TEXT NULL,
         authorized_by VARCHAR(128) NULL,
-        authorized_at DATETIME NULL
+        authorized_at DATETIME NULL,
+        buy_deal_number VARCHAR(64) NULL,
+        remaining_face_value DECIMAL(20,4) NULL
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
     return;
@@ -173,11 +183,13 @@ function mapPayloadToColumns(payload) {
     if (!Object.prototype.hasOwnProperty.call(payload, key)) continue;
     let val = payload[key];
     if (col === 'face_value' || col === 'discount_rate_pct' || col === 'price_per_100' ||
-        col === 'settlement_amount' || col === 'brokerage' || col === 'clean_price' || col === 'dirty_price') {
+        col === 'settlement_amount' || col === 'brokerage' || col === 'clean_price' ||
+        col === 'dirty_price' || col === 'remaining_face_value') {
       val = parseNum(val);
-    } else if (col === 'days_to_maturity' || col === 'broker_id' || col === 'portfolio_id') {
+    } else if (col === 'days_to_maturity' || col === 'broker_id') {
       val = parseIntOrNull(val);
-    } else if (col === 'counterparty' || col === 'strategy_id') {
+    } else if (col === 'counterparty' || col === 'strategy_id' || col === 'portfolio_id' ||
+               col === 'buy_deal_number') {
       val = val != null ? String(val) : null;
     } else if (col === 'formula_text') {
       val = val || null;
@@ -186,6 +198,99 @@ function mapPayloadToColumns(payload) {
   }
   return mapped;
 }
+
+async function validateSellAgainstBuy(payload, queryFn) {
+  const txType = String(payload.transactionType || '').toLowerCase();
+  const buyDealNumber = payload.buyDealNumber || payload.buy_deal_number;
+  if (txType !== 'sell' || !buyDealNumber) return;
+
+  const [buyRows] = await queryFn(
+    'SELECT * FROM tbill WHERE deal_number = ? AND transaction_type = "Buy"',
+    [buyDealNumber]
+  );
+  if (!buyRows.length) {
+    const err = new Error('Referenced Buy deal not found for Sell transaction.');
+    err.status = 400;
+    throw err;
+  }
+
+  const [sellAgg] = await queryFn(
+    'SELECT COALESCE(SUM(face_value), 0) AS total_sold FROM tbill WHERE transaction_type = "Sell" AND buy_deal_number = ?',
+    [buyDealNumber]
+  );
+  const totalSold = parseFloat(sellAgg[0]?.total_sold || 0);
+  const originalFace = parseFloat(buyRows[0].face_value || 0);
+  const remaining = Math.max(0, originalFace - totalSold);
+  const sellAmount = parseFloat(payload.faceValue || 0);
+  if (sellAmount > remaining + 0.0001) {
+    const err = new Error(
+      `Sell amount (${sellAmount}) exceeds remaining face value (${remaining}) for Buy deal ${buyDealNumber}.`
+    );
+    err.status = 400;
+    throw err;
+  }
+}
+
+async function buildInsertPayload(payload, generateDealNumber) {
+  await ensureTbillSchema();
+
+  let dealNumber = payload.dealNumber || payload.deal_number || null;
+  if (!dealNumber && payload.valueDate) {
+    const dateStr = valueDateToDealDateStr(payload.valueDate);
+    if (dateStr) dealNumber = await generateDealNumber(dateStr);
+  }
+
+  const txType = String(payload.transactionType || 'Buy');
+  const faceVal = parseNum(payload.faceValue);
+  let remainingFaceValue = null;
+  if (txType.toLowerCase() === 'buy') {
+    remainingFaceValue = faceVal;
+  }
+
+  return {
+    dealNumber,
+    values: [
+      dealNumber,
+      payload.tradeDate || null,
+      payload.valueDate || null,
+      payload.transactionType || null,
+      payload.counterparty != null ? String(payload.counterparty) : null,
+      payload.isin || null,
+      payload.issueDate || null,
+      payload.maturityDate || null,
+      faceVal,
+      parseNum(payload.discountRatePercent ?? payload.yield),
+      payload.daysToMaturity != null ? parseInt(payload.daysToMaturity, 10) : null,
+      parseNum(payload.pricePer100),
+      parseNum(payload.settlementAmount),
+      payload.currency || 'LKR',
+      parseIntOrNull(payload.broker),
+      payload.portfolio != null ? String(payload.portfolio) : null,
+      payload.strategy != null ? String(payload.strategy) : null,
+      payload.custodian || null,
+      payload.settlementMode || null,
+      parseNum(payload.brokerage),
+      parseNum(payload.cleanPrice),
+      parseNum(payload.dirtyPrice),
+      payload.priceCalculationFormula || payload.formula_text || null,
+      parseIntOrNull(payload.userId),
+      payload.status || 'pending',
+      payload.current_approval_level || payload.currentApprovalLevel || 'front_office',
+      payload.buyDealNumber || payload.buy_deal_number || null,
+      remainingFaceValue
+    ]
+  };
+}
+
+const INSERT_SQL = `
+  INSERT INTO tbill (
+    deal_number, trade_date, value_date, transaction_type, counterparty, isin_number,
+    issue_date, maturity_date, face_value, discount_rate_pct, days_to_maturity,
+    price_per_100, settlement_amount, currency, broker_id, portfolio_id, strategy_id,
+    custodian, settlement_mode, brokerage, clean_price, dirty_price, formula_text, user_id,
+    status, current_approval_level, buy_deal_number, remaining_face_value
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`;
 
 const Tbill = {
   ensureSchema: ensureTbillSchema,
@@ -218,55 +323,110 @@ const Tbill = {
   },
 
   create: async (payload) => {
+    await validateSellAgainstBuy(payload, db.query.bind(db));
+    const { dealNumber, values } = await buildInsertPayload(payload, Tbill.generateNextDealNumber);
+    const [result] = await db.query(INSERT_SQL, values);
+    return { insertId: result.insertId, dealNumber };
+  },
+
+  createWithConnection: async (payload, connection) => {
+    const queryFn = connection.query.bind(connection);
+    await validateSellAgainstBuy(payload, queryFn);
+    const { dealNumber, values } = await buildInsertPayload(payload, Tbill.generateNextDealNumber);
+    const [result] = await queryFn(INSERT_SQL, values);
+    return { insertId: result.insertId, dealNumber };
+  },
+
+  updateBuyRemainingFaceValue: async (buyDealNumber, soldAmount, connection = null) => {
+    const queryFn = connection ? connection.query.bind(connection) : db.query.bind(db);
+    const [buyDeals] = await queryFn(
+      'SELECT * FROM tbill WHERE deal_number = ? AND transaction_type = "Buy"',
+      [buyDealNumber]
+    );
+    if (!buyDeals || !buyDeals.length) {
+      throw new Error(`Buy deal not found: ${buyDealNumber}`);
+    }
+    const buyDeal = buyDeals[0];
+    const original = parseFloat(buyDeal.remaining_face_value ?? buyDeal.face_value ?? 0);
+    const sold = parseFloat(soldAmount || 0);
+    let newRemaining = Math.trunc((original - sold) * 10000) / 10000;
+    newRemaining = Math.max(0, newRemaining);
+    await queryFn('UPDATE tbill SET remaining_face_value = ? WHERE id = ?', [
+      newRemaining.toFixed(4),
+      buyDeal.id
+    ]);
+    return newRemaining;
+  },
+
+  getBuyDealsWithBalance: async (isin, portfolio, asAtDate = null) => {
     await ensureTbillSchema();
 
-    let dealNumber = payload.dealNumber || payload.deal_number || null;
-    if (!dealNumber && payload.valueDate) {
-      const dateStr = valueDateToDealDateStr(payload.valueDate);
-      if (dateStr) dealNumber = await Tbill.generateNextDealNumber(dateStr);
+    let sql = `
+      SELECT
+        id,
+        deal_number,
+        isin_number AS isin,
+        discount_rate_pct AS yield,
+        face_value,
+        remaining_face_value,
+        portfolio_id AS portfolio,
+        value_date,
+        transaction_type,
+        status
+      FROM tbill
+      WHERE transaction_type = 'Buy'
+        AND status = 'final_approved'
+    `;
+    const params = [];
+    if (isin) {
+      sql += ' AND isin_number = ?';
+      params.push(isin);
+    }
+    if (portfolio) {
+      sql += ' AND portfolio_id = ?';
+      params.push(String(portfolio));
+    }
+    if (asAtDate) {
+      sql += ' AND value_date <= ?';
+      params.push(asAtDate);
+    }
+    sql += ' ORDER BY deal_number DESC';
+
+    const [rows] = await db.query(sql, params);
+    const dealNumbers = rows.map((r) => r.deal_number).filter(Boolean);
+    const soldByDeal = {};
+
+    if (dealNumbers.length) {
+      const placeholders = dealNumbers.map(() => '?').join(',');
+      let sellSql = `
+        SELECT buy_deal_number, COALESCE(SUM(face_value), 0) AS total_sold
+        FROM tbill
+        WHERE transaction_type = 'Sell' AND buy_deal_number IN (${placeholders})
+      `;
+      const sellParams = [...dealNumbers];
+      if (asAtDate) {
+        sellSql += ' AND value_date <= ?';
+        sellParams.push(asAtDate);
+      }
+      sellSql += ' GROUP BY buy_deal_number';
+      const [sellRows] = await db.query(sellSql, sellParams);
+      sellRows.forEach((row) => {
+        soldByDeal[row.buy_deal_number] = Number(row.total_sold) || 0;
+      });
     }
 
-    const sql = `
-      INSERT INTO tbill (
-        deal_number, trade_date, value_date, transaction_type, counterparty, isin_number,
-        issue_date, maturity_date, face_value, discount_rate_pct, days_to_maturity,
-        price_per_100, settlement_amount, currency, broker_id, portfolio_id, strategy_id,
-        custodian, settlement_mode, brokerage, clean_price, dirty_price, formula_text, user_id,
-        status, current_approval_level
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `;
-
-    const values = [
-      dealNumber,
-      payload.tradeDate || null,
-      payload.valueDate || null,
-      payload.transactionType || null,
-      payload.counterparty != null ? String(payload.counterparty) : null,
-      payload.isin || null,
-      payload.issueDate || null,
-      payload.maturityDate || null,
-      parseNum(payload.faceValue),
-      parseNum(payload.discountRatePercent ?? payload.yield),
-      payload.daysToMaturity != null ? parseInt(payload.daysToMaturity, 10) : null,
-      parseNum(payload.pricePer100),
-      parseNum(payload.settlementAmount),
-      payload.currency || 'LKR',
-      parseIntOrNull(payload.broker),
-      parseIntOrNull(payload.portfolio),
-      payload.strategy != null ? String(payload.strategy) : null,
-      payload.custodian || null,
-      payload.settlementMode || null,
-      parseNum(payload.brokerage),
-      parseNum(payload.cleanPrice),
-      parseNum(payload.dirtyPrice),
-      payload.priceCalculationFormula || payload.formula_text || null,
-      parseIntOrNull(payload.userId),
-      payload.status || 'pending',
-      payload.current_approval_level || payload.currentApprovalLevel || 'front_office'
-    ];
-
-    const [result] = await db.query(sql, values);
-    return { insertId: result.insertId, dealNumber };
+    return rows
+      .map((deal) => {
+        const originalFace = Number(deal.face_value) || 0;
+        const soldAmount = Number(soldByDeal[deal.deal_number] || 0);
+        const remainingFace = Math.max(0, originalFace - soldAmount);
+        return {
+          ...deal,
+          face_value: originalFace.toFixed(2),
+          remaining_face_value: remainingFace.toFixed(4)
+        };
+      })
+      .filter((deal) => Number(deal.remaining_face_value) > 0);
   },
 
   getRecent: async () => {
@@ -306,7 +466,9 @@ const Tbill = {
       cleanPrice: row.clean_price,
       dirtyPrice: row.dirty_price,
       pricePer100: row.price_per_100,
-      discountRatePercent: row.discount_rate_pct
+      discountRatePercent: row.discount_rate_pct,
+      buyDealNumber: row.buy_deal_number,
+      remainingFaceValue: row.remaining_face_value
     }));
   },
 
