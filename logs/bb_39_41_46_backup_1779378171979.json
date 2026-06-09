@@ -1,0 +1,95 @@
+{
+  "39": {
+    "deal_status": "Approved",
+    "approved_at": "2026-04-15T17:39:44.000Z",
+    "leg1_face_value": "202783405.00",
+    "sell_deal_allocations": [
+      {
+        "deal_number": "20260303/GSEC/0003",
+        "amountToSell": 2521284
+      },
+      {
+        "deal_number": "20260310/GSEC/0002",
+        "amountToSell": 8051908
+      },
+      {
+        "deal_number": "20260306/GSEC/0004",
+        "amountToSell": 73821569
+      },
+      {
+        "deal_number": "20260225/GSEC/0005",
+        "amountToSell": 26087367
+      },
+      {
+        "deal_number": "20260223/GSEC/0001",
+        "amountToSell": 4037276
+      },
+      {
+        "deal_number": "20260223/GSEC/0004",
+        "amountToSell": 2028317
+      },
+      {
+        "deal_number": "20260223/GSEC/0003",
+        "amountToSell": 4069577
+      },
+      {
+        "deal_number": "20260216/GSEC/0001",
+        "amountToSell": 16901633
+      },
+      {
+        "deal_number": "20260312/GSEC/0001",
+        "amountToSell": 2898421
+      },
+      {
+        "deal_number": "20260312/GSEC/0002",
+        "amountToSell": 1888846
+      },
+      {
+        "deal_number": "20260220/GSEC/0001",
+        "amountToSell": 2963071
+      },
+      {
+        "deal_number": "20260310/GSEC/0003",
+        "amountToSell": 6112414
+      },
+      {
+        "deal_number": "20260216/GSEC/0002",
+        "amountToSell": 3149078
+      },
+      {
+        "deal_number": "20260310/GSEC/0001",
+        "amountToSell": 4331467
+      },
+      {
+        "deal_number": "20260303/GSEC/0004",
+        "amountToSell": 34682591
+      },
+      {
+        "deal_number": "20260219/GSEC/0001",
+        "amountToSell": 9238586
+      }
+    ]
+  },
+  "41": {
+    "deal_status": "Approved",
+    "approved_at": "2026-04-16T00:00:00.000Z",
+    "leg1_face_value": "5104046.00",
+    "sell_deal_allocations": [
+      {
+        "deal_number": "20260310/GSEC/0003",
+        "amountToSell": 5104046
+      }
+    ]
+  },
+  "46": {
+    "deal_status": "Approved",
+    "approved_at": "2026-04-20T00:00:00.000Z",
+    "leg1_face_value": "4078578.00",
+    "sell_deal_allocations": [
+      {
+        "deal_number": "20260310/GSEC/0003",
+        "amountToSell": 4078578
+      }
+    ]
+  }
+}
