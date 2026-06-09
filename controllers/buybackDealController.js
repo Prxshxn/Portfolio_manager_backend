@@ -24,6 +24,48 @@ const sanitizeNumeric = (value) => {
   return isNaN(num) ? null : num;
 };
 
+// Read-only/computed financial values that must be populated before a buyback can
+// be saved. They are derived on the form (reverse/forward price calc); when blank
+// they previously persisted as 0 / column-default garbage on the leg, producing
+// inconsistent ledgers. Prices/settlement/yield must be > 0; accrued must at least
+// be a real number (0 is valid on a coupon date).
+const REQUIRED_POSITIVE_LEG_FIELDS = [
+  ['cleanPrice', 'Clean Price'],
+  ['dirtyPrice', 'Dirty Price'],
+  ['settlementAmount', 'Settlement Amount'],
+  ['yield', 'Yield']
+];
+
+const isBlankOrNonPositive = (value) => {
+  if (value === '' || value === null || value === undefined) return true;
+  const n = parseFloat(value);
+  return !Number.isFinite(n) || n <= 0;
+};
+
+const isBlankNumber = (value) => {
+  if (value === '' || value === null || value === undefined) return true;
+  return !Number.isFinite(parseFloat(value));
+};
+
+/**
+ * Validate that a leg's read-only/computed values are present.
+ * @param {object} leg - leg payload (frontend-shaped, e.g. { cleanPrice, dirtyPrice, settlementAmount, yield, accruedInterest })
+ * @param {string} legName - label for error messages, e.g. 'Leg 1'
+ * @returns {string|null} error message when invalid, otherwise null
+ */
+const validateComputedLegValues = (leg, legName) => {
+  if (!leg) return `${legName} data is required`;
+  for (const [field, label] of REQUIRED_POSITIVE_LEG_FIELDS) {
+    if (isBlankOrNonPositive(leg[field])) {
+      return `${legName}: ${label} is empty. Computed values must be calculated before the deal can be saved.`;
+    }
+  }
+  if (isBlankNumber(leg.accruedInterest)) {
+    return `${legName}: Accrued Interest is empty. Computed values must be calculated before the deal can be saved.`;
+  }
+  return null;
+};
+
 /** Post settlement only once the book system day is on or after leg2 value date (same rule as GSec EOD). */
 function valueDateOnOrBeforeSystemDay(valueDate, systemDay) {
   if (valueDate == null || systemDay == null) return false;
@@ -47,6 +89,16 @@ const buybackDealController = {
           success: false, 
           error: 'Both leg1 and leg2 data are required' 
         });
+      }
+
+      // Read-only/computed values must be populated; blank values must not be saved.
+      const leg1ComputedError = validateComputedLegValues(leg1, 'Leg 1');
+      if (leg1ComputedError) {
+        return res.status(400).json({ success: false, error: leg1ComputedError });
+      }
+      const leg2ComputedError = validateComputedLegValues(leg2, 'Leg 2');
+      if (leg2ComputedError) {
+        return res.status(400).json({ success: false, error: leg2ComputedError });
       }
 
       // Holiday validation - check if transaction dates are holidays
@@ -835,6 +887,16 @@ const buybackDealController = {
           success: false,
           error: 'Both leg1 and leg2 data are required'
         });
+      }
+
+      // Read-only/computed values must be populated; blank values must not be saved.
+      const leg1ComputedError = validateComputedLegValues(leg1, 'Leg 1');
+      if (leg1ComputedError) {
+        return res.status(400).json({ success: false, error: leg1ComputedError });
+      }
+      const leg2ComputedError = validateComputedLegValues(leg2, 'Leg 2');
+      if (leg2ComputedError) {
+        return res.status(400).json({ success: false, error: leg2ComputedError });
       }
 
       // Only rejected deals are editable; edited deals are re-submitted for verification
