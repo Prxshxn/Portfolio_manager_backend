@@ -23,6 +23,12 @@ const {
   postFinalApprovedSellLedger
 } = require('./gsecApprovalLedgerService');
 
+// Buyback-specific asset accounts (distinct from the standard GSec trading accounts)
+// so Buy/Sell buyback holdings post to dedicated buyback ledgers. Used on the buy
+// leg (DR) and on the sell-leg reversal (CR) so the accounts net to zero.
+const BUYBACK_TREASURY_ACCOUNT = '131-101-350-204-44'; // Treasury Bonds - Trading A/C (Buyback)
+const BUYBACK_ACCRUED_ACCOUNT = '131-101-350-208-44'; // Accrued Coupon Interest Paid at Purchase - TBond Trading (Buyback)
+
 function toYmd(d) {
   if (!d) return null;
   const x = new Date(d);
@@ -147,7 +153,11 @@ async function postBuySellBuybackLedger(bb, opts = {}) {
       if (dryRun) {
         action.status = 'would_post';
       } else {
-        const r = await postFinalApprovedBuyLedger(buyLike, { descriptionPrefix: prefix });
+        const r = await postFinalApprovedBuyLedger(buyLike, {
+          descriptionPrefix: prefix,
+          treasuryAccountOverride: BUYBACK_TREASURY_ACCOUNT,
+          accruedAccountOverride: BUYBACK_ACCRUED_ACCOUNT
+        });
         action.status = r.success ? 'posted' : 'failed';
         if (!r.success) action.error = r.error;
       }
@@ -196,7 +206,9 @@ async function postBuySellBuybackLedger(bb, opts = {}) {
       } else {
         const r = await postFinalApprovedSellLedger(sellLike, {
           descriptionPrefix: prefix,
-          buyDealOverride
+          buyDealOverride,
+          treasuryAccountOverride: BUYBACK_TREASURY_ACCOUNT,
+          accruedAtPurchaseAccountOverride: BUYBACK_ACCRUED_ACCOUNT
         });
         action.status = r.success ? (r.legacy ? 'posted_legacy' : 'posted') : 'failed';
         if (!r.success) action.error = r.error;
