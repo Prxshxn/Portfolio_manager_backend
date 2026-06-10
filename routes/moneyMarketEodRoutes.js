@@ -11,6 +11,7 @@ const {
   getBuyRowsForDeal: getGsecBuyRowsForDeal,
   postGsecMaturityLedger
 } = require('../services/gsecMaturityLedgerService');
+const tbillLedgerService = require('../services/tbillLedgerService');
 // You may need to adjust this path to your ledger posting API
 const postLedgerEntry = require('../controllers/ledgerController').postLedgerEntry;
 console.log ("started eod page");
@@ -1287,10 +1288,80 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
       console.error('Error in GSec maturity block:', err);
     }
 
+    // --- T-Bill daily discount accrual + maturity (redemption) posting ---
+    console.log('--- T-Bill EOD posting block reached ---');
+    let tbillAccrualPostedCount = 0;
+    let tbillAccrualSkippedCount = 0;
+    let tbillMaturityPostedCount = 0;
+    let tbillMaturitySkippedCount = 0;
+    try {
+      const [tbillAccrualDeals] = await db.query(
+        `SELECT * FROM tbill
+         WHERE transaction_type = 'Buy'
+           AND status = 'final_approved'
+           AND COALESCE(matured, 0) = 0
+           AND maturity_date IS NOT NULL
+           AND DATE(maturity_date) > DATE(?)
+           AND value_date IS NOT NULL
+           AND DATE(value_date) <= DATE(?)
+           AND COALESCE(remaining_face_value, face_value, 0) > 0`,
+        [systemDay, systemDay]
+      );
+      console.log('T-Bill accrual deals loaded:', tbillAccrualDeals.length);
+
+      for (const deal of tbillAccrualDeals) {
+        try {
+          const r = await tbillLedgerService.postTbillDailyAccrual(deal, systemDay);
+          if (!r.success) {
+            console.error('T-Bill accrual ledger post failed:', deal.deal_number, r.error);
+          } else if (r.posted) {
+            tbillAccrualPostedCount++;
+          } else if (r.skipped === 'already_posted') {
+            tbillAccrualSkippedCount++;
+          }
+        } catch (err) {
+          console.error('Failed T-Bill accrual for deal:', deal.deal_number, err);
+        }
+      }
+
+      const [maturingTbillDeals] = await db.query(
+        `SELECT * FROM tbill
+         WHERE transaction_type = 'Buy'
+           AND status = 'final_approved'
+           AND COALESCE(matured, 0) = 0
+           AND maturity_date IS NOT NULL
+           AND DATE(maturity_date) <= DATE(?)
+           AND COALESCE(remaining_face_value, face_value, 0) > 0`,
+        [tomorrowStr]
+      );
+      console.log('T-Bill deals due for maturity redemption:', maturingTbillDeals.length);
+
+      for (const buyRow of maturingTbillDeals) {
+        try {
+          const r = await tbillLedgerService.postTbillMaturityLedger(buyRow);
+          if (!r.success) {
+            console.error('T-Bill maturity redemption post failed:', buyRow.deal_number, r.error);
+          } else if (r.posted) {
+            tbillMaturityPostedCount++;
+            console.log(`T-Bill maturity redemption posted: ${buyRow.deal_number}`);
+          } else if (r.skipped === 'already_posted') {
+            tbillMaturitySkippedCount++;
+          }
+        } catch (err) {
+          console.error('Failed to post T-Bill maturity for deal:', buyRow.deal_number, err);
+        }
+      }
+      console.log(
+        `T-Bill EOD summary: accrual posted=${tbillAccrualPostedCount}, accrual already_posted_skipped=${tbillAccrualSkippedCount}, maturity posted=${tbillMaturityPostedCount}, maturity already_posted_skipped=${tbillMaturitySkippedCount}`
+      );
+    } catch (err) {
+      console.error('Error in T-Bill EOD block:', err);
+    }
+
     await setSystemDay(tomorrowStr);
     res.json({
       success: true,
-      message: `EOD complete. Posted for ${postedCount} money market deals, ${gsecPostedCount} GSec accrual deals, ${gsecAmortPostedCount} GSec amortization, ${gsecCouponPostedCount} GSec coupon settlements, ${gsecMaturityPostedCount} GSec maturity redemptions, ${fdPostedCount} fixed deposit deals, and ${repoAccrualCount} repo accrual + ${repoMaturityCount} repo maturity + ${repoBackfillCount} repo backfill entries.`,
+      message: `EOD complete. Posted for ${postedCount} money market deals, ${gsecPostedCount} GSec accrual deals, ${gsecAmortPostedCount} GSec amortization, ${gsecCouponPostedCount} GSec coupon settlements, ${gsecMaturityPostedCount} GSec maturity redemptions, ${fdPostedCount} fixed deposit deals, ${repoAccrualCount} repo accrual + ${repoMaturityCount} repo maturity + ${repoBackfillCount} repo backfill entries, and ${tbillAccrualPostedCount} T-Bill accrual + ${tbillMaturityPostedCount} T-Bill maturity entries.`,
       next_system_day: tomorrowStr,
       gsec_eod: {
         daily_accrual: {
@@ -1311,6 +1382,16 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
         },
         buyback_leg2_buy_posted: buybackLeg2BuyPosted,
         buyback_buy_sell_posted: buybackBuySellPosted
+      },
+      tbill_eod: {
+        daily_accrual: {
+          posted: tbillAccrualPostedCount,
+          skipped_already_posted: tbillAccrualSkippedCount
+        },
+        maturity_redemption: {
+          posted: tbillMaturityPostedCount,
+          skipped_already_posted: tbillMaturitySkippedCount
+        }
       }
     });
   } catch (err) {
