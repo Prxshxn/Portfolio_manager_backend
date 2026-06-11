@@ -250,6 +250,7 @@ const BuybackDeal = {
       leg2_settlement_mode = ?, leg2_face_value = ?, leg2_adjusted_face_value = ?, leg2_yield_rate = ?, leg2_settlement_amount = ?,
       leg2_clean_price = ?, leg2_dirty_price = ?, leg2_accrued_interest = ?,
       notes = ?, fund_movement = ?, deal_status = ?,
+      source_buy_deal_number = ?, sell_deal_allocations = ?,
       approved_at = CASE
         WHEN ? = 'Approved' AND approved_at IS NULL THEN NOW()
         ELSE approved_at
@@ -275,6 +276,10 @@ const BuybackDeal = {
       dealData.notes,
       String(dealData.fund_movement || 'no').toLowerCase() === 'yes' ? 'yes' : 'no',
       dealData.deal_status || 'Pending_Verification',
+      dealData.source_buy_deal_number || null,
+      dealData.sell_deal_allocations != null
+        ? JSON.stringify(dealData.sell_deal_allocations)
+        : null,
       dealData.deal_status || 'Pending_Verification',
       id
     ];

@@ -31,7 +31,10 @@ const REQUIRED_COLUMNS = {
   authorized_by: 'VARCHAR(128) NULL',
   authorized_at: 'DATETIME NULL',
   buy_deal_number: 'VARCHAR(64) NULL',
-  remaining_face_value: 'DECIMAL(20,4) NULL'
+  remaining_face_value: 'DECIMAL(20,4) NULL',
+  per_day_accrual: 'DECIMAL(20,8) NULL DEFAULT 0',
+  accrued_interest_to_date: 'DECIMAL(20,8) NULL DEFAULT 0',
+  matured: 'TINYINT(1) NULL DEFAULT 0'
 };
 
 const UPDATE_WHITELIST = [
@@ -134,7 +137,10 @@ async function ensureTbillSchema() {
         authorized_by VARCHAR(128) NULL,
         authorized_at DATETIME NULL,
         buy_deal_number VARCHAR(64) NULL,
-        remaining_face_value DECIMAL(20,4) NULL
+        remaining_face_value DECIMAL(20,4) NULL,
+        per_day_accrual DECIMAL(20,8) NULL DEFAULT 0,
+        accrued_interest_to_date DECIMAL(20,8) NULL DEFAULT 0,
+        matured TINYINT(1) NULL DEFAULT 0
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
     return;
@@ -337,14 +343,22 @@ const Tbill = {
     return { insertId: result.insertId, dealNumber };
   },
 
-  updateBuyRemainingFaceValue: async (buyDealNumber, soldAmount, connection = null) => {
+  updateBuyRemainingFaceValue: async (buyDealNumber, soldAmount, connection = null, buyDealId = null) => {
     const queryFn = connection ? connection.query.bind(connection) : db.query.bind(db);
-    const [buyDeals] = await queryFn(
-      'SELECT * FROM tbill WHERE deal_number = ? AND transaction_type = "Buy"',
-      [buyDealNumber]
-    );
+    let buyDeals;
+    if (buyDealNumber) {
+      [buyDeals] = await queryFn(
+        'SELECT * FROM tbill WHERE deal_number = ? AND transaction_type = "Buy"',
+        [buyDealNumber]
+      );
+    } else if (buyDealId) {
+      [buyDeals] = await queryFn(
+        'SELECT * FROM tbill WHERE id = ? AND transaction_type = "Buy"',
+        [buyDealId]
+      );
+    }
     if (!buyDeals || !buyDeals.length) {
-      throw new Error(`Buy deal not found: ${buyDealNumber}`);
+      throw new Error(`Buy deal not found: ${buyDealNumber || buyDealId}`);
     }
     const buyDeal = buyDeals[0];
     const original = parseFloat(buyDeal.remaining_face_value ?? buyDeal.face_value ?? 0);
@@ -418,8 +432,14 @@ const Tbill = {
     return rows
       .map((deal) => {
         const originalFace = Number(deal.face_value) || 0;
+        // Prefer the persisted remaining_face_value (maintained by updateBuyRemainingFaceValue).
+        // Fall back to recalculating from sell records only for legacy rows where it is null.
+        const dbRemaining = deal.remaining_face_value !== null && deal.remaining_face_value !== undefined
+          ? Number(deal.remaining_face_value)
+          : null;
         const soldAmount = Number(soldByDeal[deal.deal_number] || 0);
-        const remainingFace = Math.max(0, originalFace - soldAmount);
+        const calculatedRemaining = Math.max(0, originalFace - soldAmount);
+        const remainingFace = dbRemaining !== null ? dbRemaining : calculatedRemaining;
         return {
           ...deal,
           face_value: originalFace.toFixed(2),
@@ -525,6 +545,40 @@ const Tbill = {
       : [newStatus, newApprovalLevel, authorizedBy, id];
 
     const [result] = await db.query(sql, values);
+
+    // On final approval, post Buy/Sell ledger entries (mirrors gsec.updateStatus).
+    if (newStatus === 'final_approved' && newApprovalLevel === 'final_approved') {
+      try {
+        const [updatedTx] = await db.query('SELECT * FROM tbill WHERE id = ?', [id]);
+        const transaction = updatedTx && updatedTx[0];
+        if (transaction) {
+          const [existingEntries] = await db.query(
+            'SELECT COUNT(*) as cnt FROM ledger_entries WHERE deal_number = ?',
+            [transaction.deal_number]
+          );
+          if (existingEntries[0].cnt === 0) {
+            const tbillLedgerService = require('../services/tbillLedgerService');
+            if (transaction.transaction_type === 'Buy') {
+              const ledgerResult = await tbillLedgerService.postFinalApprovedBuyLedger(transaction);
+              if (!ledgerResult.success) {
+                console.error('Failed to post T-Bill buy ledger:', ledgerResult.error);
+              }
+            } else if (transaction.transaction_type === 'Sell') {
+              const ledgerResult = await tbillLedgerService.postFinalApprovedSellLedger(transaction);
+              if (!ledgerResult.success) {
+                console.error('Failed to post T-Bill sell ledger:', ledgerResult.error);
+              }
+            }
+          } else {
+            console.log(`Ledger entries already exist for T-Bill deal ${transaction.deal_number}, skipping creation`);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to post T-Bill ledger entry:', err);
+        // Don't throw - status update should still succeed.
+      }
+    }
+
     return {
       affectedRows: result.affectedRows,
       status: newStatus,

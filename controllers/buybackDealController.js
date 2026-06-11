@@ -66,6 +66,36 @@ const validateComputedLegValues = (leg, legName) => {
   return null;
 };
 
+/**
+ * For a Sell/Buy buyback the Leg 1 Sell must be backed by explicit buy-deal
+ * allocations selected from the sell holdings modal. Without them the approval
+ * step cannot deduct from (or post the sell GL against) specific buy deals, which
+ * leaves the GSEC report and stored balances inconsistent. Enforce that a Sell
+ * Leg 1 always carries at least one valid allocation.
+ *
+ * @param {object} leg1 - leg1 payload (frontend-shaped)
+ * @param {Array} sellDeals - allocations from the sell modal [{ deal_number|buy_deal_number, amountToSell }]
+ * @returns {string|null} error message when invalid, otherwise null
+ */
+const validateSellLegAllocations = (leg1, sellDeals) => {
+  const isSell = String(leg1?.transactionType || '').toLowerCase() === 'sell';
+  if (!isSell) return null;
+
+  if (!Array.isArray(sellDeals) || sellDeals.length === 0) {
+    return 'Leg 1 (Sell): you must allocate buy deals from the sell holdings modal before the deal can be saved.';
+  }
+
+  for (const d of sellDeals) {
+    const dealNo = d?.deal_number || d?.buy_deal_number;
+    const amt = Number(d?.amountToSell);
+    if (!dealNo || !Number.isFinite(amt) || amt <= 0) {
+      return 'Leg 1 (Sell): each allocated buy deal must have a deal number and a positive amount to sell.';
+    }
+  }
+
+  return null;
+};
+
 /** Post settlement only once the book system day is on or after leg2 value date (same rule as GSec EOD). */
 function valueDateOnOrBeforeSystemDay(valueDate, systemDay) {
   if (valueDate == null || systemDay == null) return false;
@@ -99,6 +129,12 @@ const buybackDealController = {
       const leg2ComputedError = validateComputedLegValues(leg2, 'Leg 2');
       if (leg2ComputedError) {
         return res.status(400).json({ success: false, error: leg2ComputedError });
+      }
+
+      // A Sell Leg 1 must carry buy-deal allocations from the sell holdings modal.
+      const sellAllocationError = validateSellLegAllocations(leg1, sellDeals);
+      if (sellAllocationError) {
+        return res.status(400).json({ success: false, error: sellAllocationError });
       }
 
       // Holiday validation - check if transaction dates are holidays
@@ -880,7 +916,7 @@ const buybackDealController = {
   updateDeal: async (req, res) => {
     try {
       const { id } = req.params;
-      const { leg1, leg2, fund_movement } = req.body;
+      const { leg1, leg2, fund_movement, sellDeals, source_buy_deal_number } = req.body;
 
       if (!leg1 || !leg2) {
         return res.status(400).json({
@@ -897,6 +933,12 @@ const buybackDealController = {
       const leg2ComputedError = validateComputedLegValues(leg2, 'Leg 2');
       if (leg2ComputedError) {
         return res.status(400).json({ success: false, error: leg2ComputedError });
+      }
+
+      // A Sell Leg 1 must carry buy-deal allocations from the sell holdings modal.
+      const sellAllocationError = validateSellLegAllocations(leg1, sellDeals);
+      if (sellAllocationError) {
+        return res.status(400).json({ success: false, error: sellAllocationError });
       }
 
       // Only rejected deals are editable; edited deals are re-submitted for verification
@@ -993,7 +1035,15 @@ const buybackDealController = {
         notes: req.body.notes,
         fund_movement: String(fund_movement || existingDeal.fund_movement || 'no').toLowerCase() === 'yes' ? 'yes' : 'no',
         // Re-submit edited rejected deals into the approval pipeline
-        deal_status: 'Pending_Verification'
+        deal_status: 'Pending_Verification',
+        source_buy_deal_number: source_buy_deal_number || null,
+        // Persist per-deal allocations so the re-submitted deal keeps its buy-deal linkage
+        sell_deal_allocations: Array.isArray(sellDeals) && sellDeals.length > 0
+          ? sellDeals.map(d => ({
+              deal_number: d.deal_number || d.buy_deal_number,
+              amountToSell: Number(d.amountToSell) || 0
+            }))
+          : null
       };
 
       const result = await BuybackDeal.update(id, dealData);

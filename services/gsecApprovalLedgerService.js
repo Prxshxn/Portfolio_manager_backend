@@ -104,9 +104,11 @@ async function postFinalApprovedBuyLedger(transaction, options = {}) {
   }
 
   const treasuryBondsAccount =
+    options.treasuryAccountOverride ||
     (await accountMapping.getAccountCodeOptional(accountMapping.MAPPING_KEYS.GSEC_TRADING_ACCOUNT)) ||
     '131-101-350-098-44';
   const accruedInterestAccount =
+    options.accruedAccountOverride ||
     (await accountMapping.getAccountCodeOptional(accountMapping.MAPPING_KEYS.GSEC_ACCRUED_INTEREST_PAID)) ||
     '131-101-350-128-44';
 
@@ -326,9 +328,11 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
   const capitalGl = truncate8(sellSettlement - sumKnownCr + sumKnownDr);
 
   const tradingAccount =
+    options.treasuryAccountOverride ||
     (await accountMapping.getAccountCodeOptional(accountMapping.MAPPING_KEYS.GSEC_TRADING_ACCOUNT)) ||
     '131-101-350-098-44';
   const accruedAtPurchaseAccount =
+    options.accruedAtPurchaseAccountOverride ||
     (await accountMapping.getAccountCodeOptional(accountMapping.MAPPING_KEYS.GSEC_ACCRUED_INTEREST_PAID)) ||
     '131-101-350-128-44';
   const amortAccount =
@@ -337,7 +341,9 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
   const couponIncomeAccount =
     (await accountMapping.getAccountCodeOptional(accountMapping.MAPPING_KEYS.GSEC_COUPON_INCOME)) ||
     '467-101-190-476-44';
-  const capitalGainLossAccount = '358-101-130-398-44';
+  const capitalGainLossAccount =
+    (await accountMapping.getAccountCodeOptional(accountMapping.MAPPING_KEYS.GSEC_CAPITAL_GAIN_LOSS)) ||
+    '358-101-130-398-44';
   const accruedIncomeAccount =
     (await accountMapping.getAccountCodeOptional(accountMapping.MAPPING_KEYS.GSEC_ACCRUAL_INCOME)) ||
     '467-101-190-470-44';

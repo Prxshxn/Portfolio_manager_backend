@@ -76,8 +76,21 @@ exports.create = async (req, res) => {
       let firstResult = null;
       const created = [];
 
-      for (const sell of sellDeals) {
-        if (!sell?.buy_deal_number) {
+      for (let sell of sellDeals) {
+        // Resolve buy_deal_number from the numeric id fallback when it is null/empty
+        // (deals created before deal_number generation was added may have null deal_number)
+        if (!sell?.buy_deal_number && (sell?.buy_deal_id || sell?.id)) {
+          const buyId = sell.buy_deal_id || sell.id;
+          const [rows] = await connection.query(
+            'SELECT id, deal_number FROM tbill WHERE id = ? AND transaction_type = "Buy"',
+            [buyId]
+          );
+          if (rows[0]) {
+            sell = { ...sell, buy_deal_number: rows[0].deal_number, _resolved_id: rows[0].id };
+          }
+        }
+
+        if (!sell?.buy_deal_number && !sell?._resolved_id) {
           await connection.rollback();
           return res.status(400).json({
             success: false,
@@ -90,7 +103,7 @@ exports.create = async (req, res) => {
           await connection.rollback();
           return res.status(400).json({
             success: false,
-            message: `Invalid sell amount for buy deal ${sell.buy_deal_number}`
+            message: `Invalid sell amount for buy deal ${sell.buy_deal_number || sell._resolved_id}`
           });
         }
 
@@ -104,19 +117,24 @@ exports.create = async (req, res) => {
           ...priced.payload,
           dealNumber: null,
           transactionType: 'Sell',
-          buyDealNumber: sell.buy_deal_number,
+          buyDealNumber: sell.buy_deal_number || null,
           portfolio: sell.portfolio || body.portfolio
         };
 
         const result = await Tbill.createWithConnection(legPayload, connection);
         if (!firstResult) firstResult = result;
 
-        await Tbill.updateBuyRemainingFaceValue(sell.buy_deal_number, amountToSell, connection);
+        await Tbill.updateBuyRemainingFaceValue(
+          sell.buy_deal_number || null,
+          amountToSell,
+          connection,
+          sell._resolved_id || null
+        );
 
         created.push({
           id: result.insertId,
           deal_number: result.dealNumber,
-          buy_deal_number: sell.buy_deal_number,
+          buy_deal_number: sell.buy_deal_number || null,
           amountToSell
         });
       }
