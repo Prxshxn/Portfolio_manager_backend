@@ -166,6 +166,9 @@ async function postBuySellBuybackLedger(bb, opts = {}) {
   }
 
   // ---- leg2 = Sell ---------------------------------------------------------
+  // A Buy/Sell buyback sells back exactly what leg1 bought, so the sell leg is a
+  // single ledger entry with NO sell allocations and NO portfolio/holding deduction.
+  // It is linked to leg1's buy context purely to derive full P&L.
   if (bb.leg2_transaction_type === 'Sell') {
     const synthetic = `${bb.deal_number}/BB-L2/SELL`;
     const action = { leg: 'leg2', type: 'Sell', deal_number: synthetic, status: 'pending' };

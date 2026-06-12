@@ -132,11 +132,17 @@ exports.login = async (req, res) => {
       effectiveRole = bestAssignment.role;
       // allowed_pages is a JSON string or array
       if (bestAssignment.allowed_pages) {
+        let assignmentPages;
         try {
-          allowedTabs = Array.isArray(bestAssignment.allowed_pages) ? bestAssignment.allowed_pages : JSON.parse(bestAssignment.allowed_pages);
+          assignmentPages = Array.isArray(bestAssignment.allowed_pages) ? bestAssignment.allowed_pages : JSON.parse(bestAssignment.allowed_pages);
         } catch {
-          allowedTabs = [bestAssignment.allowed_pages];
+          assignmentPages = [bestAssignment.allowed_pages];
         }
+        // Merge (union) the assignment's pages with the user's own allowed_tabs so that
+        // granting report/master rights via an authorizer assignment is additive rather
+        // than wiping the user's existing tab access.
+        const baseTabs = Array.isArray(allowedTabs) ? allowedTabs : [];
+        allowedTabs = Array.from(new Set([...baseTabs, ...assignmentPages]));
       }
     }
     

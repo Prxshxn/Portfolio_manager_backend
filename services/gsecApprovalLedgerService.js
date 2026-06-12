@@ -430,6 +430,41 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
       ? [{ account_code: accruedReceivableAccount, amount: holdingCouponIncome, description: reversalDescription }]
       : [];
 
+  // Preview mode: return the fully-computed journal without posting anything.
+  if (options.dryRun) {
+    return {
+      success: true,
+      dryRun: true,
+      date: sellDate,
+      deal_id: dealId,
+      main: { dr_lines: mainDrClean, cr_lines: mainCrClean, description: mainDescription },
+      reversal:
+        reversalDr.length && reversalCr.length
+          ? { dr_lines: reversalDr, cr_lines: reversalCr, description: reversalDescription }
+          : null,
+      computed: {
+        sellFace,
+        buyFace,
+        scale,
+        buyClean,
+        buyDirty,
+        sellClean,
+        sellDirty,
+        carryClean,
+        sellSettlement,
+        sellAccruedPer100,
+        buyAccruedPer100,
+        holdingPeriodAccruedPer100,
+        treasuryBondsAmt,
+        accruedAtPurchaseAmt,
+        amortToSell,
+        holdingCouponIncome,
+        capitalGl,
+        holdingDays
+      }
+    };
+  }
+
   const postMulti = ledgerController.postMultiLineLedgerEntry;
   if (typeof postMulti !== 'function') {
     return { success: false, error: 'postMultiLineLedgerEntry is not available in ledgerController' };
