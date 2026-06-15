@@ -25,7 +25,10 @@ function findCouponPeriodFromMaturity(settlement, maturity, frequency) {
   let next = new Date(maturity);
   let prev = new Date(maturity);
   prev.setMonth(prev.getMonth() - monthsPerPeriod);
-  while (settle <= prev) {
+  // Strict "<" so that a settlement date landing exactly on a coupon date is
+  // treated as the start of the new period (0 days accrued), not the end of
+  // the previous one (full period accrued).
+  while (settle < prev) {
     next = new Date(prev);
     prev = new Date(prev);
     prev.setMonth(prev.getMonth() - monthsPerPeriod);
