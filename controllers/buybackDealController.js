@@ -96,6 +96,100 @@ const validateSellLegAllocations = (leg1, sellDeals) => {
   return null;
 };
 
+/** Buyback workflow states that have NOT yet deducted from buy-deal holdings.
+ *  Deduction happens at the 'Approved' transition, so any deal still in one of
+ *  these states still holds an outstanding claim on the buy deal's balance. */
+const UNDEDUCTED_BUYBACK_STATUSES = ['Draft', 'Pending_Verification', 'Verified', 'Pending_Final_Approval'];
+
+/** Read a buy deal's current available face value (remaining, falling back to full face). */
+const getBuyDealRemaining = async (buyDealNumber) => {
+  const [rows] = await db.query(
+    `SELECT remaining_face_value, face_value FROM gsec
+     WHERE deal_number = ? AND transaction_type = 'Buy' LIMIT 1`,
+    [buyDealNumber]
+  );
+  if (!rows || rows.length === 0) return null; // signals "not found"
+  const r = rows[0];
+  return parseFloat(r.remaining_face_value != null ? r.remaining_face_value : r.face_value || 0) || 0;
+};
+
+/** Sum amounts that other not-yet-deducted buybacks have already earmarked against a buy deal. */
+const sumOutstandingBuybackClaims = async (buyDealNumber, excludeDealNumber = null) => {
+  const [rows] = await db.query(
+    `SELECT deal_number, sell_deal_allocations FROM buyback_deals
+     WHERE leg1_transaction_type = 'Sell'
+       AND sell_deal_allocations IS NOT NULL
+       AND deal_status IN (${UNDEDUCTED_BUYBACK_STATUSES.map(() => '?').join(',')})`,
+    UNDEDUCTED_BUYBACK_STATUSES
+  );
+  let total = 0;
+  for (const row of rows) {
+    if (excludeDealNumber && row.deal_number === excludeDealNumber) continue;
+    let allocs;
+    try {
+      allocs = typeof row.sell_deal_allocations === 'string'
+        ? JSON.parse(row.sell_deal_allocations)
+        : row.sell_deal_allocations;
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(allocs)) continue;
+    for (const a of allocs) {
+      const dn = a?.deal_number || a?.buy_deal_number;
+      if (dn === buyDealNumber) total += Number(a?.amountToSell) || 0;
+    }
+  }
+  return total;
+};
+
+/**
+ * Cumulative availability guard for a Sell Leg 1.
+ *
+ * The historical oversell happened because remaining_face_value is only decremented
+ * at final approval, so multiple pending buybacks could each be created against the
+ * SAME buy deal's full balance and then all approved, posting more sell ledger than
+ * the holding ever contained. This rejects an allocation whose requested amount —
+ * together with what other still-pending buybacks have already earmarked — exceeds
+ * the buy deal's available balance.
+ *
+ * @param {object} leg1
+ * @param {Array} sellDeals
+ * @param {string|null} excludeDealNumber  deal being edited (so it doesn't count itself)
+ * @returns {Promise<string|null>} error message when invalid, otherwise null
+ */
+const validateBuyDealAvailability = async (leg1, sellDeals, excludeDealNumber = null) => {
+  const isSell = String(leg1?.transactionType || '').toLowerCase() === 'sell';
+  if (!isSell || !Array.isArray(sellDeals) || sellDeals.length === 0) return null;
+
+  // Aggregate requested amount per buy deal (a deal may be listed more than once).
+  const requestedByDeal = new Map();
+  for (const d of sellDeals) {
+    const dn = d?.deal_number || d?.buy_deal_number;
+    const amt = Number(d?.amountToSell) || 0;
+    if (!dn || amt <= 0) continue;
+    requestedByDeal.set(dn, (requestedByDeal.get(dn) || 0) + amt);
+  }
+
+  for (const [dn, requested] of requestedByDeal.entries()) {
+    const remaining = await getBuyDealRemaining(dn);
+    if (remaining === null) {
+      return `Leg 1 (Sell): buy deal ${dn} was not found.`;
+    }
+    const earmarked = await sumOutstandingBuybackClaims(dn, excludeDealNumber);
+    const available = remaining - earmarked;
+    if (requested > available + 0.0001) {
+      return (
+        `Leg 1 (Sell): the amount allocated from buy deal ${dn} ` +
+        `(${requested.toLocaleString()}) exceeds its available balance ` +
+        `(${available.toLocaleString()}; ${remaining.toLocaleString()} remaining` +
+        (earmarked > 0 ? ` less ${earmarked.toLocaleString()} already earmarked by other pending buybacks` : '') +
+        `). Reduce the amount or pick another buy deal.`
+      );
+    }
+  }
+  return null;
+};
+
 /** Post settlement only once the book system day is on or after leg2 value date (same rule as GSec EOD). */
 function valueDateOnOrBeforeSystemDay(valueDate, systemDay) {
   if (valueDate == null || systemDay == null) return false;
@@ -135,6 +229,13 @@ const buybackDealController = {
       const sellAllocationError = validateSellLegAllocations(leg1, sellDeals);
       if (sellAllocationError) {
         return res.status(400).json({ success: false, error: sellAllocationError });
+      }
+
+      // Reject allocations that would oversell a buy deal once other pending
+      // buybacks' outstanding claims are taken into account.
+      const availabilityError = await validateBuyDealAvailability(leg1, sellDeals);
+      if (availabilityError) {
+        return res.status(400).json({ success: false, error: availabilityError });
       }
 
       // Holiday validation - check if transaction dates are holidays
@@ -357,6 +458,57 @@ const buybackDealController = {
           success: false,
           error: 'Invalid status for update'
         });
+      }
+
+      // Authoritative oversell guard at the moment of final approval: deduction posts
+      // the FULL allocated amount to the ledger but the holding can only be reduced by
+      // what's left, so an over-allocation would silently desync holdings vs ledger.
+      // Block approval (before any status change or posting) if any allocation exceeds
+      // the buy deal's current remaining balance.
+      if (status === 'Approved') {
+        const [apprRows] = await db.query(
+          `SELECT leg1_transaction_type, sell_deal_allocations FROM buyback_deals WHERE id = ? LIMIT 1`,
+          [id]
+        );
+        const apprDeal = apprRows && apprRows[0];
+        if (apprDeal && apprDeal.leg1_transaction_type === 'Sell' && apprDeal.sell_deal_allocations) {
+          let apprAllocs = null;
+          try {
+            apprAllocs = typeof apprDeal.sell_deal_allocations === 'string'
+              ? JSON.parse(apprDeal.sell_deal_allocations)
+              : apprDeal.sell_deal_allocations;
+          } catch {
+            apprAllocs = null;
+          }
+          if (Array.isArray(apprAllocs) && apprAllocs.length > 0) {
+            const requestedByDeal = new Map();
+            for (const a of apprAllocs) {
+              const dn = a?.deal_number || a?.buy_deal_number;
+              const amt = Number(a?.amountToSell) || 0;
+              if (!dn || amt <= 0) continue;
+              requestedByDeal.set(dn, (requestedByDeal.get(dn) || 0) + amt);
+            }
+            for (const [dn, requested] of requestedByDeal.entries()) {
+              const remaining = await getBuyDealRemaining(dn);
+              if (remaining === null) {
+                return res.status(400).json({
+                  success: false,
+                  error: `Cannot approve: linked buy deal ${dn} no longer exists.`
+                });
+              }
+              if (requested > remaining + 0.0001) {
+                return res.status(400).json({
+                  success: false,
+                  error:
+                    `Cannot approve: the amount allocated from buy deal ${dn} ` +
+                    `(${requested.toLocaleString()}) exceeds its remaining balance ` +
+                    `(${remaining.toLocaleString()}). Another deal likely consumed it first. ` +
+                    `Edit the buyback to re-allocate before approving.`
+                });
+              }
+            }
+          }
+        }
       }
 
       // Determine which field to update based on action and status
@@ -955,6 +1107,17 @@ const buybackDealController = {
           success: false,
           error: 'Only rejected deals can be edited'
         });
+      }
+
+      // Reject allocations that would oversell a buy deal (excluding this deal's own
+      // outstanding claim so an edit isn't double-counted).
+      const availabilityError = await validateBuyDealAvailability(
+        leg1,
+        sellDeals,
+        existingDeal.deal_number
+      );
+      if (availabilityError) {
+        return res.status(400).json({ success: false, error: availabilityError });
       }
 
       // Holiday validation - check if updated transaction dates are holidays

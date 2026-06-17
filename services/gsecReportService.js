@@ -638,6 +638,35 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       cumulativeAccrual = 0;
     }
 
+    // Last/next coupon date as at the report date (asAtDate), derived from the ISIN
+    // coupon calendar rather than the stored deal field (which reflects deal entry).
+    // Format from local Y/M/D components; using toISOString() here would shift the
+    // calendar date back one day in positive-offset timezones (e.g. 15-Nov -> 14-Nov).
+    const fmtLocalYmd = (dt) => {
+      if (!dt) return null;
+      const y = dt.getFullYear();
+      const m = String(dt.getMonth() + 1).padStart(2, '0');
+      const d = String(dt.getDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    };
+    let lastCouponDate = null;
+    let nextCouponDate = null;
+    try {
+      const { coupon_date_1: lc1, coupon_date_2: lc2 } = resolveIsinCouponDates({
+        isin_number: row.isin,
+        coupon_date_1: row.coupon_date_1,
+        coupon_date_2: row.coupon_date_2
+      });
+      const lcSched = getCouponPeriodLengthDaysFromIsinSchedule(effectiveAsAt, row.maturity_date, lc1, lc2);
+      if (lcSched) {
+        lastCouponDate = fmtLocalYmd(lcSched.lastCoupon);
+        nextCouponDate = fmtLocalYmd(lcSched.nextCoupon);
+      }
+    } catch (_) {
+      lastCouponDate = null;
+      nextCouponDate = null;
+    }
+
     return {
       id: row.id,
       product_type: 'GSec',
@@ -646,9 +675,13 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       deal_number: row.deal_number || '',
       // Face Value column: stored remaining_face_value on the buy row when set, else sell/buyback-derived
       face_value: formatCurrency(row.effective_remaining_face ?? row.face_value, 2),
+      issue_date: row.issue_date || null,
+      last_coupon_date: lastCouponDate,
+      next_coupon_date: nextCouponDate,
       value_date: row.value_date,
       maturity_date: row.maturity_date,
       isin: row.isin,
+      coupon_rate: formatPercentage(row.coupon_rate, 4),
       coupon_interest: formatPrice(row.coupon_interest, 4),
       clean_price: formatPrice(row.clean_price, 4),
       dirty_price: formatPrice(row.dirty_price, 4),
