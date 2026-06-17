@@ -19,9 +19,13 @@ const EXPORT_COLUMNS = [
   { key: 'custodian', label: 'Custodian' },
   { key: 'deal_number', label: 'Deal Number' },
   { key: 'face_value', label: 'Face Value' },
+  { key: 'issue_date', label: 'Issue Date' },
   { key: 'value_date', label: 'Value Date' },
+  { key: 'last_coupon_date', label: 'Last Coupon Date' },
+  { key: 'next_coupon_date', label: 'Next Coupon Date' },
   { key: 'maturity_date', label: 'Maturity Date' },
   { key: 'isin', label: 'ISIN' },
+  { key: 'coupon_rate', label: 'Coupon Rate' },
   { key: 'coupon_interest', label: 'Coupon Interest' },
   { key: 'clean_price', label: 'Clean Price' },
   { key: 'dirty_price', label: 'Dirty Price' },
@@ -175,11 +179,14 @@ function preprocessExportData(data) {
     const mapped = {};
     EXPORT_COLUMNS.forEach(col => {
       let val = row[col.key];
-      if (col.key === 'value_date' || col.key === 'maturity_date') {
+      if (col.key === 'value_date' || col.key === 'maturity_date' ||
+          col.key === 'issue_date' || col.key === 'last_coupon_date' ||
+          col.key === 'next_coupon_date') {
         val = formatDate(val);
       }
       // 4 decimal places (prices / rates as returned by GSEC report API)
       if ([
+        'coupon_rate',
         'coupon_interest',
         'yield',
         'balance',
@@ -322,6 +329,7 @@ exports.export = async (format, data, summary = []) => {
   if (format === 'excel') {
     const numeric2dpKeys = new Set(['face_value', 'sell_back', 'clean_price_amount', 'dirty_price_amount']);
     const numeric4dpKeys = new Set([
+      'coupon_rate',
       'coupon_interest',
       'yield',
       'balance',
@@ -420,9 +428,13 @@ exports.export = async (format, data, summary = []) => {
       { key: 'custodian', label: 'Custodian', width: 60, align: 'left' },
       { key: 'deal_number', label: 'Deal Number', width: 60, align: 'left' },
       { key: 'face_value', label: 'Face Value', width: 50, align: 'right' },
+      { key: 'issue_date', label: 'Issue Date', width: 60, align: 'center' },
       { key: 'value_date', label: 'Value Date', width: 60, align: 'center' },
+      { key: 'last_coupon_date', label: 'Last Coupon Date', width: 70, align: 'center' },
+      { key: 'next_coupon_date', label: 'Next Coupon Date', width: 70, align: 'center' },
       { key: 'maturity_date', label: 'Maturity Date', width: 70, align: 'center' },
       { key: 'isin', label: 'ISIN', width: 80, align: 'left' },
+      { key: 'coupon_rate', label: 'Coupon Rate', width: 50, align: 'right' },
       { key: 'coupon_interest', label: 'Coupon Interest', width: 60, align: 'right' },
       { key: 'clean_price', label: 'Clean Price', width: 50, align: 'right' },
       { key: 'dirty_price', label: 'Dirty Price', width: 50, align: 'right' },
