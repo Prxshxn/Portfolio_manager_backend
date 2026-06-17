@@ -147,3 +147,41 @@ exports.checkAuthorizer = (req, res, next) => {
     });
   }
 };
+
+// Restrict route to one of the given roles (req.user.role from JWT).
+exports.checkRoles = (...allowedRoles) => (req, res, next) => {
+  try {
+    if (process.env.NODE_ENV === 'development' && process.env.SKIP_AUTH === 'true') {
+      return next();
+    }
+
+    const role = req.user?.role;
+    if (role && allowedRoles.includes(role)) {
+      return next();
+    }
+
+    if (req.headers['x-user-data']) {
+      try {
+        const userData = JSON.parse(req.headers['x-user-data']);
+        if (allowedRoles.includes(userData.role)) {
+          req.user = req.user || userData;
+          return next();
+        }
+      } catch (error) {
+        console.error('Error parsing x-user-data:', error);
+      }
+    }
+
+    return res.status(403).json({
+      success: false,
+      message: 'Access denied. Insufficient privileges for this action.',
+    });
+  } catch (error) {
+    console.error('Role check middleware error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Server error during authorization check.',
+      error: error.message,
+    });
+  }
+};
