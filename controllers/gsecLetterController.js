@@ -188,6 +188,12 @@ async function buildLetterContext(dealId) {
     throw err;
   }
 
+  if (String(deal.status || '').toLowerCase() !== 'final_approved') {
+    const err = new Error('Instruction letter is only available after final approval.');
+    err.status = 403;
+    throw err;
+  }
+
   const txType = String(deal.transaction_type || '').toLowerCase();
   const fundMovementIsYes = String(deal.fund_movement || 'no').toLowerCase() === 'yes';
   const isBuy = txType === 'buy';

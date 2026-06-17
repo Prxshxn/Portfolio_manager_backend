@@ -2,6 +2,9 @@ const express = require('express');
 const router = express.Router();
 const db = require('../models/gsec'); // Adjust if your DB/model import is different
 const gsecLetterController = require('../controllers/gsecLetterController');
+const { checkAuth, checkRoles } = require('../middleware/auth');
+
+const GSEC_LETTER_ROLES = ['back_office_verifier', 'back_office_final', 'admin'];
 
 /**
  * @swagger
@@ -175,7 +178,12 @@ router.get('/buy-deals-with-balance', async (req, res) => {
  *       200: { description: OK }
  *       404: { description: Deal not found }
  */
-router.get('/:id/letter', gsecLetterController.getLetterData);
+router.get(
+  '/:id/letter',
+  checkAuth,
+  checkRoles(...GSEC_LETTER_ROLES),
+  gsecLetterController.getLetterData
+);
 
 /**
  * @swagger
@@ -193,6 +201,11 @@ router.get('/:id/letter', gsecLetterController.getLetterData);
  *       200: { description: HTML document }
  *       404: { description: Deal not found }
  */
-router.get('/:id/letter/html', gsecLetterController.getLetterHtml);
+router.get(
+  '/:id/letter/html',
+  checkAuth,
+  checkRoles(...GSEC_LETTER_ROLES),
+  gsecLetterController.getLetterHtml
+);
 
 module.exports = router;
