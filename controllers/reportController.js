@@ -312,7 +312,7 @@ exports.getBuybackReport = async (req, res) => {
 
     // Handle export formats
     if (format === 'csv' || format === 'excel' || format === 'pdf') {
-      const fileBuffer = await reportExporter.export(format, data);
+      const fileBuffer = await reportExporter.exportBuyback(format, data);
       res.setHeader('Content-Disposition', `attachment; filename=buyback_report.${format === 'excel' ? 'xlsx' : format}`);
       res.setHeader('Content-Type', reportExporter.getMimeType(format));
       return res.send(fileBuffer);

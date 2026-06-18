@@ -97,6 +97,27 @@ exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturi
 
   const whereSql = whereParts.length ? `WHERE ${whereParts.join(' AND ')}` : '';
 
+  const counterpartyJoinSql = `
+    LEFT JOIN counterparty_master_corporate corp1
+      ON (bd.leg1_counterparty LIKE 'c%' AND CAST(SUBSTRING(bd.leg1_counterparty, 2) AS UNSIGNED) = corp1.id)
+      OR (bd.leg1_counterparty = corp1.id)
+    LEFT JOIN counterparty_master_individual ind1
+      ON (bd.leg1_counterparty LIKE 'i%' AND CAST(SUBSTRING(bd.leg1_counterparty, 2) AS UNSIGNED) = ind1.id)
+      OR (bd.leg1_counterparty = ind1.id)
+    LEFT JOIN counterparty_master_joint joint1
+      ON (bd.leg1_counterparty LIKE 'j%' AND CAST(SUBSTRING(bd.leg1_counterparty, 2) AS UNSIGNED) = joint1.id)
+      OR (bd.leg1_counterparty = joint1.id)
+    LEFT JOIN counterparty_master_corporate corp2
+      ON (bd.leg2_counterparty LIKE 'c%' AND CAST(SUBSTRING(bd.leg2_counterparty, 2) AS UNSIGNED) = corp2.id)
+      OR (bd.leg2_counterparty = corp2.id)
+    LEFT JOIN counterparty_master_individual ind2
+      ON (bd.leg2_counterparty LIKE 'i%' AND CAST(SUBSTRING(bd.leg2_counterparty, 2) AS UNSIGNED) = ind2.id)
+      OR (bd.leg2_counterparty = ind2.id)
+    LEFT JOIN counterparty_master_joint joint2
+      ON (bd.leg2_counterparty LIKE 'j%' AND CAST(SUBSTRING(bd.leg2_counterparty, 2) AS UNSIGNED) = joint2.id)
+      OR (bd.leg2_counterparty = joint2.id)
+  `;
+
   const selectSql = `
     SELECT
       bd.id,
@@ -126,11 +147,23 @@ exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturi
       bd.leg2_portfolio,
       bd.leg2_settlement_amount,
       bd.leg2_currency,
+      COALESCE(
+        corp1.short_name,
+        ind1.short_name,
+        joint1.short_name,
+        corp2.short_name,
+        ind2.short_name,
+        joint2.short_name,
+        bd.leg1_counterparty,
+        bd.leg2_counterparty,
+        ''
+      ) AS counterparty_name,
       ${hasVerifiedBy ? 'bd.verified_by' : 'NULL as verified_by'},
       ${hasVerifiedAt ? 'bd.verified_at' : 'NULL as verified_at'},
       ${hasApprovedBy ? 'bd.approved_by' : 'NULL as approved_by'},
       ${hasApprovedAt ? 'bd.approved_at' : 'NULL as approved_at'}
     FROM buyback_deals bd
+    ${counterpartyJoinSql}
     ${whereSql}
     ORDER BY bd.leg1_value_date DESC, bd.created_at DESC
   `;
@@ -171,7 +204,7 @@ exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturi
     deal_id: row.id,
     deal_number: row.deal_number,
     portfolio: row.leg1_portfolio || row.leg2_portfolio || '',
-    counterparty: row.leg1_counterparty || row.leg2_counterparty || '',
+    counterparty: row.counterparty_name || row.leg1_counterparty || row.leg2_counterparty || '',
     isin: row.leg1_isin || row.leg2_isin || '',
     face_value: Number(row.leg1_face_value) || 0,
     leg1_clean_price: Number(row.leg1_clean_price) || 0,
