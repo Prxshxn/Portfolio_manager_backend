@@ -75,6 +75,9 @@ exports.getRepoReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
   if (asAtDate) {
     sql += ' AND rd.value_date <= ?';
     params.push(asAtDate);
+    // Open positions only as at the report date — exclude matured repo / reverse-repo deals.
+    sql += ' AND (rd.maturity_date IS NULL OR DATE(rd.maturity_date) > DATE(?))';
+    params.push(asAtDate);
   }
 
   sql += ' ORDER BY rd.value_date DESC, rd.id DESC';
@@ -138,6 +141,8 @@ exports.getRepoReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
   }
   if (asAtDate) {
     countSql += ' AND rd.value_date <= ?';
+    countParams.push(asAtDate);
+    countSql += ' AND (rd.maturity_date IS NULL OR DATE(rd.maturity_date) > DATE(?))';
     countParams.push(asAtDate);
   }
 
