@@ -1,13 +1,13 @@
 const { Parser } = require('json2csv');
 const ExcelJS = require('exceljs');
 const PDFDocument = require('pdfkit');
-const { parseISO, format } = require('date-fns');
+const { parseISO, format: formatDateFns } = require('date-fns');
 
 function formatDate(val) {
   if (!val) return '';
   try {
     const dateObj = typeof val === 'string' ? parseISO(val) : val;
-    return format(dateObj, 'dd-MMM-yyyy');
+    return formatDateFns(dateObj, 'dd-MMM-yyyy');
   } catch {
     return String(val).split('T')[0];
   }
@@ -54,6 +54,16 @@ const GSEC_SUMMARY_COLUMNS = [
   { key: 'weighted_avg_price', label: 'Weighted Average Price' },
   { key: 'weighted_yield', label: 'Weighted Yield' },
   { key: 'deal_count', label: 'Deals' }
+];
+
+// GSec PDF download only — compact layout with ISIN-wise face-value subtotals
+const GSEC_PDF_COLUMNS = [
+  { key: 'isin', label: 'ISIN', width: 175, align: 'left' },
+  { key: 'yield', label: 'Yield', width: 75, align: 'right' },
+  { key: 'value_date', label: 'Value Date', width: 95, align: 'center' },
+  { key: 'maturity_date', label: 'Maturity Date', width: 95, align: 'center' },
+  { key: 'face_value', label: 'Face Value', width: 115, align: 'right' },
+  { key: 'coupon_rate', label: 'Coupon Rate', width: 90, align: 'right' }
 ];
 
 // Columns for Portfolio report exports – mirror the on-screen Portfolio report
@@ -223,6 +233,87 @@ function preprocessExportData(data) {
     });
     return mapped;
   });
+}
+
+/** Build PDF-only rows: ISIN-sorted detail lines plus per-ISIN and grand face-value subtotals. */
+function buildGsecPdfTableRows(rawData, processedData) {
+  const paired = (rawData || []).map((raw, i) => ({
+    raw,
+    row: processedData[i] || {}
+  }));
+  paired.sort((a, b) => {
+    const ai = String(a.row.isin || '');
+    const bi = String(b.row.isin || '');
+    if (ai !== bi) return ai.localeCompare(bi);
+    return String(a.row.value_date || '').localeCompare(String(b.row.value_date || ''));
+  });
+
+  const result = [];
+  let currentIsin = null;
+  let groupSum = 0;
+
+  const pushSubtotal = (isin, sum, isGrand = false) => {
+    result.push({
+      _isSubtotal: true,
+      _isGrandTotal: isGrand,
+      isin: isGrand ? 'Grand Total' : `Subtotal — ${isin}`,
+      yield: '',
+      value_date: '',
+      maturity_date: '',
+      face_value: formatNumber2(sum),
+      coupon_rate: ''
+    });
+  };
+
+  for (const { raw, row } of paired) {
+    const isin = row.isin || '';
+    if (currentIsin !== null && isin !== currentIsin) {
+      pushSubtotal(currentIsin, groupSum);
+      groupSum = 0;
+    }
+    currentIsin = isin;
+    const fv = parseLocaleNumber(raw.face_value);
+    groupSum += Number.isFinite(fv) ? fv : (Number(raw.face_value) || 0);
+    result.push({ ...row, _isSubtotal: false, _isGrandTotal: false });
+  }
+
+  if (currentIsin !== null) {
+    pushSubtotal(currentIsin, groupSum);
+  }
+
+  const grandTotal = (rawData || []).reduce((sum, raw) => {
+    const fv = parseLocaleNumber(raw.face_value);
+    return sum + (Number.isFinite(fv) ? fv : (Number(raw.face_value) || 0));
+  }, 0);
+  pushSubtotal('', grandTotal, true);
+
+  return result;
+}
+
+function scalePdfColumnsToPage(columns, doc) {
+  const maxWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const totalWidth = columns.reduce((sum, col) => sum + col.width, 0);
+  if (totalWidth <= 0) return columns;
+  const scale = maxWidth / totalWidth;
+  columns.forEach(col => { col.width = Math.floor(col.width * scale); });
+  const used = columns.reduce((sum, col) => sum + col.width, 0);
+  const remainder = maxWidth - used;
+  if (remainder !== 0) columns[columns.length - 1].width += remainder;
+  return columns;
+}
+
+function drawPdfColumnGrid(doc, x, y, columns, height, stroke = '#d1d5db') {
+  let cx = x;
+  doc.save();
+  doc.lineWidth(0.5);
+  doc.strokeColor(stroke);
+  columns.forEach((col, idx) => {
+    if (idx > 0) {
+      doc.moveTo(cx, y).lineTo(cx, y + height).stroke();
+    }
+    cx += col.width;
+  });
+  doc.restore();
 }
 
 // Pre-processing specifically for Portfolio report exports
@@ -412,193 +503,109 @@ exports.export = async (format, data, summary = []) => {
     return workbook.xlsx.writeBuffer();
   }
   if (format === 'pdf') {
-    // Use landscape orientation for wider tables
-    const doc = new PDFDocument({ margin: 30, size: 'A4', layout: 'landscape' });
+    const pdfMargin = 16;
+    const doc = new PDFDocument({ margin: pdfMargin, size: 'A4', layout: 'landscape' });
     const buffers = [];
     doc.on('data', buffers.push.bind(buffers));
     doc.on('end', () => {});
 
-    // Title
-    doc.fontSize(20).font('Helvetica-Bold').text('GSec Product Report', { align: 'center' });
-    doc.moveDown(1);
-
-    // Table setup with all columns
-    const columns = [
-      { key: 'portfolio', label: 'Portfolio', width: 50, align: 'left' },
-      { key: 'custodian', label: 'Custodian', width: 60, align: 'left' },
-      { key: 'deal_number', label: 'Deal Number', width: 60, align: 'left' },
-      { key: 'face_value', label: 'Face Value', width: 50, align: 'right' },
-      { key: 'issue_date', label: 'Issue Date', width: 60, align: 'center' },
-      { key: 'value_date', label: 'Value Date', width: 60, align: 'center' },
-      { key: 'last_coupon_date', label: 'Last Coupon Date', width: 70, align: 'center' },
-      { key: 'next_coupon_date', label: 'Next Coupon Date', width: 70, align: 'center' },
-      { key: 'maturity_date', label: 'Maturity Date', width: 70, align: 'center' },
-      { key: 'isin', label: 'ISIN', width: 80, align: 'left' },
-      { key: 'coupon_rate', label: 'Coupon Rate', width: 50, align: 'right' },
-      { key: 'coupon_interest', label: 'Coupon Interest', width: 60, align: 'right' },
-      { key: 'clean_price', label: 'Clean Price', width: 50, align: 'right' },
-      { key: 'dirty_price', label: 'Dirty Price', width: 50, align: 'right' },
-      { key: 'clean_price_amount', label: 'Clean Price Amount', width: 60, align: 'right' },
-      { key: 'dirty_price_amount', label: 'Dirty Price Amount', width: 60, align: 'right' },
-      { key: 'nvp', label: 'NVP', width: 50, align: 'right' },
-      { key: 'yield', label: 'Yield', width: 40, align: 'right' },
-      { key: 'dtm', label: 'DTM', width: 40, align: 'center' },
-      { key: 'balance', label: 'Balance', width: 60, align: 'right' },
-      { key: 'available_balance', label: 'Available Balance', width: 60, align: 'right' },
-      { key: 'wap', label: 'WAP', width: 50, align: 'right' },
-      { key: 'repo_collateral', label: 'Repo Collateral', width: 60, align: 'right' },
-      { key: 'sell_back', label: 'Sell Back', width: 60, align: 'right' },
-      { key: 'counterparty', label: 'Counterparty', width: 50, align: 'left' }
-    ];
-
-    // Auto-scale columns to fit PDF page
-    function scaleColumnsToPage(columns, doc) {
-      const maxWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-      const totalWidth = columns.reduce((sum, col) => sum + col.width, 0);
-      if (totalWidth > maxWidth) {
-        const scale = maxWidth / totalWidth;
-        columns.forEach(col => { col.width = Math.floor(col.width * scale); });
+    const titleY = doc.page.margins.top;
+    doc.fontSize(12).font('Helvetica-Bold').text('GSec Product Report', doc.page.margins.left, titleY, {
+      width: doc.page.width - doc.page.margins.left - doc.page.margins.right,
+      align: 'center',
+      lineBreak: false
+    });
+    doc.fontSize(7).font('Helvetica').fillColor('#555555').text(
+      `Generated: ${formatDateFns(new Date(), 'dd-MMM-yyyy')}  |  Records: ${data.length}`,
+      doc.page.margins.left,
+      titleY + 14,
+      {
+        width: doc.page.width - doc.page.margins.left - doc.page.margins.right,
+        align: 'center',
+        lineBreak: false
       }
-      return columns;
-    }
+    );
+    doc.fillColor('#000000');
 
-    const scaledColumns = scaleColumnsToPage(columns, doc);
-    const rowHeight = 25;
-    const cellPadding = 4;
+    const pdfRows = buildGsecPdfTableRows(data, processedData);
+    const columns = scalePdfColumnsToPage(GSEC_PDF_COLUMNS.map(c => ({ ...c })), doc);
+    const headerRowH = 15;
+    const dataRowH = 13;
+    const subtotalRowH = 14;
+    const cellPadX = 3;
     const startX = doc.page.margins.left;
-    const maxRowsPerPage = Math.floor((doc.page.height - doc.page.margins.top - doc.page.margins.bottom - 100) / rowHeight);
+    const tableWidth = columns.reduce((a, c) => a + c.width, 0);
+    const pageBottom = () => doc.page.height - doc.page.margins.bottom;
 
-    // Function to draw table header
-    function drawTableHeader(doc, y) {
-      const tableTop = y;
-      const totalWidth = scaledColumns.reduce((a, c) => a + c.width, 0);
-      
-      // Header background
-      doc.rect(startX, tableTop, totalWidth, rowHeight).fillAndStroke('#f0f0f0', '#000000');
-      doc.fillColor('#000000').fontSize(9).font('Helvetica-Bold');
-      
+    const textY = (rowY, rowH, fontSize) => rowY + Math.max(2, (rowH - fontSize) / 2 - 1);
+
+    function drawTableHeader(y) {
+      doc.rect(startX, y, tableWidth, headerRowH).fillAndStroke('#2c5282', '#2c5282');
+      doc.fillColor('#ffffff').fontSize(7).font('Helvetica-Bold');
       let x = startX;
-      scaledColumns.forEach(col => {
-        doc.text(col.label, x + cellPadding, tableTop + 6, { 
-          width: col.width - 2 * cellPadding, 
-          align: col.align || 'left'
+      columns.forEach(col => {
+        doc.text(col.label, x + cellPadX, textY(y, headerRowH, 7), {
+          width: col.width - 2 * cellPadX,
+          align: col.align || 'left',
+          lineBreak: false
         });
         x += col.width;
       });
-      
-      return tableTop + rowHeight;
+      drawPdfColumnGrid(doc, startX, y, columns, headerRowH, '#4a6fa5');
+      doc.fillColor('#000000');
+      return y + headerRowH;
     }
 
-    // Function to draw table rows with page break handling
-    function drawTableRows(doc, data, startRow = 0) {
-      let currentY = doc.y;
-      let rowIndex = startRow;
-      
-      while (rowIndex < data.length) {
-        // Check if we need a new page
-        if (currentY + rowHeight > doc.page.height - doc.page.margins.bottom) {
+    function drawPdfRows(startY) {
+      let currentY = startY;
+      let detailIndex = 0;
+
+      for (const row of pdfRows) {
+        const isSubtotal = row._isSubtotal;
+        const isGrand = row._isGrandTotal;
+        const h = isSubtotal ? subtotalRowH : dataRowH;
+
+        if (currentY + h > pageBottom()) {
           doc.addPage();
-          currentY = drawTableHeader(doc, doc.page.margins.top + 20);
+          currentY = drawTableHeader(doc.page.margins.top + 4);
         }
-        
-        const row = data[rowIndex];
-        const totalWidth = scaledColumns.reduce((a, c) => a + c.width, 0);
-        
-        // Alternating row background
-        if (rowIndex % 2 === 1) {
-          doc.rect(startX, currentY, totalWidth, rowHeight).fill('#f8f8f8');
+
+        if (isGrand) {
+          doc.rect(startX, currentY, tableWidth, h).fillAndStroke('#d9e2ef', '#2c5282');
+          doc.font('Helvetica-Bold').fontSize(7).fillColor('#1a365d');
+        } else if (isSubtotal) {
+          doc.rect(startX, currentY, tableWidth, h).fillAndStroke('#edf2f7', '#a0aec0');
+          doc.font('Helvetica-Bold').fontSize(6.5).fillColor('#2d3748');
+        } else {
+          if (detailIndex % 2 === 1) {
+            doc.rect(startX, currentY, tableWidth, h).fill('#f8fafc');
+          }
+          doc.font('Helvetica').fontSize(6.5).fillColor('#000000');
         }
-        
-        // Draw row content
-        doc.font('Helvetica').fontSize(8).fillColor('#000000');
+
+        const fontSize = isSubtotal || isGrand ? (isGrand ? 7 : 6.5) : 6.5;
         let x = startX;
-        scaledColumns.forEach(col => {
-          let val = row[col.key] !== undefined ? String(row[col.key]) : '';
-          doc.text(val, x + cellPadding, currentY + 6, { 
-            width: col.width - 2 * cellPadding, 
-            align: col.align || 'left'
+        columns.forEach(col => {
+          const val = row[col.key] !== undefined && row[col.key] !== null ? String(row[col.key]) : '';
+          doc.text(val, x + cellPadX, textY(currentY, h, fontSize), {
+            width: col.width - 2 * cellPadX,
+            align: col.align || 'left',
+            lineBreak: false
           });
           x += col.width;
         });
-        
-        // Draw row border
-        doc.rect(startX, currentY, totalWidth, rowHeight).stroke('#cccccc');
-        
-        currentY += rowHeight;
-        rowIndex++;
+
+        doc.rect(startX, currentY, tableWidth, h).stroke(isGrand ? '#2c5282' : '#cbd5e1');
+        drawPdfColumnGrid(doc, startX, currentY, columns, h, '#e2e8f0');
+        currentY += h;
+        if (!isSubtotal) detailIndex += 1;
       }
-      
+
       return currentY;
     }
 
-    // Draw header
-    const headerY = drawTableHeader(doc, doc.page.margins.top + 50);
-    
-    // Draw all rows with page break handling
-    drawTableRows(doc, processedData, 0);
-
-    // Add summary at the end
-    doc.addPage();
-    doc.fontSize(16).font('Helvetica-Bold').text('Summary', { align: 'center' });
-    doc.moveDown(1);
-    
-    const totalBalance = data.reduce((sum, row) => sum + (Number(row.balance) || 0), 0);
-    const formattedTotalBalance = new Intl.NumberFormat('en-US', { 
-      minimumFractionDigits: 2, 
-      maximumFractionDigits: 2 
-    }).format(Math.trunc(totalBalance * 100) / 100);
-    
-    doc.fontSize(12).font('Helvetica').text(`Total Records: ${data.length}`, { align: 'left' });
-    doc.text(`Total Balance: ${formattedTotalBalance}`, { align: 'left' });
-
-    // ISIN-wise summary table
-    if (summaryRows.length) {
-      doc.moveDown(1.5);
-      doc.fontSize(14).font('Helvetica-Bold').text('ISIN-wise Summary', { align: 'left' });
-      doc.moveDown(0.5);
-
-      const sumCols = [
-        { key: 'isin', label: 'ISIN', width: 140, align: 'left' },
-        { key: 'total_face_value', label: 'Total Face Value', width: 140, align: 'right' },
-        { key: 'weighted_avg_price', label: 'Weighted Average Price', width: 150, align: 'right' },
-        { key: 'weighted_yield', label: 'Weighted Yield', width: 120, align: 'right' },
-        { key: 'deal_count', label: 'Deals', width: 60, align: 'right' }
-      ];
-      const sRowHeight = 22;
-      const sCellPad = 4;
-      const sStartX = doc.page.margins.left;
-
-      const drawSummaryHeader = (y) => {
-        const w = sumCols.reduce((a, c) => a + c.width, 0);
-        doc.rect(sStartX, y, w, sRowHeight).fillAndStroke('#f0f0f0', '#000000');
-        doc.fillColor('#000000').fontSize(9).font('Helvetica-Bold');
-        let x = sStartX;
-        sumCols.forEach(col => {
-          doc.text(col.label, x + sCellPad, y + 6, { width: col.width - 2 * sCellPad, align: col.align });
-          x += col.width;
-        });
-        return y + sRowHeight;
-      };
-
-      let sy = drawSummaryHeader(doc.y);
-      summaryRows.forEach((row, idx) => {
-        if (sy + sRowHeight > doc.page.height - doc.page.margins.bottom) {
-          doc.addPage();
-          sy = drawSummaryHeader(doc.page.margins.top);
-        }
-        const w = sumCols.reduce((a, c) => a + c.width, 0);
-        if (idx % 2 === 1) doc.rect(sStartX, sy, w, sRowHeight).fill('#f8f8f8');
-        doc.font('Helvetica').fontSize(8).fillColor('#000000');
-        let x = sStartX;
-        sumCols.forEach(col => {
-          const text = row[col.key] !== undefined && row[col.key] !== null ? String(row[col.key]) : '';
-          doc.text(text, x + sCellPad, sy + 6, { width: col.width - 2 * sCellPad, align: col.align });
-          x += col.width;
-        });
-        doc.rect(sStartX, sy, w, sRowHeight).stroke('#cccccc');
-        sy += sRowHeight;
-      });
-    }
+    const headerY = drawTableHeader(titleY + 28);
+    drawPdfRows(headerY);
 
     doc.end();
     return await new Promise(resolve => {
