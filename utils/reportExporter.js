@@ -111,6 +111,7 @@ const BUYBACK_EXPORT_COLUMNS = [
 
 // Repo + Reverse Repo report export columns
 const REPO_EXPORT_COLUMNS = [
+  { key: 'deal_number', label: 'Deal Number' },
   { key: 'deal_type', label: 'Deal Type' },
   { key: 'counterparty', label: 'Counterparty' },
   { key: 'settlement_mode', label: 'Settlement Mode' },
