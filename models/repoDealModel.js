@@ -21,6 +21,25 @@ const parseCounterpartyId = (value) => {
   return null;
 };
 
+function formatValueDateKey(valueDate) {
+  const d = valueDate instanceof Date ? valueDate : new Date(valueDate);
+  if (Number.isNaN(d.getTime())) return null;
+  return (
+    d.getFullYear().toString() +
+    String(d.getMonth() + 1).padStart(2, '0') +
+    String(d.getDate()).padStart(2, '0')
+  );
+}
+
+function getDealTypePrefix(dealType) {
+  return String(dealType || '').toLowerCase().includes('reverse') ? 'RVREPO' : 'REPO';
+}
+
+function resolveRepoDealNumber(deal) {
+  if (!deal) return '';
+  return deal.deal_number || deal.dealNumber || (deal.id != null ? String(deal.id) : '');
+}
+
 const ensureRepoDealColumns = async () => {
   const requiredColumns = {
     face_value_adjustment: 'DECIMAL(20,4) NULL',
@@ -49,103 +68,126 @@ const ensureRepoDealColumns = async () => {
 const RepoDeal = {
   // Create a new repo deal
   create: async (dealData) => {
-    try {
-      await ensureRepoDealColumns();
+    const MAX_ATTEMPTS = 5;
+    let attempt = 0;
+    let lastError;
 
-      const counterpartyId = parseCounterpartyId(dealData.counterparty);
+    while (attempt < MAX_ATTEMPTS) {
+      try {
+        await ensureRepoDealColumns();
 
-      // Calculate daily_accrual: interestAmount / tenor (truncated to 8 decimals)
-      let dailyAccrual = null;
-      const interestAmt = parseFloat(dealData.interestAmount);
-      const tenorVal = parseFloat(dealData.tenor);
-      if (interestAmt && tenorVal && tenorVal > 0) {
-        dailyAccrual = Math.floor((interestAmt / tenorVal) * 100000000) / 100000000;
-      }
+        const counterpartyId = parseCounterpartyId(dealData.counterparty);
 
-      const sql = `
+        // Calculate daily_accrual: interestAmount / tenor (truncated to 8 decimals)
+        let dailyAccrual = null;
+        const interestAmt = parseFloat(dealData.interestAmount);
+        const tenorVal = parseFloat(dealData.tenor);
+        if (interestAmt && tenorVal && tenorVal > 0) {
+          dailyAccrual = Math.floor((interestAmt / tenorVal) * 100000000) / 100000000;
+        }
+
+        if (!dealData.dealNumber && dealData.valueDate) {
+          dealData.dealNumber = await RepoDeal.generateNextDealNumber(dealData.valueDate, dealData.dealType);
+        }
+
+        const sql = `
          INSERT INTO repo_deals (
-           deal_type, counterparty_id, settlement_mode, trade_date, value_date, maturity_date,
+           deal_number, deal_type, counterparty_id, settlement_mode, trade_date, value_date, maturity_date,
            principal_amount, interest_amount, rate, maturity_amount, tenor,
            calculation_day_basis, isin_number, issue_date, haircut, face_value, face_value_adjustment, face_value_as_per_counterparty,
            fund_movement, status, approval_status, current_approval_level, comment, authorized_by, authorized_at, created_by,
            daily_accrual
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        `;
-       
-       const values = [
-         dealData.dealType,
-         counterpartyId,
-         dealData.settlementMode || null,
-         dealData.tradeDate,
-        dealData.valueDate,
-        dealData.maturityDate,
-        dealData.principalAmount,
-        dealData.interestAmount,
-        dealData.rate,
-        dealData.maturityAmount,
-        dealData.tenor,
-        dealData.calculationDayBasis,
-        dealData.isin,
-        dealData.issueDate,
-        dealData.haircut || 0,
-        dealData.faceValue || null,
-        dealData.faceValueAdjustment || 0,
-        dealData.faceValueAsPerCounterparty || null,
-        String(dealData.fundMovement || 'no').toLowerCase() === 'yes' ? 'yes' : 'no',
-        dealData.status || 'Pending',
-        dealData.approvalStatus || 'pending',
-        dealData.currentApprovalLevel || 'front_office',
-        dealData.comment || null,
-        dealData.authorizedBy || null,
-        dealData.authorizedAt || null,
-        dealData.createdBy,
-        dailyAccrual
-      ];
 
-      const [result] = await db.query(sql, values);
+        const values = [
+          dealData.dealNumber,
+          dealData.dealType,
+          counterpartyId,
+          dealData.settlementMode || null,
+          dealData.tradeDate,
+          dealData.valueDate,
+          dealData.maturityDate,
+          dealData.principalAmount,
+          dealData.interestAmount,
+          dealData.rate,
+          dealData.maturityAmount,
+          dealData.tenor,
+          dealData.calculationDayBasis,
+          dealData.isin,
+          dealData.issueDate,
+          dealData.haircut || 0,
+          dealData.faceValue || null,
+          dealData.faceValueAdjustment || 0,
+          dealData.faceValueAsPerCounterparty || null,
+          String(dealData.fundMovement || 'no').toLowerCase() === 'yes' ? 'yes' : 'no',
+          dealData.status || 'Pending',
+          dealData.approvalStatus || 'pending',
+          dealData.currentApprovalLevel || 'front_office',
+          dealData.comment || null,
+          dealData.authorizedBy || null,
+          dealData.authorizedAt || null,
+          dealData.createdBy,
+          dailyAccrual
+        ];
 
-      // Insert ISIN rows into child table if provided
-      const selectedIsins = Array.isArray(dealData.isins) ? dealData.isins : [];
-      const isinsToInsert = selectedIsins.length > 0
-        ? selectedIsins
-        : (dealData.isin ? [{ isin: dealData.isin, faceValue: dealData.faceValue }] : []);
+        const [result] = await db.query(sql, values);
 
-      if (isinsToInsert.length > 0) {
-        const filteredIsins = isinsToInsert.filter(i => i && (i.isin || i.isin_number));
-        if (filteredIsins.length > 0) {
-          const placeholders = filteredIsins.map(() => '(?, ?, ?)').join(', ');
-          const flatValues = filteredIsins.flatMap(i => [
-            result.insertId,
-            (i.isin || i.isin_number),
-            i.faceValue != null ? i.faceValue : null
-          ]);
-          const insertChildSql = `
+        // Insert ISIN rows into child table if provided
+        const selectedIsins = Array.isArray(dealData.isins) ? dealData.isins : [];
+        const isinsToInsert = selectedIsins.length > 0
+          ? selectedIsins
+          : (dealData.isin ? [{ isin: dealData.isin, faceValue: dealData.faceValue }] : []);
+
+        if (isinsToInsert.length > 0) {
+          const filteredIsins = isinsToInsert.filter(i => i && (i.isin || i.isin_number));
+          if (filteredIsins.length > 0) {
+            const placeholders = filteredIsins.map(() => '(?, ?, ?)').join(', ');
+            const flatValues = filteredIsins.flatMap(i => [
+              result.insertId,
+              (i.isin || i.isin_number),
+              i.faceValue != null ? i.faceValue : null
+            ]);
+            const insertChildSql = `
             INSERT INTO repo_deal_isins (repo_deal_id, isin_number, face_value)
             VALUES ${placeholders}
           `;
-          await db.query(insertChildSql, flatValues);
+            await db.query(insertChildSql, flatValues);
+          }
         }
+
+        // Capture cashflow for the new repo deal
+        try {
+          await CashflowCaptureService.captureRepoCashflow(
+            dealData.dealNumber,
+            dealData.dealType,
+            dealData.principalAmount,
+            dealData.tradeDate,
+            dealData.counterparty
+          );
+        } catch (cashflowError) {
+          console.error('Error capturing cashflow for repo deal:', cashflowError);
+        }
+
+        return {
+          id: result.insertId,
+          deal_number: dealData.dealNumber,
+          dealNumber: dealData.dealNumber,
+          ...dealData
+        };
+      } catch (error) {
+        if (error.code === 'ER_DUP_ENTRY' && String(error.sqlMessage || '').includes('unique_repo_deal_number')) {
+          attempt++;
+          dealData.dealNumber = null;
+          lastError = error;
+          continue;
+        }
+        console.error('Error creating repo deal:', error);
+        throw error;
       }
-      
-      // Capture cashflow for the new repo deal
-      try {
-        await CashflowCaptureService.captureRepoCashflow(
-          result.insertId,
-          dealData.dealType,
-          dealData.principalAmount,
-          dealData.tradeDate,
-          dealData.counterparty
-        );
-      } catch (cashflowError) {
-        console.error('Error capturing cashflow for repo deal:', cashflowError);
-        // Don't fail the main process if cashflow capture fails
-      }
-      
-      return { id: result.insertId, ...dealData };
-    } catch (error) {
-      console.error('Error creating repo deal:', error);
-      throw error;
     }
+
+    throw lastError || new Error('Failed to generate unique repo deal number after retries');
   },
 
   // Get all repo deals with optional filters
@@ -593,7 +635,7 @@ const RepoDeal = {
       const query = `
         SELECT 
           rd.id,
-          rd.id as deal_number,
+          rd.deal_number,
           rd.counterparty_id,
           COALESCE(
             corp.short_name,
@@ -639,7 +681,7 @@ const RepoDeal = {
         FROM repo_deals rd
         WHERE rd.approval_status = 'final_approved'
           AND NOT EXISTS (
-            SELECT 1 FROM ledger_entries le WHERE le.deal_number = rd.id
+            SELECT 1 FROM ledger_entries le WHERE le.deal_number = rd.deal_number
           )
       `;
       const params = [];
@@ -678,7 +720,7 @@ const RepoDeal = {
           }
 
           if (!bankAccount) {
-            errors.push(`Deal ${deal.id}: no settlement bank account resolved for settlement_mode=${deal.settlement_mode}`);
+            errors.push(`Deal ${resolveRepoDealNumber(deal)}: no settlement bank account resolved for settlement_mode=${deal.settlement_mode}`);
             continue;
           }
 
@@ -694,15 +736,15 @@ const RepoDeal = {
             // Asset-side Repo: DR Reverse Repo asset, CR Bank
             drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REPO_REVERSE_REPO_ASSET);
             crAccount = bankAccount;
-            description = `Repo Purchase (Backfill) - Deal ${deal.id}`;
+            description = `Repo Purchase (Backfill) - Deal ${resolveRepoDealNumber(deal)}`;
           } else if (deal.deal_type === 'Reverse Repo') {
             // Reverse Repo borrowing: DR Bank, CR Repo liability
             drAccount = bankAccount;
             crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REVERSE_REPO_LIABILITY);
-            description = `Reverse Repo Borrowing (Backfill) - Deal ${deal.id}`;
+            description = `Reverse Repo Borrowing (Backfill) - Deal ${resolveRepoDealNumber(deal)}`;
           } else {
             // Unknown type - skip
-            errors.push(`Deal ${deal.id}: unsupported deal_type=${deal.deal_type} for backfill`);
+            errors.push(`Deal ${resolveRepoDealNumber(deal)}: unsupported deal_type=${deal.deal_type} for backfill`);
             continue;
           }
 
@@ -711,17 +753,17 @@ const RepoDeal = {
             dr_account: drAccount,
             cr_account: crAccount,
             amount: Number(deal.principal_amount),
-            deal_id: String(deal.id),
+            deal_id: resolveRepoDealNumber(deal),
             description
           });
 
           if (result.success) {
             processed++;
           } else {
-            errors.push(`Deal ${deal.id}: ${result.error}`);
+            errors.push(`Deal ${resolveRepoDealNumber(deal)}: ${result.error}`);
           }
         } catch (err) {
-          errors.push(`Deal ${deal.id}: ${err.message}`);
+          errors.push(`Deal ${resolveRepoDealNumber(deal)}: ${err.message}`);
         }
       }
 
@@ -739,4 +781,37 @@ const RepoDeal = {
   }
 };
 
+RepoDeal.getLatestDealNumber = async (dateStr, prefix) => {
+  const [results] = await db.query(
+    'SELECT deal_number FROM repo_deals WHERE deal_number LIKE ? ORDER BY deal_number DESC LIMIT 1',
+    [`${dateStr}/${prefix}/%`]
+  );
+  return results[0] ? results[0].deal_number : null;
+};
+
+RepoDeal.generateNextDealNumber = async (valueDate, dealType) => {
+  const dateStr = formatValueDateKey(valueDate);
+  if (!dateStr) {
+    throw new Error('Invalid value date for repo deal number generation');
+  }
+  const prefix = getDealTypePrefix(dealType);
+  try {
+    const latest = await RepoDeal.getLatestDealNumber(dateStr, prefix);
+    let nextSeq = 1;
+    if (latest) {
+      const parts = latest.split('/');
+      if (parts.length >= 3) {
+        const seqNum = parseInt(parts[2], 10);
+        if (!Number.isNaN(seqNum)) nextSeq = seqNum + 1;
+      }
+    }
+    return `${dateStr}/${prefix}/${String(nextSeq).padStart(4, '0')}`;
+  } catch (error) {
+    console.error('[ERROR] Failed to generate repo deal number:', error);
+    const timestamp = Date.now().toString().slice(-4);
+    return `${dateStr}/${prefix}/${timestamp}`;
+  }
+};
+
 module.exports = RepoDeal;
+module.exports.resolveRepoDealNumber = resolveRepoDealNumber;
