@@ -583,7 +583,7 @@ async function getMaturitiesWithApprovalLevel(db, productType, date) {
     case 'repo':
       tableName = 'repo_deals';
       dealIdField = 'rd.id';
-      dealNumberField = 'rd.id';
+      dealNumberField = 'rd.deal_number';
       principalField = 'rd.principal_amount';
       interestField = 'rd.interest_amount';
       maturityField = 'rd.maturity_amount';
@@ -978,7 +978,7 @@ async function handlePrincipalInterestFullPayment(dealIds, processDate, bankAcco
         WHERE g.id = ?
         UNION ALL
         SELECT 
-          rd.id, rd.id as deal_number, 'repo' as deal_type, rd.principal_amount, rd.rate as interest_rate,
+          rd.id, rd.deal_number, 'repo' as deal_type, rd.principal_amount, rd.rate as interest_rate,
           rd.maturity_date, rd.counterparty_id, rd.isin_number as isin,
           c.name as counterparty_name,
           'lending' as deal_direction
@@ -1224,7 +1224,7 @@ async function handlePrincipalReinvestInterestPaid(dealIds, processDate, bankAcc
         WHERE g.id = ?
         UNION ALL
         SELECT 
-          rd.id, rd.id as deal_number, 'repo' as deal_type, rd.principal_amount, rd.rate as interest_rate,
+          rd.id, rd.deal_number, 'repo' as deal_type, rd.principal_amount, rd.rate as interest_rate,
           rd.maturity_date, rd.counterparty_id, rd.isin_number as isin,
           c.name as counterparty_name,
           'lending' as deal_direction
@@ -1353,7 +1353,7 @@ async function handlePrincipalInterestReinvest(dealIds, processDate, res) {
         WHERE g.id = ?
         UNION ALL
         SELECT 
-          rd.id, rd.id as deal_number, 'repo' as deal_type, rd.principal_amount, rd.rate as interest_rate,
+          rd.id, rd.deal_number, 'repo' as deal_type, rd.principal_amount, rd.rate as interest_rate,
           rd.maturity_date, rd.counterparty_id, rd.isin_number as isin,
           c.name as counterparty_name,
           'lending' as deal_direction
@@ -1477,7 +1477,7 @@ async function handleDifferentAmountReinvest(dealIds, processDate, res) {
         WHERE g.id = ?
         UNION ALL
         SELECT 
-          rd.id, rd.id as deal_number, 'repo' as deal_type, rd.principal_amount, rd.rate as interest_rate,
+          rd.id, rd.deal_number, 'repo' as deal_type, rd.principal_amount, rd.rate as interest_rate,
           rd.maturity_date, rd.counterparty_id, rd.isin_number as isin,
           c.name as counterparty_name,
           'lending' as deal_direction
@@ -2717,7 +2717,7 @@ MaturityController.getPrematureMaturityDeals = async (req, res) => {
       const repoQuery = `
         SELECT 
           rd.id,
-          CONCAT('REPO-', rd.id) as deal_number,
+          rd.deal_number,
           rd.isin_number as isin,
           rd.counterparty_id as counterparty,
           COALESCE(
@@ -2938,7 +2938,7 @@ MaturityController.processPrematureMaturity = async (req, res) => {
               (deal_id, deal_number, maturity_action, principal_amount, interest_amount, total_amount,
                processed_date, processed_by, authorization_level, notes)
               SELECT 
-                id, CONCAT('REPO-', id), 'premature_maturity', principal_amount, interest_amount, maturity_amount,
+                id, deal_number, 'premature_maturity', principal_amount, interest_amount, maturity_amount,
                 ?, ?, 'system', ?
               FROM repo_deals WHERE id = ?
             `, [dateStr, userId, `Premature maturity: Original maturity date updated to ${dateStr}`, dealId]);

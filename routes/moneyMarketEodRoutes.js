@@ -12,6 +12,7 @@ const {
   postGsecMaturityLedger
 } = require('../services/gsecMaturityLedgerService');
 const tbillLedgerService = require('../services/tbillLedgerService');
+const { resolveRepoDealNumber } = require('../models/repoDealModel');
 // You may need to adjust this path to your ledger posting API
 const postLedgerEntry = require('../controllers/ledgerController').postLedgerEntry;
 console.log ("started eod page");
@@ -920,16 +921,17 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
     // Backfill: post purchase entries for final_approved repo deals missing ledger entries
     try {
       const [repoBackfillDeals] = await db.query(
-        `SELECT rd.id, rd.deal_type, rd.principal_amount, rd.settlement_mode, rd.value_date
+        `SELECT rd.id, rd.deal_number, rd.deal_type, rd.principal_amount, rd.settlement_mode, rd.value_date
          FROM repo_deals rd
          WHERE rd.approval_status = 'final_approved'
            AND NOT EXISTS (
-             SELECT 1 FROM ledger_entries le WHERE le.deal_number = rd.id
+             SELECT 1 FROM ledger_entries le WHERE le.deal_number = rd.deal_number
            )`
       );
       console.log('Repo deals to backfill:', repoBackfillDeals.length);
 
       for (const deal of repoBackfillDeals) {
+        const dealNumber = resolveRepoDealNumber(deal);
         try {
           let bankAccount = null;
           if (deal.settlement_mode) {
@@ -956,11 +958,11 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
           if (deal.deal_type === 'Repo') {
             drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REPO_REVERSE_REPO_ASSET);
             crAccount = bankAccount;
-            description = `Repo Purchase (Backfill) - Deal ${deal.id}`;
+            description = `Repo Purchase (Backfill) - Deal ${dealNumber}`;
           } else if (deal.deal_type === 'Reverse Repo') {
             drAccount = bankAccount;
             crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REVERSE_REPO_LIABILITY);
-            description = `Reverse Repo Borrowing (Backfill) - Deal ${deal.id}`;
+            description = `Reverse Repo Borrowing (Backfill) - Deal ${dealNumber}`;
           } else {
             console.warn(`Skipping backfill for repo deal ${deal.id}: unsupported deal_type=${deal.deal_type}`);
             continue;
@@ -971,11 +973,11 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
             dr_account: drAccount,
             cr_account: crAccount,
             amount: Number(deal.principal_amount),
-            deal_id: String(deal.id),
+            deal_id: dealNumber,
             description
           });
           if (!isLedgerPostOk(lr)) {
-            console.error('Repo backfill ledger post failed:', deal.id, lr && lr.error);
+            console.error('Repo backfill ledger post failed:', dealNumber, lr && lr.error);
             continue;
           }
           repoBackfillCount++;
@@ -990,7 +992,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
     // Daily accrual posting for active repo deals
     try {
       const [repoAccrualDeals] = await db.query(
-        `SELECT id, deal_type, daily_accrual, value_date, maturity_date
+        `SELECT id, deal_number, deal_type, daily_accrual, value_date, maturity_date
          FROM repo_deals
          WHERE approval_status = 'final_approved'
            AND daily_accrual IS NOT NULL AND daily_accrual > 0
@@ -1011,13 +1013,14 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
       );
 
       for (const deal of repoAccrualDeals) {
+        const dealNumber = resolveRepoDealNumber(deal);
         try {
           const amount = Number(deal.daily_accrual);
           if (isNaN(amount) || amount === 0) continue;
 
           if (deal.deal_type === 'Repo') {
-            const description = `Repo Daily Interest Accrual - Deal ${deal.id}`;
-            const key = `${String(deal.id)}|${description}`;
+            const description = `Repo Daily Interest Accrual - Deal ${dealNumber}`;
+            const key = `${dealNumber}|${description}`;
             if (repoAccrualAlready.has(key)) {
               continue;
             }
@@ -1028,18 +1031,18 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
               dr_account: drAccount,
               cr_account: crAccount,
               amount,
-              deal_id: String(deal.id),
+              deal_id: dealNumber,
               description
             });
             if (!isLedgerPostOk(lr)) {
-              console.error('Repo accrual ledger post failed:', deal.id, lr && lr.error);
+              console.error('Repo accrual ledger post failed:', dealNumber, lr && lr.error);
               continue;
             }
             repoAccrualAlready.add(key);
             repoAccrualCount++;
           } else if (deal.deal_type === 'Reverse Repo') {
-            const description = `Reverse Repo Daily Interest Accrual - Deal ${deal.id}`;
-            const key = `${String(deal.id)}|${description}`;
+            const description = `Reverse Repo Daily Interest Accrual - Deal ${dealNumber}`;
+            const key = `${dealNumber}|${description}`;
             if (repoAccrualAlready.has(key)) {
               continue;
             }
@@ -1050,11 +1053,11 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
               dr_account: drAccount,
               cr_account: crAccount,
               amount,
-              deal_id: String(deal.id),
+              deal_id: dealNumber,
               description
             });
             if (!isLedgerPostOk(lr)) {
-              console.error('Reverse repo accrual ledger post failed:', deal.id, lr && lr.error);
+              console.error('Reverse repo accrual ledger post failed:', dealNumber, lr && lr.error);
               continue;
             }
             repoAccrualAlready.add(key);
@@ -1076,7 +1079,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
     // Maturity entries for repo deals maturing tomorrow (day before maturity)
     try {
       const [maturingRepoDeals] = await db.query(
-        `SELECT id, deal_type, principal_amount, interest_amount, settlement_mode, maturity_date
+        `SELECT id, deal_number, deal_type, principal_amount, interest_amount, settlement_mode, maturity_date
          FROM repo_deals
          WHERE approval_status = 'final_approved'
            AND maturity_date = ? AND matured = 0`,
@@ -1097,6 +1100,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
       );
 
       for (const deal of maturingRepoDeals) {
+        const dealNumber = resolveRepoDealNumber(deal);
         try {
           let bankAccount = null;
           if (deal.settlement_mode) {
@@ -1127,8 +1131,8 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
 
           if (deal.deal_type === 'Repo') {
             const repoAsset = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REPO_REVERSE_REPO_ASSET);
-            const description = `Repo Maturity - Deal ${deal.id}`;
-            const maturityKey = `${String(deal.id)}|${description}`;
+            const description = `Repo Maturity - Deal ${dealNumber}`;
+            const maturityKey = `${dealNumber}|${description}`;
             if (repoMaturityAlready.has(maturityKey)) {
               await db.query("UPDATE repo_deals SET matured = 1, status = 'Matured' WHERE id = ?", [deal.id]);
               continue;
@@ -1138,20 +1142,20 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
               dr_account: bankAccount,
               cr_account: repoAsset,
               amount: maturityAmount,
-              deal_id: String(deal.id),
+              deal_id: dealNumber,
               description
             });
             if (!isLedgerPostOk(lr)) {
-              console.error('Repo maturity ledger post failed:', deal.id, lr && lr.error);
+              console.error('Repo maturity ledger post failed:', dealNumber, lr && lr.error);
               continue;
             }
             await db.query("UPDATE repo_deals SET matured = 1, status = 'Matured' WHERE id = ?", [deal.id]);
             repoMaturityAlready.add(maturityKey);
             repoMaturityCount++;
           } else if (deal.deal_type === 'Reverse Repo') {
-            const description = `Reverse Repo Maturity - Deal ${deal.id}`;
-            const reversalDescription = `Reverse Repo Interest Accrual Reversal - Deal ${deal.id}`;
-            const maturityKey = `${String(deal.id)}|${description}`;
+            const description = `Reverse Repo Maturity - Deal ${dealNumber}`;
+            const reversalDescription = `Reverse Repo Interest Accrual Reversal - Deal ${dealNumber}`;
+            const maturityKey = `${dealNumber}|${description}`;
             if (repoMaturityAlready.has(maturityKey)) {
               // If already posted previously (e.g., prior timed-out attempt), only mark matured.
               // Also flip status so collateral / availability queries that filter by
@@ -1172,18 +1176,18 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
 
             let postOk = true;
 
-            const reversalKey = `${String(deal.id)}|${reversalDescription}`;
+            const reversalKey = `${dealNumber}|${reversalDescription}`;
             if (interestAmount > 0 && !repoMaturityAlready.has(reversalKey)) {
               const reversal = await postLedgerEntry({
                 date: maturityEntryDate,
                 dr_account: interestPayable,
                 cr_account: accrualInterestExpense,
                 amount: interestAmount,
-                deal_id: String(deal.id),
+                deal_id: dealNumber,
                 description: reversalDescription
               });
               if (!isLedgerPostOk(reversal)) {
-                console.error('Reverse repo interest accrual reversal post failed:', deal.id, reversal && reversal.error);
+                console.error('Reverse repo interest accrual reversal post failed:', dealNumber, reversal && reversal.error);
                 postOk = false;
               } else {
                 repoMaturityAlready.add(reversalKey);
@@ -1196,11 +1200,11 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
                 dr_account: liabilityAccount,
                 cr_account: bankAccount,
                 amount: principalAmount,
-                deal_id: String(deal.id),
+                deal_id: dealNumber,
                 description
               });
               if (!isLedgerPostOk(principalLeg)) {
-                console.error('Reverse repo principal maturity post failed:', deal.id, principalLeg && principalLeg.error);
+                console.error('Reverse repo principal maturity post failed:', dealNumber, principalLeg && principalLeg.error);
                 postOk = false;
               }
             }
@@ -1211,11 +1215,11 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
                 dr_account: maturityInterestExpense,
                 cr_account: bankAccount,
                 amount: interestAmount,
-                deal_id: String(deal.id),
+                deal_id: dealNumber,
                 description
               });
               if (!isLedgerPostOk(interestLeg)) {
-                console.error('Reverse repo interest maturity post failed:', deal.id, interestLeg && interestLeg.error);
+                console.error('Reverse repo interest maturity post failed:', dealNumber, interestLeg && interestLeg.error);
                 postOk = false;
               }
             }

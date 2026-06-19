@@ -961,7 +961,7 @@ router.get('/settlement-preview', auth, async (req, res) => {
     ]);
 
     // ── 5. Repo / Reverse Repo – filtered by value_date ─────────────────────
-    // Ledger entries use deal_number = CAST(repo_deals.id AS CHAR)
+    // Ledger entries use deal_number = repo_deals.deal_number
     const repoExcl = [
       'Repo Daily Interest Accrual%',
       'Reverse Repo Daily Interest Accrual%',
@@ -974,7 +974,7 @@ router.get('/settlement-preview', auth, async (req, res) => {
     const [repoRows] = await db.query(`
       SELECT
         CASE WHEN rd.deal_type = 'Repo' THEN 'repo' ELSE 'reverse_repo' END AS category,
-        CAST(rd.id AS CHAR)         AS deal_number,
+        rd.deal_number              AS deal_number,
         rd.deal_type                AS transaction_type,
         DATE(rd.value_date)         AS transaction_date,
         MONTH(rd.value_date)        AS month_num,
@@ -991,7 +991,7 @@ router.get('/settlement-preview', auth, async (req, res) => {
         ca.name                     AS account_name
       FROM repo_deals rd
       LEFT JOIN ledger_entries le
-        ON  le.deal_number COLLATE utf8mb4_unicode_ci = CAST(rd.id AS CHAR) COLLATE utf8mb4_unicode_ci
+        ON  le.deal_number COLLATE utf8mb4_unicode_ci = rd.deal_number COLLATE utf8mb4_unicode_ci
         AND ${repoExclOn}
       LEFT JOIN chart_of_accounts ca ON ca.id = le.account_id
       WHERE rd.approval_status NOT IN ('Rejected', 'Cancelled')

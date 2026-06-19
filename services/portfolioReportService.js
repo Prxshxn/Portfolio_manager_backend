@@ -226,7 +226,7 @@ exports.getPortfolioReport = async ({ startDate, endDate, product, portfolio, pa
     let repoSql = `
       SELECT 
         'Repo' as product_type,
-        CONCAT('REPO-', rd.id) as deal_number,
+        rd.deal_number AS deal_number,
         rd.value_date,
         rd.trade_date,
         rd.isin_number as isin,

@@ -195,9 +195,9 @@ class CashflowCaptureService {
   }
 
   // Capture cashflow from Repo transactions
-  static async captureRepoCashflow(dealId, transactionType, amount, transactionDate, counterparty) {
+  static async captureRepoCashflow(dealNumber, transactionType, amount, transactionDate, counterparty) {
     try {
-      console.log(`Capturing Repo cashflow for deal ${dealId}, type: ${transactionType}`);
+      console.log(`Capturing Repo cashflow for deal ${dealNumber}, type: ${transactionType}`);
       
       const [categories] = await db.query(`
         SELECT id, name, type FROM cashflow_categories WHERE is_active = TRUE
@@ -221,8 +221,8 @@ class CashflowCaptureService {
             amount: amount,
             flow_type: 'outflow',
             currency: 'LKR',
-            description: `Repo Lending - Deal ${dealId}`,
-            reference_number: `REPO-${dealId}`,
+            description: `Repo Lending - Deal ${dealNumber}`,
+            reference_number: dealNumber,
             counterparty: counterparty,
             status: 'confirmed'
           });
@@ -238,8 +238,8 @@ class CashflowCaptureService {
             amount: amount,
             flow_type: 'inflow',
             currency: 'LKR',
-            description: `Repo Borrowing - Deal ${dealId}`,
-            reference_number: `REPO-${dealId}`,
+            description: `Repo Borrowing - Deal ${dealNumber}`,
+            reference_number: dealNumber,
             counterparty: counterparty,
             status: 'confirmed'
           });
@@ -421,7 +421,7 @@ class CashflowCaptureService {
       
       // Capture from Repo transactions
       const [repoRows] = await db.query(`
-        SELECT rd.id, rd.principal_amount, rd.trade_date, rd.counterparty_id
+        SELECT rd.id, rd.deal_number, rd.deal_type, rd.principal_amount, rd.trade_date, rd.counterparty_id
         FROM repo_deals rd
         WHERE rd.trade_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
         AND rd.principal_amount > 0
@@ -429,8 +429,8 @@ class CashflowCaptureService {
       
       for (const row of repoRows) {
         const captured = await this.captureRepoCashflow(
-          row.id,
-          'repo_in', // Assuming repo deals are lending
+          row.deal_number || String(row.id),
+          row.deal_type === 'Reverse Repo' ? 'borrowing' : 'repo_in',
           row.principal_amount,
           row.trade_date,
           row.counterparty_id

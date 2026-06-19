@@ -1,4 +1,5 @@
 const RepoDeal = require('../models/repoDealModel');
+const { resolveRepoDealNumber } = RepoDeal;
 const holidayValidationService = require('../services/holidayValidationService');
 
 const parseCounterpartyId = (value) => {
@@ -627,10 +628,12 @@ const repoDealController = {
           const ledgerController = require('./ledgerController');
           const accountMapping = require('../services/accountMappingService');
 
+          const dealNumber = resolveRepoDealNumber(updatedDeal);
+
           // Check if ledger entries already exist for this deal
           const [ledgerRows] = await db.query(
             'SELECT COUNT(*) as cnt FROM ledger_entries WHERE deal_number = ?',
-            [String(updatedDeal.id)]
+            [dealNumber]
           );
 
           if (ledgerRows[0].cnt === 0 && (updatedDeal.deal_type === 'Repo' || updatedDeal.deal_type === 'Reverse Repo')) {
@@ -651,7 +654,7 @@ const repoDealController = {
             }
 
             if (!bankAccount) {
-              console.error(`No settlement bank account resolved for repo deal ${updatedDeal.id}, settlement_mode: ${updatedDeal.settlement_mode}`);
+              console.error(`No settlement bank account resolved for repo deal ${dealNumber}, settlement_mode: ${updatedDeal.settlement_mode}`);
             } else {
               const valueDate = updatedDeal.value_date
                 ? new Date(updatedDeal.value_date).toISOString().slice(0, 10)
@@ -665,12 +668,12 @@ const repoDealController = {
                 // Asset-side Repo: DR Reverse Repo asset, CR Bank
                 drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REPO_REVERSE_REPO_ASSET);
                 crAccount = bankAccount;
-                description = `Repo Purchase - Deal ${updatedDeal.id}`;
+                description = `Repo Purchase - Deal ${dealNumber}`;
               } else {
                 // Reverse Repo (borrowing): DR Bank, CR Repo liability
                 drAccount = bankAccount;
                 crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REVERSE_REPO_LIABILITY);
-                description = `Reverse Repo Borrowing - Deal ${updatedDeal.id}`;
+                description = `Reverse Repo Borrowing - Deal ${dealNumber}`;
               }
 
               const ledgerResult = await ledgerController.postLedgerEntry({
@@ -678,14 +681,14 @@ const repoDealController = {
                 dr_account: drAccount,
                 cr_account: crAccount,
                 amount: Number(updatedDeal.principal_amount),
-                deal_id: String(updatedDeal.id),
+                deal_id: dealNumber,
                 description
               });
 
               if (!ledgerResult.success) {
                 console.error('Failed to post repo purchase ledger entry:', ledgerResult.error);
               } else {
-                console.log(`Successfully created purchase ledger entries for ${updatedDeal.deal_type} deal ${updatedDeal.id}`);
+                console.log(`Successfully created purchase ledger entries for ${updatedDeal.deal_type} deal ${dealNumber}`);
               }
             }
           }
