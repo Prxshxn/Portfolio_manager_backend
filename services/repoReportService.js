@@ -28,6 +28,7 @@ exports.getRepoReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     LEFT JOIN counterparty_master_individual ind ON rd.counterparty_id = ind.id
     LEFT JOIN counterparty_master_joint joint ON rd.counterparty_id = joint.id
     WHERE 1=1
+      AND rd.approval_status = 'final_approved'
   `;
 
   const params = [];
@@ -101,6 +102,7 @@ exports.getRepoReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     SELECT COUNT(*) AS count
     FROM repo_deals rd
     WHERE 1=1
+      AND rd.approval_status = 'final_approved'
   `;
   const countParams = [];
 
