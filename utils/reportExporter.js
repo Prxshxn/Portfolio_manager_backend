@@ -92,6 +92,7 @@ const BUYBACK_EXPORT_COLUMNS = [
   { key: 'portfolio', label: 'Portfolio' },
   { key: 'counterparty', label: 'Counterparty' },
   { key: 'deal_number', label: 'Deal Number' },
+  { key: 'transaction_type', label: 'Transaction Type' },
   { key: 'isin', label: 'ISIN' },
   { key: 'face_value', label: 'Face Value' },
   { key: 'leg1_clean_price', label: 'Leg1 Clean Price' },
@@ -105,8 +106,7 @@ const BUYBACK_EXPORT_COLUMNS = [
   { key: 'leg2_dirty_price', label: 'Leg2 Dirty Price' },
   { key: 'leg2_clean_price_amount', label: 'Leg2 Clean Price Amount' },
   { key: 'rate', label: 'Rate' },
-  { key: 'dtm', label: 'DTM' },
-  { key: 'transaction_type', label: 'Transaction Type' }
+  { key: 'dtm', label: 'DTM' }
 ];
 
 // Repo + Reverse Repo report export columns
@@ -938,7 +938,7 @@ exports.exportBuyback = async (format, data) => {
     const columns = BUYBACK_EXPORT_COLUMNS.map(col => ({
       key: col.key,
       label: col.label,
-      width: ['portfolio', 'counterparty', 'deal_number', 'isin'].includes(col.key) ? 90 : 75,
+      width: ['portfolio', 'counterparty', 'deal_number', 'transaction_type', 'isin'].includes(col.key) ? 90 : 75,
       align: ['face_value', 'settlement_value', 'maturity_value', 'rate', 'dtm',
         'leg1_clean_price', 'leg1_dirty_price', 'leg1_clean_price_amount',
         'leg2_clean_price', 'leg2_dirty_price', 'leg2_clean_price_amount'].includes(col.key)
