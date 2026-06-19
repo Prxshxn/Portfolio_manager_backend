@@ -284,6 +284,7 @@ exports.getBuybackReport = async (req, res) => {
       isin,
       valueDate,
       maturityDate,
+      transactionPair,
       format,
       page,
       pageSize
@@ -295,7 +296,8 @@ exports.getBuybackReport = async (req, res) => {
       portfolio,
       isin,
       valueDate,
-      maturityDate
+      maturityDate,
+      transactionPair
     };
     
     // Only add pagination if provided (for regular display)
