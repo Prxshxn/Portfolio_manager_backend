@@ -571,7 +571,7 @@ exports.getCounterpartyReport = async ({ counterparty, nicNumber, name, page, pa
         const repoQuery = `
           SELECT 
             'Repo' AS deal_source,
-            CONCAT('REPO-', rd.id) AS deal_number,
+            rd.deal_number AS deal_number,
             rd.trade_date,
             rd.value_date,
             rd.principal_amount AS amount,
