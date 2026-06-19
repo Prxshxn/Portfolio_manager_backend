@@ -52,7 +52,7 @@ function formatPercentage(value, decimals = 4) {
   });
 }
 
-exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturityDate, page, pageSize }) => {
+exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturityDate, transactionPair, page, pageSize }) => {
   // Always refresh the column set so columns added after server start (via ensureColumnExists
   // in BuybackDeal.create) are never missed by a stale module-level cache.
   buybackDealsColumnSetPromise = null;
@@ -67,13 +67,18 @@ exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturi
   const hasLeg2Dirty = cols.has('leg2_dirty_price');
   const hasLeg2Face = cols.has('leg2_face_value');
 
-  const whereParts = [
-    `(
-      (LOWER(TRIM(bd.leg1_transaction_type)) = 'sell' AND LOWER(TRIM(bd.leg2_transaction_type)) = 'buy')
-      OR
-      (LOWER(TRIM(bd.leg1_transaction_type)) = 'buy' AND LOWER(TRIM(bd.leg2_transaction_type)) = 'sell')
-    )`
-  ];
+  const normalizedPair = String(transactionPair || '').trim().toLowerCase().replace(/[\s-]/g, '_');
+  const sellBuyCondition = `(LOWER(TRIM(bd.leg1_transaction_type)) = 'sell' AND LOWER(TRIM(bd.leg2_transaction_type)) = 'buy')`;
+  const buySellCondition = `(LOWER(TRIM(bd.leg1_transaction_type)) = 'buy' AND LOWER(TRIM(bd.leg2_transaction_type)) = 'sell')`;
+
+  const whereParts = [];
+  if (normalizedPair === 'sell_buy' || normalizedPair === 'sell/buy') {
+    whereParts.push(sellBuyCondition);
+  } else if (normalizedPair === 'buy_sell' || normalizedPair === 'buy/sell') {
+    whereParts.push(buySellCondition);
+  } else {
+    whereParts.push(`(${sellBuyCondition} OR ${buySellCondition})`);
+  }
   const params = [];
 
   if (portfolio) {
@@ -189,8 +194,8 @@ exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturi
   const toTxPairLabel = (leg1Tx, leg2Tx) => {
     const t1 = normalizeTx(leg1Tx);
     const t2 = normalizeTx(leg2Tx);
-    if (t1 === 'sell' && t2 === 'buy') return 'Sell/buy';
-    if (t1 === 'buy' && t2 === 'sell') return 'Buy/sell';
+    if (t1 === 'sell' && t2 === 'buy') return 'Sell/Buy';
+    if (t1 === 'buy' && t2 === 'sell') return 'Buy/Sell';
     return `${leg1Tx || ''}/${leg2Tx || ''}`;
   };
   const dateDiffInDays = (start, end) => {
