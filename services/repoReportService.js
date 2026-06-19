@@ -4,6 +4,7 @@ exports.getRepoReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
   // Build query with filters for repo deals (Repo + Reverse Repo)
   let sql = `
     SELECT
+      rd.deal_number,
       rd.deal_type,
       COALESCE(
         corp.short_name,
@@ -150,6 +151,7 @@ exports.getRepoReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
 
   // Return raw numeric values; frontend formats display and exporter handles formatting.
   const data = rows.map(r => ({
+    deal_number: r.deal_number || '',
     deal_type: r.deal_type || '',
     counterparty: r.counterparty || '',
     settlement_mode: r.settlement_mode || '',
