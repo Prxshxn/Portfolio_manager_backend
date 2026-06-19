@@ -37,7 +37,13 @@ function getDealTypePrefix(dealType) {
 
 function resolveRepoDealNumber(deal) {
   if (!deal) return '';
-  return deal.deal_number || deal.dealNumber || (deal.id != null ? String(deal.id) : '');
+  const dn = deal.deal_number || deal.dealNumber;
+  if (dn && String(dn).trim()) return String(dn).trim();
+  return deal.id != null ? String(deal.id) : '';
+}
+
+function hasRepoDealNumber(value) {
+  return Boolean(value && String(value).trim());
 }
 
 const ensureRepoDealColumns = async () => {
@@ -86,8 +92,11 @@ const RepoDeal = {
           dailyAccrual = Math.floor((interestAmt / tenorVal) * 100000000) / 100000000;
         }
 
-        if (!dealData.dealNumber && dealData.valueDate) {
+        if (!hasRepoDealNumber(dealData.dealNumber) && dealData.valueDate) {
           dealData.dealNumber = await RepoDeal.generateNextDealNumber(dealData.valueDate, dealData.dealType);
+        }
+        if (!hasRepoDealNumber(dealData.dealNumber)) {
+          throw new Error('Could not generate repo deal_number (value date and deal type are required)');
         }
 
         const sql = `
@@ -260,7 +269,13 @@ const RepoDeal = {
         arr.push({ isin: row.isin_number, faceValue: row.face_value });
         byDealId.set(row.repo_deal_id, arr);
       }
-      return results.map(r => ({ ...r, isins: byDealId.get(r.id) || [] }));
+      const withIsins = results.map(r => ({ ...r, isins: byDealId.get(r.id) || [] }));
+      for (const deal of withIsins) {
+        if (!hasRepoDealNumber(deal.deal_number)) {
+          await RepoDeal.assignDealNumberIfMissing(deal);
+        }
+      }
+      return withIsins;
     } catch (error) {
       console.error('Error fetching repo deals:', error);
       throw error;
@@ -295,6 +310,9 @@ const RepoDeal = {
       const [results] = await db.query(sql, [id]);
       const deal = results[0] || null;
       if (!deal) return null;
+      if (!hasRepoDealNumber(deal.deal_number)) {
+        await RepoDeal.assignDealNumberIfMissing(deal);
+      }
       const [rows] = await db.query(
         'SELECT isin_number, face_value FROM repo_deal_isins WHERE repo_deal_id = ?',
         [id]
@@ -811,6 +829,30 @@ RepoDeal.generateNextDealNumber = async (valueDate, dealType) => {
     const timestamp = Date.now().toString().slice(-4);
     return `${dateStr}/${prefix}/${timestamp}`;
   }
+};
+
+/** Assign deal_number when missing (e.g. deal created before server restart). */
+RepoDeal.assignDealNumberIfMissing = async (deal) => {
+  if (!deal || !deal.id) return deal;
+  if (hasRepoDealNumber(deal.deal_number)) return deal;
+  const dealNumber = await RepoDeal.generateNextDealNumber(deal.value_date, deal.deal_type);
+  await db.query('UPDATE repo_deals SET deal_number = ? WHERE id = ?', [dealNumber, deal.id]);
+  deal.deal_number = dealNumber;
+  deal.dealNumber = dealNumber;
+  return deal;
+};
+
+RepoDeal.backfillMissingDealNumbers = async () => {
+  const [rows] = await db.query(
+    `SELECT id, deal_type, value_date, deal_number
+       FROM repo_deals
+      WHERE deal_number IS NULL OR TRIM(deal_number) = ''
+      ORDER BY value_date ASC, id ASC`
+  );
+  for (const deal of rows) {
+    await RepoDeal.assignDealNumberIfMissing(deal);
+  }
+  return { processed: rows.length };
 };
 
 module.exports = RepoDeal;

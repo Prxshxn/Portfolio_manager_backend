@@ -53,6 +53,9 @@ function formatPercentage(value, decimals = 4) {
 }
 
 exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturityDate, page, pageSize }) => {
+  // Always refresh the column set so columns added after server start (via ensureColumnExists
+  // in BuybackDeal.create) are never missed by a stale module-level cache.
+  buybackDealsColumnSetPromise = null;
   const cols = await getBuybackDealsColumnSet();
   const hasVerifiedBy = cols.has('verified_by');
   const hasVerifiedAt = cols.has('verified_at');
@@ -199,31 +202,54 @@ exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturi
     return Math.round((e - s) / msPerDay);
   };
 
-  const data = rows.map((row) => ({
-    id: row.id,
-    deal_id: row.id,
-    deal_number: row.deal_number,
-    portfolio: row.leg1_portfolio || row.leg2_portfolio || '',
-    counterparty: row.counterparty_name || row.leg1_counterparty || row.leg2_counterparty || '',
-    isin: row.leg1_isin || row.leg2_isin || '',
-    face_value: Number(row.leg1_face_value) || 0,
-    leg1_clean_price: Number(row.leg1_clean_price) || 0,
-    leg1_dirty_price: Number(row.leg1_dirty_price) || 0,
-    // Clean Price Amount = clean price * (leg) face value / 100
-    leg1_clean_price_amount: (Number(row.leg1_clean_price) || 0) * (Number(row.leg1_face_value) || 0) / 100,
-    value_date: row.leg1_value_date,
-    maturity_date: row.leg2_value_date,
-    settlement_value: Number(row.leg1_settlement_amount) || 0,
-    maturity_value: Number(row.leg2_settlement_amount) || 0,
-    leg2_clean_price: Number(row.leg2_clean_price) || 0,
-    leg2_dirty_price: Number(row.leg2_dirty_price) || 0,
-    leg2_clean_price_amount: (Number(row.leg2_clean_price) || 0) * (Number(row.leg2_face_value) || 0) / 100,
-    rate: Number(row.leg1_yield_rate) || 0,
-    dtm: dateDiffInDays(row.leg1_value_date, row.leg2_value_date),
-    transaction_type: toTxPairLabel(row.leg1_transaction_type, row.leg2_transaction_type),
-    status: row.deal_status,
-    currency: row.leg1_currency || row.leg2_currency || 'LKR'
-  }));
+  const data = rows.map((row) => {
+    const leg1FaceValue = Number(row.leg1_face_value) || 0;
+    const leg2FaceValue = Number(row.leg2_face_value) || leg1FaceValue;
+    const leg1CleanPrice = Number(row.leg1_clean_price) || 0;
+    const leg1DirtyPrice = Number(row.leg1_dirty_price) || 0;
+    const leg2SettlementAmount = Number(row.leg2_settlement_amount) || 0;
+
+    // When leg2 prices were not saved (stored as 0/NULL), derive the dirty price
+    // from the settlement amount and face value: dirty = (settlement * 100) / faceValue.
+    // This covers historical deals and any deal where coupon metadata was unavailable
+    // at entry time so the frontend could not run the full forward calculation.
+    let leg2DirtyPrice = Number(row.leg2_dirty_price) || 0;
+    let leg2CleanPrice = Number(row.leg2_clean_price) || 0;
+    if (!leg2DirtyPrice && leg2SettlementAmount && leg2FaceValue) {
+      leg2DirtyPrice = truncate4((leg2SettlementAmount * 100) / leg2FaceValue);
+    }
+    // If clean price is missing but dirty price is now known and leg1 has both prices,
+    // approximate leg2 clean price using the same accrued-interest spread as leg1.
+    if (!leg2CleanPrice && leg2DirtyPrice && leg1DirtyPrice && leg1CleanPrice) {
+      const leg1AccruedPer100 = leg1DirtyPrice - leg1CleanPrice;
+      leg2CleanPrice = truncate4(leg2DirtyPrice - leg1AccruedPer100);
+    }
+
+    return {
+      id: row.id,
+      deal_id: row.id,
+      deal_number: row.deal_number,
+      portfolio: row.leg1_portfolio || row.leg2_portfolio || '',
+      counterparty: row.counterparty_name || row.leg1_counterparty || row.leg2_counterparty || '',
+      isin: row.leg1_isin || row.leg2_isin || '',
+      face_value: leg1FaceValue,
+      leg1_clean_price: leg1CleanPrice,
+      leg1_dirty_price: leg1DirtyPrice,
+      leg1_clean_price_amount: leg1CleanPrice * leg1FaceValue / 100,
+      value_date: row.leg1_value_date,
+      maturity_date: row.leg2_value_date,
+      settlement_value: Number(row.leg1_settlement_amount) || 0,
+      maturity_value: leg2SettlementAmount,
+      leg2_clean_price: leg2CleanPrice,
+      leg2_dirty_price: leg2DirtyPrice,
+      leg2_clean_price_amount: leg2CleanPrice * leg2FaceValue / 100,
+      rate: Number(row.leg1_yield_rate) || 0,
+      dtm: dateDiffInDays(row.leg1_value_date, row.leg2_value_date),
+      transaction_type: toTxPairLabel(row.leg1_transaction_type, row.leg2_transaction_type),
+      status: row.deal_status,
+      currency: row.leg1_currency || row.leg2_currency || 'LKR'
+    };
+  });
 
   const countSql = `
     SELECT COUNT(*) AS count
