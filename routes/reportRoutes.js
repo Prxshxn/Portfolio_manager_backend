@@ -18,4 +18,7 @@ router.get('/buyback', reportController.getBuybackReport);
 // Repo + Reverse Repo report endpoint
 router.get('/repo', reportController.getRepoReport);
 
+// T-Bill report endpoint
+router.get('/tbill', reportController.getTbillReport);
+
 module.exports = router;
