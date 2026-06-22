@@ -514,6 +514,19 @@ const buybackDealController = {
       // Determine which field to update based on action and status
       let field = 'verified_by';
       let timestampField = 'verified_at';
+
+      // Idempotent final approval: skip side effects if already approved (prevents duplicate leg2 GSEC).
+      let wasAlreadyApproved = false;
+      if (status === 'Approved') {
+        const [preApproveRows] = await db.query(
+          'SELECT deal_status FROM buyback_deals WHERE id = ? LIMIT 1',
+          [id]
+        );
+        wasAlreadyApproved = preApproveRows?.[0]?.deal_status === 'Approved';
+        if (wasAlreadyApproved) {
+          console.log(`Buyback ${id} already Approved — skipping duplicate approval side effects`);
+        }
+      }
       
       if (action === 'approve' || status === 'Approved') {
         field = 'approved_by';
@@ -589,10 +602,14 @@ const buybackDealController = {
       }
 
       // Process face value deduction when deal is approved
-      if (status === 'Approved') {
+      if (status === 'Approved' && !wasAlreadyApproved) {
+        const connection = await db.pool.getConnection();
         try {
-          // Get the buyback deal details
-          const [buybackDeals] = await db.query('SELECT * FROM buyback_deals WHERE id = ?', [id]);
+          await connection.beginTransaction();
+          await connection.query('SELECT id FROM buyback_deals WHERE id = ? FOR UPDATE', [id]);
+
+          // Get the buyback deal details (locked)
+          const [buybackDeals] = await connection.query('SELECT * FROM buyback_deals WHERE id = ?', [id]);
           if (buybackDeals && buybackDeals.length > 0) {
             const buybackDeal = buybackDeals[0];
             const leg2EffectiveFace = parseFloat(
@@ -605,25 +622,27 @@ const buybackDealController = {
             let leg2GsecIdForLedger = null;
             if (buybackDeal.leg2_transaction_type === 'Buy' && leg2EffectiveFace > 0) {
               const [existing] = hasBuybackDealId
-                ? await db.query(
+                ? await connection.query(
                     `SELECT id, deal_number FROM gsec
                      WHERE transaction_type = 'Buy'
-                       AND status = 'final_approved'
+                       AND COALESCE(status, '') <> 'cancelled'
                        AND buyback_deal_id = ?
-                     ORDER BY created_at DESC
-                     LIMIT 1`,
+                     ORDER BY id ASC
+                     LIMIT 1
+                     FOR UPDATE`,
                     [buybackIdNum]
                   )
-                : await db.query(
+                : await connection.query(
                     `SELECT id, deal_number FROM gsec
                      WHERE transaction_type = 'Buy'
-                       AND status = 'final_approved'
+                       AND COALESCE(status, '') <> 'cancelled'
                        AND isin_number = ?
                        AND face_value = ?
                        AND value_date = ?
                        AND portfolio = ?
-                     ORDER BY created_at DESC
-                     LIMIT 1`,
+                     ORDER BY id ASC
+                     LIMIT 1
+                     FOR UPDATE`,
                     [
                       buybackDeal.leg2_isin,
                       leg2EffectiveFace,
@@ -764,7 +783,7 @@ const buybackDealController = {
 
                   const gsecResult = await Gsec.create(gsecDealData);
                   if (hasBuybackDealId && gsecResult && gsecResult.insertId) {
-                    await db.query('UPDATE gsec SET buyback_deal_id = ? WHERE id = ?', [
+                    await connection.query('UPDATE gsec SET buyback_deal_id = ? WHERE id = ?', [
                       buybackIdNum,
                       gsecResult.insertId
                     ]);
@@ -1038,9 +1057,17 @@ const buybackDealController = {
               }
             }
           }
+          await connection.commit();
         } catch (deductionError) {
+          try {
+            await connection.rollback();
+          } catch (_) {
+            /* ignore */
+          }
           console.error('Error processing face value deduction for approved buyback:', deductionError);
           // Don't fail the approval if deduction fails - log and continue
+        } finally {
+          connection.release();
         }
       }
 
