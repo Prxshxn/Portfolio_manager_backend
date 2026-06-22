@@ -1,4 +1,5 @@
 const db = require('../config/db');
+const { deriveLeg2Prices } = require('./buybackLeg2PriceHelper');
 
 let buybackDealsColumnSetPromise = null;
 
@@ -16,12 +17,6 @@ async function getBuybackDealsColumnSet() {
   return buybackDealsColumnSetPromise;
 }
 
-// Helper to truncate to 4 decimals
-function truncate4(val) {
-  return Math.floor(Number(val) * 10000) / 10000;
-}
-
-// Number formatting functions for better display
 function formatCurrency(value, decimals = 2) {
   if (value === null || value === undefined || value === '') return '';
   const num = Number(value);
@@ -209,26 +204,19 @@ exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturi
 
   const data = rows.map((row) => {
     const leg1FaceValue = Number(row.leg1_face_value) || 0;
-    const leg2FaceValue = Number(row.leg2_face_value) || leg1FaceValue;
+    const leg2SettlementAmount = Number(row.leg2_settlement_amount) || 0;
     const leg1CleanPrice = Number(row.leg1_clean_price) || 0;
     const leg1DirtyPrice = Number(row.leg1_dirty_price) || 0;
-    const leg2SettlementAmount = Number(row.leg2_settlement_amount) || 0;
 
-    // When leg2 prices were not saved (stored as 0/NULL), derive the dirty price
-    // from the settlement amount and face value: dirty = (settlement * 100) / faceValue.
-    // This covers historical deals and any deal where coupon metadata was unavailable
-    // at entry time so the frontend could not run the full forward calculation.
-    let leg2DirtyPrice = Number(row.leg2_dirty_price) || 0;
-    let leg2CleanPrice = Number(row.leg2_clean_price) || 0;
-    if (!leg2DirtyPrice && leg2SettlementAmount && leg2FaceValue) {
-      leg2DirtyPrice = truncate4((leg2SettlementAmount * 100) / leg2FaceValue);
-    }
-    // If clean price is missing but dirty price is now known and leg1 has both prices,
-    // approximate leg2 clean price using the same accrued-interest spread as leg1.
-    if (!leg2CleanPrice && leg2DirtyPrice && leg1DirtyPrice && leg1CleanPrice) {
-      const leg1AccruedPer100 = leg1DirtyPrice - leg1CleanPrice;
-      leg2CleanPrice = truncate4(leg2DirtyPrice - leg1AccruedPer100);
-    }
+    const { leg2CleanPrice, leg2DirtyPrice, leg2FaceValue } = deriveLeg2Prices({
+      leg1FaceValue,
+      leg2FaceValue: row.leg2_face_value,
+      leg1CleanPrice,
+      leg1DirtyPrice,
+      leg2CleanPrice: row.leg2_clean_price,
+      leg2DirtyPrice: row.leg2_dirty_price,
+      leg2SettlementAmount
+    });
 
     return {
       id: row.id,
