@@ -156,15 +156,39 @@ function parseLocaleNumber(val) {
   return Number.isFinite(n) ? n : NaN;
 }
 
+/**
+ * Quantize to 4 decimal places for display/export.
+ * Math.trunc(n * 10000) mis-handles values like 93.8046 (IEEE-754 → 93.8045).
+ */
+function quantizeTo4Decimals(val) {
+  if (val === undefined || val === null || val === '') return NaN;
+  if (typeof val === 'string') {
+    const s = val.trim().replace(/,/g, '');
+    if (!s) return NaN;
+    const m = s.match(/^(-?\d+)(?:\.(\d+))?$/);
+    if (m) {
+      const frac = (m[2] || '').padEnd(4, '0').slice(0, 4);
+      return Number(`${m[1]}.${frac}`);
+    }
+  }
+  const n = typeof val === 'number' ? val : parseLocaleNumber(val);
+  if (!Number.isFinite(n)) return NaN;
+  return Math.round(n * 10000 + Number.EPSILON) / 10000;
+}
+
 function formatNumber4(val) {
   if (val === undefined || val === null || val === '') return '';
-  const n = typeof val === 'number' ? val : parseLocaleNumber(val);
-  if (isNaN(n)) return val !== undefined && val !== null ? String(val) : '';
-  const truncated = Math.trunc(n * 10000) / 10000;
+  const q = quantizeTo4Decimals(val);
+  if (isNaN(q)) return val !== undefined && val !== null ? String(val) : '';
   return new Intl.NumberFormat('en-US', {
     minimumFractionDigits: 4,
     maximumFractionDigits: 4
-  }).format(truncated);
+  }).format(q);
+}
+
+function toExcelNumber4(val) {
+  const q = quantizeTo4Decimals(val);
+  return isNaN(q) ? null : q;
 }
 
 function formatNumber2(val) {
@@ -465,7 +489,7 @@ exports.export = async (format, data, summary = []) => {
     const excelRows = processedData.map(row => {
       const next = { ...row };
       for (const k of numeric2dpKeys) next[k] = toExcelNumber(next[k]);
-      for (const k of numeric4dpKeys) next[k] = toExcelNumber(next[k]);
+      for (const k of numeric4dpKeys) next[k] = toExcelNumber4(next[k]);
       for (const k of intKeys) {
         const n = toExcelNumber(next[k]);
         next[k] = n === null ? null : Math.trunc(n);
@@ -499,7 +523,7 @@ exports.export = async (format, data, summary = []) => {
       const summaryExcelRows = summaryRows.map(row => {
         const next = { ...row };
         for (const k of summaryNumeric2dp) next[k] = toExcelNumber(next[k]);
-        for (const k of summaryNumeric4dp) next[k] = toExcelNumber(next[k]);
+        for (const k of summaryNumeric4dp) next[k] = toExcelNumber4(next[k]);
         for (const k of summaryInt) {
           const n = toExcelNumber(next[k]);
           next[k] = n === null ? null : Math.trunc(n);
@@ -920,7 +944,7 @@ exports.exportBuyback = async (format, data) => {
     const excelRows = processedData.map(row => {
       const next = { ...row };
       for (const k of numeric2dpKeys) next[k] = toExcelNumber(next[k]);
-      for (const k of numeric4dpKeys) next[k] = toExcelNumber(next[k]);
+      for (const k of numeric4dpKeys) next[k] = toExcelNumber4(next[k]);
       for (const k of intKeys) {
         const n = toExcelNumber(next[k]);
         next[k] = n === null ? null : Math.trunc(n);
@@ -1220,7 +1244,7 @@ exports.exportTbill = async (format, data) => {
     const excelRows = processedData.map((row) => {
       const next = { ...row };
       for (const k of numeric2dpKeys) next[k] = toExcelNumber(next[k]);
-      for (const k of numeric4dpKeys) next[k] = toExcelNumber(next[k]);
+      for (const k of numeric4dpKeys) next[k] = toExcelNumber4(next[k]);
       for (const k of intKeys) {
         const n = toExcelNumber(next[k]);
         next[k] = n === null ? null : Math.trunc(n);
@@ -1382,7 +1406,7 @@ exports.exportMarkToMarket = async (format, data) => {
 
     const excelRows = processedData.map(row => {
       const next = { ...row };
-      for (const k of numeric4dpKeys) next[k] = toExcelNumber(next[k]);
+      for (const k of numeric4dpKeys) next[k] = toExcelNumber4(next[k]);
       for (const k of numeric2dpKeys) next[k] = toExcelNumber(next[k]);
       return next;
     });

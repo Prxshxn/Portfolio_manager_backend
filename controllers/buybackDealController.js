@@ -96,6 +96,82 @@ const validateSellLegAllocations = (leg1, sellDeals) => {
   return null;
 };
 
+/** Effective leg1 sell face (adjusted face when set, else face). */
+const getLeg1EffectiveFace = (leg1OrBuybackRow) => {
+  const adj = parseFloat(
+    leg1OrBuybackRow?.adjustedFaceValue ?? leg1OrBuybackRow?.leg1_adjusted_face_value
+  );
+  const face = parseFloat(leg1OrBuybackRow?.faceValue ?? leg1OrBuybackRow?.leg1_face_value);
+  if (Number.isFinite(adj) && adj > 0) return adj;
+  if (Number.isFinite(face) && face > 0) return face;
+  return 0;
+};
+
+/** Sum of sell-modal allocation amounts (authoritative face for Sell buybacks). */
+const sumSellAllocations = (allocations) => {
+  if (!Array.isArray(allocations) || !allocations.length) return 0;
+  return allocations.reduce((s, a) => s + (Number(a.amountToSell) || 0), 0);
+};
+
+const mapSellAllocations = (allocations) => {
+  if (!Array.isArray(allocations)) return [];
+  return allocations
+    .map((a) => ({
+      deal_number: a.deal_number || a.buy_deal_number,
+      amountToSell: Number(a.amountToSell) || 0
+    }))
+    .filter((a) => a.deal_number && a.amountToSell > 0);
+};
+
+/**
+ * Sell-modal allocation sum is the authoritative leg1/leg2 face on Sell buybacks.
+ * Settlement reverse-calc can change leg face without updating allocations; sync
+ * leg faces (and proportionally scale settlements) to the allocation total instead
+ * of shrinking allocations to match a recalculated face.
+ */
+const syncLegFacesToAllocationSum = (leg1, leg2, allocations) => {
+  const isSell = String(leg1?.transactionType || '').toLowerCase() === 'sell';
+  const mapped = mapSellAllocations(allocations);
+  if (!isSell || !mapped.length) {
+    return { leg1, leg2, allocations: mapped };
+  }
+
+  const allocSum = sumSellAllocations(mapped);
+  if (!(allocSum > 0)) {
+    return { leg1, leg2, allocations: mapped };
+  }
+
+  const scaleSettlement = (settlement, oldFace) => {
+    const s = parseFloat(settlement);
+    const oldF = parseFloat(oldFace);
+    if (!Number.isFinite(s) || !Number.isFinite(oldF) || oldF <= 0) return settlement;
+    if (Math.abs(oldF - allocSum) < 0.0001) return settlement;
+    return (Math.round((s * allocSum / oldF) * 100) / 100).toFixed(2);
+  };
+
+  const oldLeg1Face = getLeg1EffectiveFace(leg1) || allocSum;
+  const oldLeg2Face =
+    parseFloat(leg2?.adjustedFaceValue ?? leg2?.adjusted_face_value) ||
+    parseFloat(leg2?.faceValue ?? leg2?.face_value) ||
+    oldLeg1Face;
+
+  const leg1Synced = {
+    ...leg1,
+    faceValue: allocSum.toString(),
+    adjustedFaceValue: allocSum.toString(),
+    settlementAmount: scaleSettlement(leg1.settlementAmount, oldLeg1Face)
+  };
+
+  const leg2Synced = {
+    ...leg2,
+    faceValue: allocSum.toString(),
+    adjustedFaceValue: allocSum.toString(),
+    settlementAmount: scaleSettlement(leg2.settlementAmount, oldLeg2Face)
+  };
+
+  return { leg1: leg1Synced, leg2: leg2Synced, allocations: mapped };
+};
+
 /** Buyback workflow states that have NOT yet deducted from buy-deal holdings.
  *  Deduction happens at the 'Approved' transition, so any deal still in one of
  *  these states still holds an outstanding claim on the buy deal's balance. */
@@ -205,8 +281,9 @@ const buybackDealController = {
   // Create a new buyback deal
   createDeal: async (req, res) => {
     try {
-      const { leg1, leg2, sellDeals, source_buy_deal_number, fund_movement } = req.body;
-      
+      const { leg1: rawLeg1, leg2: rawLeg2, sellDeals: rawSellDeals, source_buy_deal_number, fund_movement } = req.body;
+      const { leg1, leg2, allocations: sellDeals } = syncLegFacesToAllocationSum(rawLeg1, rawLeg2, rawSellDeals);
+
       // Validate required fields
       if (!leg1 || !leg2) {
         return res.status(400).json({ 
@@ -863,6 +940,58 @@ const buybackDealController = {
                 }
               }
 
+              const leg1EffForDeduction = getLeg1EffectiveFace(buybackDeal);
+              const allocSum = sumSellAllocations(allocations || []);
+              if (
+                allocations &&
+                Array.isArray(allocations) &&
+                allocations.length > 0 &&
+                allocSum > 0 &&
+                leg1EffForDeduction > 0 &&
+                Math.abs(allocSum - leg1EffForDeduction) > 0.0001
+              ) {
+                const scaleMoney = (amount, oldFace) => {
+                  const n = parseFloat(amount);
+                  const oldF = parseFloat(oldFace);
+                  if (!Number.isFinite(n) || !Number.isFinite(oldF) || oldF <= 0) return amount;
+                  return (Math.round((n * allocSum / oldF) * 100) / 100).toFixed(2);
+                };
+                console.log(
+                  `Syncing buyback ${buybackDeal.deal_number} leg faces to allocation sum ${allocSum} (was leg1 ${leg1EffForDeduction})`
+                );
+                await connection.query(
+                  `UPDATE buyback_deals
+                   SET leg1_face_value = ?,
+                       leg1_adjusted_face_value = ?,
+                       leg2_face_value = ?,
+                       leg2_adjusted_face_value = ?,
+                       leg1_settlement_amount = ?,
+                       leg2_settlement_amount = ?
+                   WHERE id = ?`,
+                  [
+                    allocSum.toFixed(2),
+                    allocSum.toFixed(2),
+                    allocSum.toFixed(2),
+                    allocSum.toFixed(2),
+                    scaleMoney(buybackDeal.leg1_settlement_amount, leg1EffForDeduction),
+                    scaleMoney(buybackDeal.leg2_settlement_amount, leg1EffForDeduction),
+                    buybackDeal.id
+                  ]
+                );
+                buybackDeal.leg1_face_value = allocSum;
+                buybackDeal.leg1_adjusted_face_value = allocSum;
+                buybackDeal.leg2_face_value = allocSum;
+                buybackDeal.leg2_adjusted_face_value = allocSum;
+                buybackDeal.leg1_settlement_amount = scaleMoney(
+                  buybackDeal.leg1_settlement_amount,
+                  leg1EffForDeduction
+                );
+                buybackDeal.leg2_settlement_amount = scaleMoney(
+                  buybackDeal.leg2_settlement_amount,
+                  leg1EffForDeduction
+                );
+              }
+
               if (allocations && Array.isArray(allocations) && allocations.length > 0) {
                 // --- New path: deduct exact allocated amount from each individual buy deal ---
                 console.log(`Using stored allocations for deduction (${allocations.length} deal(s)):`, allocations);
@@ -1095,7 +1224,8 @@ const buybackDealController = {
   updateDeal: async (req, res) => {
     try {
       const { id } = req.params;
-      const { leg1, leg2, fund_movement, sellDeals, source_buy_deal_number } = req.body;
+      const { leg1: rawLeg1, leg2: rawLeg2, fund_movement, sellDeals: rawSellDeals, source_buy_deal_number } = req.body;
+      const { leg1, leg2, allocations: sellDeals } = syncLegFacesToAllocationSum(rawLeg1, rawLeg2, rawSellDeals);
 
       if (!leg1 || !leg2) {
         return res.status(400).json({
