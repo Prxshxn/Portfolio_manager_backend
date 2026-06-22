@@ -127,6 +127,26 @@ const REPO_EXPORT_COLUMNS = [
   { key: 'face_value_as_per_counterparty', label: 'Face value as per counterparty' }
 ];
 
+// T-Bill report export columns
+const TBILL_EXPORT_COLUMNS = [
+  { key: 'trade_date', label: 'Trade Date' },
+  { key: 'value_date', label: 'Value Date' },
+  { key: 'transaction_type', label: 'Transaction' },
+  { key: 'counterparty', label: 'Counterparty' },
+  { key: 'isin_number', label: 'ISIN Number' },
+  { key: 'maturity_date', label: 'Maturity Date' },
+  { key: 'face_value', label: 'Face Value' },
+  { key: 'discount_rate_pct', label: 'Discount Rate (%)' },
+  { key: 'days_to_maturity', label: 'Days to Maturity' },
+  { key: 'price_per_100', label: 'Price per 100' },
+  { key: 'settlement_amount', label: 'Settlement Amount' },
+  { key: 'portfolio_id', label: 'Portfolio ID' },
+  { key: 'remaining_face_value', label: 'Remaining Face Value' },
+  { key: 'per_day_accrual', label: 'Per Day Accrual' },
+  { key: 'accrued_interest_to_date', label: 'Accrued Interest to Date' },
+  { key: 'deal_number', label: 'Deal Number' }
+];
+
 /** Parse numbers that may include thousand separators (e.g. API-formatted strings). */
 function parseLocaleNumber(val) {
   if (val === undefined || val === null || val === '') return NaN;
@@ -1150,6 +1170,160 @@ exports.exportRepo = async (format, data) => {
       doc.on('end', () => {
         const pdfData = Buffer.concat(buffers);
         resolve(pdfData);
+      });
+    });
+  }
+
+  throw new Error('Unsupported export format');
+};
+
+function preprocessTbillExportData(data) {
+  return (data || []).map((row) => {
+    const mapped = {};
+    TBILL_EXPORT_COLUMNS.forEach((col) => {
+      let val = row[col.key];
+      if (col.key === 'trade_date' || col.key === 'value_date' || col.key === 'maturity_date') {
+        val = formatDate(val);
+      }
+      mapped[col.key] = val !== undefined && val !== null ? val : '';
+    });
+    return mapped;
+  });
+}
+
+// T-Bill report export (Excel/CSV/PDF)
+exports.exportTbill = async (format, data) => {
+  const processedData = preprocessTbillExportData(data);
+
+  if (format === 'csv') {
+    const parser = new Parser({
+      fields: TBILL_EXPORT_COLUMNS.map((col) => ({ label: col.label, value: col.key }))
+    });
+    return parser.parse(processedData);
+  }
+
+  if (format === 'excel') {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('T-Bill Report');
+    sheet.columns = TBILL_EXPORT_COLUMNS.map((col) => ({
+      header: col.label,
+      key: col.key
+    }));
+
+    const numeric2dpKeys = new Set([
+      'face_value', 'settlement_amount', 'remaining_face_value',
+      'price_per_100', 'per_day_accrual', 'accrued_interest_to_date', 'discount_rate_pct'
+    ]);
+    const numeric4dpKeys = new Set([]);
+    const intKeys = new Set(['days_to_maturity']);
+
+    const excelRows = processedData.map((row) => {
+      const next = { ...row };
+      for (const k of numeric2dpKeys) next[k] = toExcelNumber(next[k]);
+      for (const k of numeric4dpKeys) next[k] = toExcelNumber(next[k]);
+      for (const k of intKeys) {
+        const n = toExcelNumber(next[k]);
+        next[k] = n === null ? null : Math.trunc(n);
+      }
+      return next;
+    });
+
+    sheet.addRows(excelRows);
+
+    for (const k of numeric2dpKeys) {
+      const col = sheet.getColumn(k);
+      if (col) col.numFmt = '#,##0.00';
+    }
+    for (const k of numeric4dpKeys) {
+      const col = sheet.getColumn(k);
+      if (col) col.numFmt = '#,##0.0000';
+    }
+    for (const k of intKeys) {
+      const col = sheet.getColumn(k);
+      if (col) col.numFmt = '0';
+    }
+
+    return workbook.xlsx.writeBuffer();
+  }
+
+  if (format === 'pdf') {
+    const doc = new PDFDocument({ margin: 30, size: 'A4', layout: 'landscape' });
+    const buffers = [];
+    doc.on('data', buffers.push.bind(buffers));
+    doc.on('end', () => {});
+
+    doc.fontSize(20).font('Helvetica-Bold').text('T-Bill Report', { align: 'center' });
+    doc.moveDown(1);
+
+    const pdfColumns = [
+      { key: 'deal_number', label: 'Deal Number', width: 95 },
+      { key: 'isin_number', label: 'ISIN', width: 85 },
+      { key: 'value_date', label: 'Value Date', width: 70 },
+      { key: 'maturity_date', label: 'Maturity', width: 70 },
+      { key: 'face_value', label: 'Face Value', width: 75, align: 'right' },
+      { key: 'discount_rate_pct', label: 'Disc %', width: 55, align: 'right' },
+      { key: 'settlement_amount', label: 'Settlement', width: 75, align: 'right' }
+    ];
+
+    const maxWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+    const totalWidth = pdfColumns.reduce((sum, col) => sum + col.width, 0);
+    if (totalWidth > maxWidth) {
+      const scale = maxWidth / totalWidth;
+      pdfColumns.forEach((col) => {
+        col.width = Math.floor(col.width * scale);
+      });
+    }
+
+    const rowHeight = 20;
+    const cellPadding = 4;
+    const startX = doc.page.margins.left;
+
+    function drawHeader(y) {
+      const headerWidth = pdfColumns.reduce((sum, col) => sum + col.width, 0);
+      doc.rect(startX, y, headerWidth, rowHeight).fillAndStroke('#f0f0f0', '#000000');
+      doc.fillColor('#000000').fontSize(8).font('Helvetica-Bold');
+      let x = startX;
+      pdfColumns.forEach((col) => {
+        doc.text(col.label, x + cellPadding, y + 5, {
+          width: col.width - 2 * cellPadding,
+          align: col.align || 'left'
+        });
+        x += col.width;
+      });
+      return y + rowHeight;
+    }
+
+    function drawRows(startY) {
+      let y = startY;
+      processedData.forEach((row, index) => {
+        if (y + rowHeight > doc.page.height - doc.page.margins.bottom) {
+          doc.addPage();
+          y = drawHeader(doc.page.margins.top);
+        }
+        const rowWidth = pdfColumns.reduce((sum, col) => sum + col.width, 0);
+        if (index % 2 === 1) {
+          doc.rect(startX, y, rowWidth, rowHeight).fill('#f8f8f8');
+        }
+        doc.fillColor('#000000').fontSize(7).font('Helvetica');
+        let x = startX;
+        pdfColumns.forEach((col) => {
+          doc.text(String(row[col.key] ?? ''), x + cellPadding, y + 5, {
+            width: col.width - 2 * cellPadding,
+            align: col.align || 'left'
+          });
+          x += col.width;
+        });
+        y += rowHeight;
+      });
+    }
+
+    const headerY = drawHeader(doc.page.margins.top);
+    drawRows(headerY);
+
+    doc.end();
+    return await new Promise((resolve) => {
+      doc.on('end', () => {
+        resolve(Buffer.concat(buffers));
       });
     });
   }
