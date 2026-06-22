@@ -1,4 +1,5 @@
 const db = require('../config/db');
+const { deriveLeg2Prices } = require('./buybackLeg2PriceHelper');
 
 let buybackDealsColumnSetPromise = null;
 
@@ -16,12 +17,6 @@ async function getBuybackDealsColumnSet() {
   return buybackDealsColumnSetPromise;
 }
 
-// Helper to truncate to 4 decimals
-function truncate4(val) {
-  return Math.floor(Number(val) * 10000) / 10000;
-}
-
-// Number formatting functions for better display
 function formatCurrency(value, decimals = 2) {
   if (value === null || value === undefined || value === '') return '';
   const num = Number(value);
@@ -52,7 +47,10 @@ function formatPercentage(value, decimals = 4) {
   });
 }
 
-exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturityDate, page, pageSize }) => {
+exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturityDate, transactionPair, page, pageSize }) => {
+  // Always refresh the column set so columns added after server start (via ensureColumnExists
+  // in BuybackDeal.create) are never missed by a stale module-level cache.
+  buybackDealsColumnSetPromise = null;
   const cols = await getBuybackDealsColumnSet();
   const hasVerifiedBy = cols.has('verified_by');
   const hasVerifiedAt = cols.has('verified_at');
@@ -64,13 +62,18 @@ exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturi
   const hasLeg2Dirty = cols.has('leg2_dirty_price');
   const hasLeg2Face = cols.has('leg2_face_value');
 
-  const whereParts = [
-    `(
-      (LOWER(TRIM(bd.leg1_transaction_type)) = 'sell' AND LOWER(TRIM(bd.leg2_transaction_type)) = 'buy')
-      OR
-      (LOWER(TRIM(bd.leg1_transaction_type)) = 'buy' AND LOWER(TRIM(bd.leg2_transaction_type)) = 'sell')
-    )`
-  ];
+  const normalizedPair = String(transactionPair || '').trim().toLowerCase().replace(/[\s-]/g, '_');
+  const sellBuyCondition = `(LOWER(TRIM(bd.leg1_transaction_type)) = 'sell' AND LOWER(TRIM(bd.leg2_transaction_type)) = 'buy')`;
+  const buySellCondition = `(LOWER(TRIM(bd.leg1_transaction_type)) = 'buy' AND LOWER(TRIM(bd.leg2_transaction_type)) = 'sell')`;
+
+  const whereParts = [];
+  if (normalizedPair === 'sell_buy' || normalizedPair === 'sell/buy') {
+    whereParts.push(sellBuyCondition);
+  } else if (normalizedPair === 'buy_sell' || normalizedPair === 'buy/sell') {
+    whereParts.push(buySellCondition);
+  } else {
+    whereParts.push(`(${sellBuyCondition} OR ${buySellCondition})`);
+  }
   const params = [];
 
   if (portfolio) {
@@ -186,8 +189,8 @@ exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturi
   const toTxPairLabel = (leg1Tx, leg2Tx) => {
     const t1 = normalizeTx(leg1Tx);
     const t2 = normalizeTx(leg2Tx);
-    if (t1 === 'sell' && t2 === 'buy') return 'Sell/buy';
-    if (t1 === 'buy' && t2 === 'sell') return 'Buy/sell';
+    if (t1 === 'sell' && t2 === 'buy') return 'Sell/Buy';
+    if (t1 === 'buy' && t2 === 'sell') return 'Buy/Sell';
     return `${leg1Tx || ''}/${leg2Tx || ''}`;
   };
   const dateDiffInDays = (start, end) => {
@@ -199,31 +202,47 @@ exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturi
     return Math.round((e - s) / msPerDay);
   };
 
-  const data = rows.map((row) => ({
-    id: row.id,
-    deal_id: row.id,
-    deal_number: row.deal_number,
-    portfolio: row.leg1_portfolio || row.leg2_portfolio || '',
-    counterparty: row.counterparty_name || row.leg1_counterparty || row.leg2_counterparty || '',
-    isin: row.leg1_isin || row.leg2_isin || '',
-    face_value: Number(row.leg1_face_value) || 0,
-    leg1_clean_price: Number(row.leg1_clean_price) || 0,
-    leg1_dirty_price: Number(row.leg1_dirty_price) || 0,
-    // Clean Price Amount = clean price * (leg) face value / 100
-    leg1_clean_price_amount: (Number(row.leg1_clean_price) || 0) * (Number(row.leg1_face_value) || 0) / 100,
-    value_date: row.leg1_value_date,
-    maturity_date: row.leg2_value_date,
-    settlement_value: Number(row.leg1_settlement_amount) || 0,
-    maturity_value: Number(row.leg2_settlement_amount) || 0,
-    leg2_clean_price: Number(row.leg2_clean_price) || 0,
-    leg2_dirty_price: Number(row.leg2_dirty_price) || 0,
-    leg2_clean_price_amount: (Number(row.leg2_clean_price) || 0) * (Number(row.leg2_face_value) || 0) / 100,
-    rate: Number(row.leg1_yield_rate) || 0,
-    dtm: dateDiffInDays(row.leg1_value_date, row.leg2_value_date),
-    transaction_type: toTxPairLabel(row.leg1_transaction_type, row.leg2_transaction_type),
-    status: row.deal_status,
-    currency: row.leg1_currency || row.leg2_currency || 'LKR'
-  }));
+  const data = rows.map((row) => {
+    const leg1FaceValue = Number(row.leg1_face_value) || 0;
+    const leg2SettlementAmount = Number(row.leg2_settlement_amount) || 0;
+    const leg1CleanPrice = Number(row.leg1_clean_price) || 0;
+    const leg1DirtyPrice = Number(row.leg1_dirty_price) || 0;
+
+    const { leg2CleanPrice, leg2DirtyPrice, leg2FaceValue } = deriveLeg2Prices({
+      leg1FaceValue,
+      leg2FaceValue: row.leg2_face_value,
+      leg1CleanPrice,
+      leg1DirtyPrice,
+      leg2CleanPrice: row.leg2_clean_price,
+      leg2DirtyPrice: row.leg2_dirty_price,
+      leg2SettlementAmount
+    });
+
+    return {
+      id: row.id,
+      deal_id: row.id,
+      deal_number: row.deal_number,
+      portfolio: row.leg1_portfolio || row.leg2_portfolio || '',
+      counterparty: row.counterparty_name || row.leg1_counterparty || row.leg2_counterparty || '',
+      isin: row.leg1_isin || row.leg2_isin || '',
+      face_value: leg1FaceValue,
+      leg1_clean_price: leg1CleanPrice,
+      leg1_dirty_price: leg1DirtyPrice,
+      leg1_clean_price_amount: leg1CleanPrice * leg1FaceValue / 100,
+      value_date: row.leg1_value_date,
+      maturity_date: row.leg2_value_date,
+      settlement_value: Number(row.leg1_settlement_amount) || 0,
+      maturity_value: leg2SettlementAmount,
+      leg2_clean_price: leg2CleanPrice,
+      leg2_dirty_price: leg2DirtyPrice,
+      leg2_clean_price_amount: leg2CleanPrice * leg2FaceValue / 100,
+      rate: Number(row.leg1_yield_rate) || 0,
+      dtm: dateDiffInDays(row.leg1_value_date, row.leg2_value_date),
+      transaction_type: toTxPairLabel(row.leg1_transaction_type, row.leg2_transaction_type),
+      status: row.deal_status,
+      currency: row.leg1_currency || row.leg2_currency || 'LKR'
+    };
+  });
 
   const countSql = `
     SELECT COUNT(*) AS count

@@ -5,7 +5,7 @@ const buybackReportService = require('../services/buybackReportService');
 // GET /api/reports/buyback
 router.get('/', async (req, res) => {
   try {
-    const { asAtDate, portfolio, isin, valueDate, maturityDate, format, page = 1, pageSize = 20 } = req.query;
+    const { asAtDate, portfolio, isin, valueDate, maturityDate, transactionPair, format, page = 1, pageSize = 20 } = req.query;
     const pageNumber = Number(page);
     const pageSizeNumber = Number(pageSize);
 
@@ -15,6 +15,7 @@ router.get('/', async (req, res) => {
       isin,
       valueDate,
       maturityDate,
+      transactionPair,
       // Downloads should not be truncated by pagination defaults.
       page: format ? undefined : pageNumber,
       pageSize: format ? undefined : pageSizeNumber

@@ -3167,17 +3167,35 @@ const {
         const newLeg2Settlement = Math.round((leg1Settlement + interest) * 100) / 100;
 
         const dirtyPricePer100 = calcDirtyPricePer100(newLeg2Settlement, deal.leg1_face_value);
-        const computedAccrued = calcAccruedInterestPer100(
-          deal.coupon_rate,
-          leg2ValueDate,
-          deal.issue_date,
-          deal.coupon_date1,
-          deal.coupon_date2
+
+        // buyback_deals.coupon_* columns are usually NULL, so fall back to the ISIN
+        // master coupon calendar. Without this, calcAccruedInterestPer100 returns null
+        // and the code drops to the stored leg2_accrued_interest, which on some legacy
+        // rows is a sentinel/garbage value (e.g. 999999.9999) that corrupts the clean
+        // price (clean = dirty - accrued).
+        const [leg2IsinMasterRows] = await connection.query(
+          'SELECT coupon_rate, issue_date, coupon_date_1, coupon_date_2 FROM isin_master WHERE isin_number = ? LIMIT 1',
+          [deal.leg2_isin]
         );
-        const fallbackAccrued = parseFloat(deal.leg2_accrued_interest);
+        const leg2IsinMaster = (leg2IsinMasterRows && leg2IsinMasterRows[0]) || {};
+
+        const computedAccrued = calcAccruedInterestPer100(
+          deal.coupon_rate || leg2IsinMaster.coupon_rate,
+          leg2ValueDate,
+          deal.issue_date || leg2IsinMaster.issue_date,
+          deal.coupon_date1 || leg2IsinMaster.coupon_date_1,
+          deal.coupon_date2 || leg2IsinMaster.coupon_date_2
+        );
+
+        // Only trust the stored leg2 accrued as a fallback when it is a sane per-100
+        // figure (0 <= accrued <= dirty price). This rejects sentinel/garbage values.
+        const rawFallbackAccrued = parseFloat(deal.leg2_accrued_interest);
+        const dirtyCeiling = dirtyPricePer100 != null ? dirtyPricePer100 : 100;
+        const fallbackAccruedIsSane =
+          isFinite(rawFallbackAccrued) && rawFallbackAccrued >= 0 && rawFallbackAccrued <= dirtyCeiling;
         const accruedInterestPer100 = computedAccrued != null
           ? computedAccrued
-          : (isFinite(fallbackAccrued) ? round4(fallbackAccrued) : 0);
+          : (fallbackAccruedIsSane ? round4(rawFallbackAccrued) : 0);
 
         const cleanPricePer100 = dirtyPricePer100 != null
           ? round4(dirtyPricePer100 - accruedInterestPer100)
