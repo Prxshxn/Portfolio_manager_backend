@@ -657,8 +657,26 @@ const Gsec = {
       throw error;
     }
   },
-  
-  // ... (rest of the code remains the same)
+
+  /**
+   * Look up source Buy rows by deal number (for sell / buyback authorizer slips).
+   */
+  getBuyDealsByDealNumbers: async (dealNumbers) => {
+    const unique = [...new Set(
+      (dealNumbers || []).map((d) => String(d).trim()).filter(Boolean)
+    )];
+    if (!unique.length) return [];
+
+    const placeholders = unique.map(() => '?').join(',');
+    const [rows] = await db.query(
+      `SELECT deal_number, yield, face_value, remaining_face_value,
+              isin_number AS isin, portfolio, value_date
+       FROM gsec
+       WHERE transaction_type = 'Buy' AND deal_number IN (${placeholders})`,
+      unique
+    );
+    return rows;
+  },
 
   /**
    * Get Buy deals with remaining face value (original - total sold from this deal)
