@@ -503,10 +503,41 @@ module.exports = {
         });
       }
 
+      // Capture pre-update state so we know whether this is a rejected Sell
+      // being resubmitted - if so, its face value must be re-deducted from
+      // the linked Buy deal's remaining_face_value (Gsec.updateStatus restores
+      // that hold when the Sell is rejected; resubmitting re-locks it).
+      const [beforeRows] = await db.query(
+        'SELECT status, transaction_type, buy_deal_number FROM gsec WHERE id = ?',
+        [id]
+      );
+      const before = beforeRows && beforeRows[0];
+
       const result = await Gsec.update(id, updateData);
       if (result.affectedRows === 0) {
         return res.status(404).json({ success: false, error: 'Transaction not found' });
       }
+
+      if (before && before.status === 'rejected' && before.transaction_type === 'Sell' && before.buy_deal_number) {
+        try {
+          const [buyRows] = await db.query(
+            'SELECT id, face_value, remaining_face_value FROM gsec WHERE deal_number = ? AND transaction_type = "Buy"',
+            [before.buy_deal_number]
+          );
+          const buyDeal = buyRows && buyRows[0];
+          if (buyDeal) {
+            const newFaceValue = parseFloat(updateData.faceValue ?? updateData.face_value ?? 0);
+            const currentRemaining = parseFloat(buyDeal.remaining_face_value ?? buyDeal.face_value ?? 0);
+            const relocked = currentRemaining - newFaceValue;
+            await db.query('UPDATE gsec SET remaining_face_value = ? WHERE id = ?', [relocked.toFixed(4), buyDeal.id]);
+            await Gsec.syncFutureCouponCashflowsForBuyDeal(before.buy_deal_number);
+          }
+        } catch (relockErr) {
+          console.error('Failed to re-lock remaining_face_value on Sell resubmission:', relockErr);
+          // Don't fail the resubmission itself - the deal update already succeeded.
+        }
+      }
+
       res.json({ success: true, message: 'Transaction updated successfully' });
     } catch (err) {
       console.error('Error in updateGsecTransaction:', err);
