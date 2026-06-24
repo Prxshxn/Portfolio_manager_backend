@@ -722,12 +722,16 @@ const Gsec = {
     const soldByDeal = {};
     
     if (dealNumbers.length) {
-      // Get total sold per buy_deal_number
+      // Get total sold per buy_deal_number. Excludes rejected Sells - a
+      // rejected Sell never executed, so it must not keep counting against
+      // the Buy deal's available-to-sell balance (see also Gsec.updateStatus,
+      // which restores remaining_face_value on rejection for the same reason).
       const placeholders = dealNumbers.map(() => '?').join(',');
       let sellSql = `
         SELECT buy_deal_number, COALESCE(SUM(face_value), 0) AS total_sold
         FROM gsec
         WHERE transaction_type = 'Sell' AND buy_deal_number IN (${placeholders})
+          AND status <> 'rejected'
       `;
       const sellParams = [...dealNumbers];
       
@@ -881,8 +885,9 @@ const Gsec = {
   getBuyDealsWithBalance: async () => {
     // Get all Buy deals - only finally approved
     const buySql = `SELECT * FROM gsec WHERE transaction_type = 'Buy' AND status = 'final_approved' ORDER BY id DESC`;
-    // Get total sold per buy_deal_number (Sell transactions reference Buy deals)
-    const sellSql = `SELECT buy_deal_number, SUM(face_value) AS total_sold FROM gsec WHERE transaction_type = 'Sell' GROUP BY buy_deal_number`;
+    // Get total sold per buy_deal_number (Sell transactions reference Buy deals).
+    // Excludes rejected Sells - see getBuyDealsWithBalanceFiltered for why.
+    const sellSql = `SELECT buy_deal_number, SUM(face_value) AS total_sold FROM gsec WHERE transaction_type = 'Sell' AND status <> 'rejected' GROUP BY buy_deal_number`;
     try {
       const [buyDeals] = await db.query(buySql);
       const [sellAgg] = await db.query(sellSql);
@@ -1162,10 +1167,11 @@ const Gsec = {
     }
     
     const currentLevel = (currentTx[0] && currentTx[0].current_approval_level) || 'front_office';
+    const previousStatus = (currentTx[0] && currentTx[0].status) || null;
     let newStatus = data.status;
     let newApprovalLevel;
     let finalApproval = false;
-    
+
     if (data.status === 'approved') {
       // 3-tier: advance front_office -> back_office_verifier -> back_office_final -> final_approved
       if (currentLevel === 'front_office') {
@@ -1226,7 +1232,41 @@ const Gsec = {
     
     try {
       const [result] = await db.query(sql, values);
-      
+
+      // If a Sell deal is being rejected, release the face value it locked
+      // against its linked Buy deal's remaining_face_value. The deduction
+      // happens at Sell *creation* time (see isinMasterController.saveGsec),
+      // before any approval - so if the Sell never executes, that hold must
+      // be given back, otherwise the Buy deal's available balance stays
+      // permanently short by the rejected amount. Guarded on previousStatus
+      // !== 'rejected' so re-rejecting an already-rejected row (shouldn't
+      // normally happen, but defensively) doesn't double-restore.
+      if (newStatus === 'rejected' && previousStatus !== 'rejected') {
+        try {
+          const [txRows] = await db.query(
+            'SELECT transaction_type, buy_deal_number, face_value FROM gsec WHERE id = ?',
+            [id]
+          );
+          const tx = txRows && txRows[0];
+          if (tx && tx.transaction_type === 'Sell' && tx.buy_deal_number) {
+            const [buyRows] = await db.query(
+              'SELECT id, face_value, remaining_face_value FROM gsec WHERE deal_number = ? AND transaction_type = "Buy"',
+              [tx.buy_deal_number]
+            );
+            const buyDeal = buyRows && buyRows[0];
+            if (buyDeal) {
+              const currentRemaining = parseFloat(buyDeal.remaining_face_value ?? buyDeal.face_value ?? 0);
+              const restored = currentRemaining + parseFloat(tx.face_value || 0);
+              await db.query('UPDATE gsec SET remaining_face_value = ? WHERE id = ?', [restored.toFixed(4), buyDeal.id]);
+              await Gsec.syncFutureCouponCashflowsForBuyDeal(tx.buy_deal_number);
+            }
+          }
+        } catch (restoreErr) {
+          console.error('Failed to restore remaining_face_value on Sell rejection:', restoreErr);
+          // Don't throw - the status update itself already succeeded.
+        }
+      }
+
       // If finally approved, create ledger entries
       if (finalApproval) {
         try {
