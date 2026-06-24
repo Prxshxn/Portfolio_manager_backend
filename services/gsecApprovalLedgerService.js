@@ -30,6 +30,41 @@ function truncate8(x) {
   return Math.floor(Number(x) * 100000000) / 100000000;
 }
 
+/** Reject sentinel/garbage accrued_interest_calculation (per-100 semi-annual coupon %). */
+const SENTINEL_ACCRUED_THRESHOLD = 9999;
+
+function isSaneAccruedPer100(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 && n <= 50 && n < SENTINEL_ACCRUED_THRESHOLD;
+}
+
+function isSaneCleanPer100(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 && n <= 200;
+}
+
+/**
+ * Annual coupon rate (percent, e.g. 10 for 10%) for effective-yield carry pricing.
+ * Prefers buy.accrued_interest_calculation × 2; falls back to isin_master.coupon_rate.
+ */
+async function resolveAnnualCouponRatePercent(buyDeal) {
+  const semi = Number(buyDeal.accrued_interest_calculation);
+  if (isSaneAccruedPer100(semi)) {
+    const annual = semi * 2;
+    if (annual > 0 && annual <= 100) return annual;
+  }
+  const isin = buyDeal.isin_number || buyDeal.isin;
+  if (isin) {
+    const [rows] = await db.query(
+      'SELECT coupon_rate FROM isin_master WHERE isin_number = ? LIMIT 1',
+      [isin]
+    );
+    const cr = Number(rows?.[0]?.coupon_rate);
+    if (Number.isFinite(cr) && cr > 0 && cr <= 100) return cr;
+  }
+  return null;
+}
+
 /** Same default as buy compound path when settlement_accounts / mappings are missing */
 const DEFAULT_GSEC_BANK_LEDGER_CODE = '131-101-410-164-44';
 
@@ -197,6 +232,10 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
     buyDeal = buyRows && buyRows[0] ? buyRows[0] : null;
   }
 
+  if (buyDeal && options.buyDealPatch) {
+    buyDeal = { ...buyDeal, ...options.buyDealPatch };
+  }
+
   // Allow callers (e.g. Buy/Sell buybacks that don't persist a GSec holding) to
   // supply the buy-side context so the full P&L sell journal is produced instead
   // of the simplified legacy entry.
@@ -286,9 +325,10 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
   let carryClean = null;
   if (holdingDays > 0) {
     const buyYield = Number(buyDeal.yield || 0);
-    const annualCouponRate = Number(buyDeal.accrued_interest_calculation || 0) * 2;
+    const annualCouponRate = await resolveAnnualCouponRatePercent(buyDeal);
     if (
       buyYield > 0 &&
+      annualCouponRate != null &&
       annualCouponRate > 0 &&
       buyDeal.maturity_date &&
       sellFace > 0
@@ -300,9 +340,17 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
           valueDate: sellDate,
           maturityDate: toYmdUtc(buyDeal.maturity_date)
         });
-        if (carry && Number.isFinite(carry.cleanPrice)) {
+        if (carry && isSaneCleanPer100(carry.cleanPrice)) {
           carryClean = Number(carry.cleanPrice);
           amortToSell = truncate8((sellFace * (carryClean - buyClean)) / 100);
+        } else if (carry && !isSaneCleanPer100(carry.cleanPrice)) {
+          console.warn(
+            `[gsecSellLedger] carry clean out of range for ${transaction.deal_number}:`,
+            carry.cleanPrice,
+            '(annualCouponRate=',
+            annualCouponRate,
+            ') — using per_day_amort fallback'
+          );
         }
       } catch (e) {
         console.warn(

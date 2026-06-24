@@ -303,14 +303,20 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     // (a) still Active/Pending, AND
     // (b) not flagged as matured (the maturity flow sets matured=1 but does
     //     NOT change `status`, so a status-only filter leaks matured deals),
-    // AND (c) whose maturity_date is still in the future relative to the
+    // (c) whose maturity_date is still in the future relative to the
     //     report's as-at date - this safety net catches deals whose maturity
-    //     processing was missed for whatever reason.
+    //     processing was missed for whatever reason, AND
+    // (d) not rejected in the approval workflow - rejecting a deal only
+    //     updates `approval_status`/`current_approval_level`, never the
+    //     separate lifecycle `status` column (see RepoDealModel.updateApprovalStatus),
+    //     so a rejected deal's `status` stays 'Pending' and would otherwise keep
+    //     locking up collateral it was never actually allowed to hold.
     const [childRows] = await db.query(`
       SELECT rdi.isin_number, COALESCE(SUM(rdi.face_value), 0) AS rc
       FROM repo_deal_isins rdi JOIN repo_deals rd ON rd.id = rdi.repo_deal_id
       WHERE rdi.isin_number IN (${ph})
         AND rd.status IN ('Active','Pending')
+        AND COALESCE(rd.approval_status, '') <> 'rejected'
         AND COALESCE(rd.matured, 0) = 0
         AND (rd.maturity_date IS NULL OR DATE(rd.maturity_date) > DATE(?))
       GROUP BY rdi.isin_number`, [...uniqueIsins, effectiveAsAtDate]);
@@ -322,6 +328,7 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       WHERE rdi.id IS NULL
         AND rd.isin_number IN (${ph})
         AND rd.status IN ('Active','Pending')
+        AND COALESCE(rd.approval_status, '') <> 'rejected'
         AND COALESCE(rd.matured, 0) = 0
         AND (rd.maturity_date IS NULL OR DATE(rd.maturity_date) > DATE(?))
       GROUP BY rd.isin_number`, [...uniqueIsins, effectiveAsAtDate]);
