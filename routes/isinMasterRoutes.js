@@ -106,6 +106,8 @@ router.post('/gsec-buyback', isinMasterController.saveGsecBuyback);
 
 // Get buy deals with remaining face value, filtered by ISIN and portfolio
 router.get('/gsec/buy-deals', isinMasterController.getBuyDealsWithBalance);
+// Source buy-deal details for sell / sell-buyback authorizer slips
+router.get('/gsec/source-buy-deals', isinMasterController.getGsecSourceBuyDeals);
 
 /**
  * @swagger

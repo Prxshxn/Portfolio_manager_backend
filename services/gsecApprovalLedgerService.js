@@ -318,6 +318,12 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
     }
   }
 
+  // Same-day buy/sell (e.g. Sell/Buy buyback leg1): no amortisation or carryClean.
+  if (holdingDays === 0) {
+    amortToSell = 0;
+    carryClean = null;
+  }
+
   // 5) Capital gain as the plug, which equals sellFace * (sellClean - carryClean) / 100
   //    (and sellFace * (sellClean - buyClean) / 100 - amortToSell on the legacy path).
   const sumKnownCr = truncate8(
@@ -510,5 +516,6 @@ module.exports = {
   postFinalApprovedBuyLedger,
   postFinalApprovedSellLedger,
   utcDayDiffSigned,
+  toYmdUtc,
   truncate8
 };

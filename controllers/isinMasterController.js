@@ -60,6 +60,27 @@ module.exports = {
       res.status(500).json({ success: false, error: err.message });
     }
   },
+
+  /**
+   * Source buy-deal lookup for sell / sell-buyback authorizer slips.
+   * GET /api/isin-master/gsec/source-buy-deals?deal_numbers=dn1,dn2
+   */
+  getGsecSourceBuyDeals: async (req, res) => {
+    try {
+      const raw = req.query.deal_numbers || req.query.dealNumbers || '';
+      const dealNumbers = String(raw)
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (!dealNumbers.length) {
+        return res.json({ success: true, data: [] });
+      }
+      const deals = await Gsec.getBuyDealsByDealNumbers(dealNumbers);
+      res.json({ success: true, data: deals });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  },
   /**
    * Get the latest deal number for Gsec transactions up to a given date
    * GET /api/isin-master/gsec-latest-deal-number?date=YYYY-MM-DD
