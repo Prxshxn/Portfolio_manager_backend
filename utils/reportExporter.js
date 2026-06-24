@@ -140,7 +140,7 @@ const TBILL_EXPORT_COLUMNS = [
   { key: 'days_to_maturity', label: 'Days to Maturity' },
   { key: 'price_per_100', label: 'Price per 100' },
   { key: 'settlement_amount', label: 'Settlement Amount' },
-  { key: 'portfolio_id', label: 'Portfolio ID' },
+  { key: 'portfolio', label: 'Portfolio' },
   { key: 'remaining_face_value', label: 'Remaining Face Value' },
   { key: 'per_day_accrual', label: 'Per Day Accrual' },
   { key: 'accrued_interest_to_date', label: 'Accrued Interest to Date' },
