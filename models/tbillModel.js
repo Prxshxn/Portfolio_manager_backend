@@ -155,6 +155,18 @@ async function ensureTbillSchema() {
       await db.query(`ALTER TABLE tbill ADD COLUMN ${name} ${def}`);
     }
   }
+
+  const [portfolioCol] = await db.query(
+    `SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tbill' AND COLUMN_NAME = 'portfolio_id'`
+  );
+  if (portfolioCol[0]?.DATA_TYPE === 'int') {
+    await db.query('ALTER TABLE tbill MODIFY COLUMN portfolio_id VARCHAR(64) NULL');
+    await db.query(
+      `UPDATE tbill SET portfolio_id = 'Sherwood'
+       WHERE portfolio_id IS NULL OR portfolio_id IN ('0', 0)`
+    );
+  }
 }
 
 function parseNum(v) {
