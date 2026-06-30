@@ -507,6 +507,66 @@ router.get('/balance-sheet', auth, async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Trial Balance - every account (not just asset/liability/equity), net
+// balance placed in whichever column (Debit/Credit) the balance actually
+// sits on. Unlike Balance Sheet, this isn't category-aware: a liability
+// account with a net debit balance still shows under Debit, exactly as a
+// real trial balance would (it's a raw double-entry check, not a
+// classified statement).
+// ---------------------------------------------------------------------------
+router.get('/trial-balance', auth, async (req, res) => {
+  try {
+    const { asOfDate } = req.query;
+    if (!asOfDate) {
+      return res.status(400).json({ error: 'As of date is required' });
+    }
+
+    const [accounts] = await db.query(`
+      SELECT coa.id, coa.account_code, coa.name, at.category,
+             COALESCE(SUM(le.debit_amount - le.credit_amount), 0) AS net_balance
+      FROM chart_of_accounts coa
+      JOIN account_types at ON coa.account_type_id = at.id
+      LEFT JOIN ledger_entries le ON coa.id = le.account_id
+                                 AND le.entry_date <= ?
+      GROUP BY coa.id
+      ORDER BY coa.account_code
+    `, [asOfDate]);
+
+    let totalDebit = 0;
+    let totalCredit = 0;
+    const rows = accounts
+      .map((a) => {
+        const net = parseFloat(a.net_balance) || 0;
+        const debit = net >= 0 ? net : 0;
+        const credit = net < 0 ? -net : 0;
+        totalDebit += debit;
+        totalCredit += credit;
+        return {
+          id: a.id,
+          account_code: a.account_code,
+          name: a.name,
+          category: a.category,
+          debit,
+          credit
+        };
+      })
+      // Trial balance conventionally omits accounts with no activity at all.
+      .filter((a) => a.debit !== 0 || a.credit !== 0);
+
+    res.json({
+      asOfDate,
+      accounts: rows,
+      totalDebit,
+      totalCredit,
+      balanced: Math.abs(totalDebit - totalCredit) < 0.01
+    });
+  } catch (error) {
+    console.error('Error generating trial balance:', error);
+    res.status(500).json({ error: 'Failed to generate trial balance' });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Settlement Ledger Preview
 // Source of truth: transaction tables (gsec, buyback_deals, repo_deals).
 // Ledger entries are LEFT JOINed so unposted deals still appear.
