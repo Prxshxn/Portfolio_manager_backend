@@ -5,11 +5,11 @@ const db = require('../config/db');
 // GET /api/reports/mark-to-market
 router.get('/', async (req, res) => {
   try {
-    const { series, isin, maturityDate, format, page = 1, pageSize = 20 } = req.query;
+    const { series, isin, maturityDate, asAtDate, format, page = 1, pageSize = 20 } = req.query;
 
     // Fetch ALL joined rows (no LIMIT) so aggregation by ISIN is complete
     let sql = `
-      SELECT 
+      SELECT
         mtm.series,
         mtm.isin_number as isin,
         mtm.isin_issuer,
@@ -27,10 +27,15 @@ router.get('/', async (req, res) => {
         g.transaction_type
       FROM mark_to_market mtm
       LEFT JOIN gsec g ON mtm.isin_number COLLATE utf8mb4_unicode_ci = g.isin_number COLLATE utf8mb4_unicode_ci
+        AND (g.status IS NULL OR g.status <> 'rejected')
+        ${asAtDate ? 'AND g.value_date <= ?' : ''}
       WHERE 1=1
     `;
 
     const params = [];
+    if (asAtDate) {
+      params.push(asAtDate);
+    }
 
     if (series) {
       sql += ' AND mtm.series LIKE ?';
@@ -127,12 +132,38 @@ router.get('/', async (req, res) => {
     const offset = (pg - 1) * ps;
     const pagedData = allData.slice(offset, offset + ps);
 
+    // Outstanding exposure not yet reflected in settled holdings above:
+    // GSec Sells still pending approval, and Buyback deals not yet Approved -
+    // these change the eventual MTM position but haven't settled as of
+    // asAtDate, so the user needs visibility into them separately.
+    const effectiveAsAt = asAtDate || new Date().toISOString().slice(0, 10);
+    const [outstandingSells] = await db.query(`
+      SELECT deal_number, isin_number AS isin, face_value, value_date, status, current_approval_level
+      FROM gsec
+      WHERE transaction_type = 'Sell'
+        AND status <> 'final_approved' AND status <> 'rejected'
+        AND value_date <= ?
+      ORDER BY value_date DESC
+    `, [effectiveAsAt]);
+
+    const [outstandingBuybacks] = await db.query(`
+      SELECT deal_number, leg1_isin AS isin, leg1_face_value AS face_value, leg1_value_date AS value_date, deal_status
+      FROM buyback_deals
+      WHERE deal_status NOT IN ('Approved', 'Rejected', 'Settled')
+        AND leg1_value_date <= ?
+      ORDER BY leg1_value_date DESC
+    `, [effectiveAsAt]);
+
     res.json({
       success: true,
       data: pagedData,
       total,
       page: pg,
-      pageSize: ps
+      pageSize: ps,
+      outstanding: {
+        sells: outstandingSells,
+        buybacks: outstandingBuybacks
+      }
     });
   } catch (error) {
     console.error('Error fetching mark-to-market report:', error);
