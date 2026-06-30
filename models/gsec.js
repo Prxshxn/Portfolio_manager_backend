@@ -178,13 +178,13 @@ const Gsec = {
       const counterpartyValue = data.counterparty != null && data.counterparty !== '' ? data.counterparty : counterpartyId;
       const fundMovementValue = String(data.fundMovement || data.fund_movement || 'no').toLowerCase() === 'yes' ? 'yes' : 'no';
       const sql = `INSERT INTO gsec (
-        transaction_type, counterparty_id, deal_number, isin_number, face_value, trade_date, value_date, next_coupon_date, 
-        last_coupon_date, number_of_days_interest_accrued, number_of_days_for_coupon_period, accrued_interest, 
-        coupon_interest, clean_price, dirty_price, accrued_interest_calculation, accrued_interest_six_decimals, 
-        accrued_interest_for_100, settlement_amount, settlement_mode, issue_date, maturity_date, coupon_dates, 
-        yield, brokerage, currency, portfolio, strategy, broker, accrued_interest_adjustment, clean_price_adjustment, 
-        buy_deal_number, status, current_approval_level, fund_movement, per_day_accrual, remaining_face_value, per_day_amortization
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+        transaction_type, counterparty_id, deal_number, isin_number, face_value, trade_date, value_date, next_coupon_date,
+        last_coupon_date, number_of_days_interest_accrued, number_of_days_for_coupon_period, accrued_interest,
+        coupon_interest, clean_price, dirty_price, accrued_interest_calculation, accrued_interest_six_decimals,
+        accrued_interest_for_100, settlement_amount, settlement_mode, issue_date, maturity_date, coupon_dates,
+        yield, brokerage, currency, portfolio, strategy, broker, accrued_interest_adjustment, clean_price_adjustment,
+        buy_deal_number, status, current_approval_level, fund_movement, per_day_accrual, remaining_face_value, per_day_amortization, custodian
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
       
       const values = [
         data.transactionType,
@@ -224,7 +224,8 @@ const Gsec = {
         fundMovementValue,
         cleanNumericValue(data.per_day_accrual),
         cleanNumericValue(data.remaining_face_value),
-        cleanNumericValue(data.per_day_amortization)
+        cleanNumericValue(data.per_day_amortization),
+        data.custodian || null
         // created_at has DEFAULT CURRENT_TIMESTAMP, so we don't need to include it
       ];
       try {
@@ -879,6 +880,75 @@ const Gsec = {
   },
 
   /**
+   * Get the Sell history against a single Buy deal - i.e. every Sell row that
+   * references this Buy deal's deal_number, in date order, with a running
+   * remaining-face-value column. Used by the GSec Portfolio Report's
+   * "click Face Value to see history" drill-down, so a user can see exactly
+   * how today's remaining face value was arrived at from the original Buy.
+   * Excludes rejected Sells - a rejected Sell never executed, so it isn't
+   * part of the deal's real history (same exclusion as
+   * getBuyDealsWithBalanceFiltered above).
+   */
+  getSellHistoryForBuyDeal: async (buyDealNumber) => {
+    const [buyRows] = await db.query(
+      `SELECT deal_number, face_value, isin_number, portfolio FROM gsec WHERE deal_number = ? AND transaction_type = 'Buy' LIMIT 1`,
+      [buyDealNumber]
+    );
+    const buyDeal = buyRows && buyRows[0];
+    if (!buyDeal) return { buyDealNumber, originalFaceValue: 0, sells: [] };
+
+    const [sellRows] = await db.query(
+      `SELECT deal_number, value_date, trade_date, face_value, status, settlement_amount, yield, counterparty_id
+       FROM gsec
+       WHERE transaction_type = 'Sell' AND buy_deal_number = ? AND status <> 'rejected'
+       ORDER BY value_date ASC, id ASC`,
+      [buyDealNumber]
+    );
+
+    const originalFaceValue = Number(buyDeal.face_value) || 0;
+    let runningRemaining = originalFaceValue;
+    const sells = sellRows.map((s) => {
+      const soldAmount = Number(s.face_value) || 0;
+      runningRemaining = Math.max(0, runningRemaining - soldAmount);
+      return {
+        deal_number: s.deal_number,
+        value_date: s.value_date,
+        trade_date: s.trade_date,
+        face_value_sold: soldAmount,
+        remaining_after: runningRemaining,
+        status: s.status,
+        settlement_amount: s.settlement_amount,
+        yield: s.yield,
+        counterparty: s.counterparty_id
+      };
+    });
+
+    return {
+      buyDealNumber,
+      isin: buyDeal.isin_number,
+      portfolio: buyDeal.portfolio,
+      originalFaceValue,
+      remainingFaceValue: runningRemaining,
+      sells
+    };
+  },
+
+  /**
+   * Total available (remaining) face value for an ISIN/portfolio as of a
+   * given date - i.e. the "opening balance" for that date if asOfDate is the
+   * day before. Reuses getBuyDealsWithBalanceFiltered (already excludes
+   * rejected Sells and accounts for buyback deductions) rather than
+   * duplicating that balance logic - sums remaining_face_value across every
+   * Buy deal for the ISIN/portfolio still holding balance as of that date.
+   * Shared by the Maturity Blotter's opening-balance line and the Daily
+   * Portfolio Balancing Report.
+   */
+  getOpeningBalance: async (isin, portfolio, asOfDate) => {
+    const deals = await Gsec.getBuyDealsWithBalanceFiltered(isin, portfolio, asOfDate);
+    return deals.reduce((sum, d) => sum + (Number(d.remaining_face_value) || 0), 0);
+  },
+
+  /**
    * Get all Buy deals with remaining face value (original - total sold from this deal)
    * Only for display, does not update Buy record. Uses buy_deal_number in Sell transactions.
    */
@@ -981,7 +1051,7 @@ const Gsec = {
       'accrued_interest_adjustment', 'broker', 'strategy', 'stratergy', 'status', 'created_by',
       'created_at', 'updated_by', 'updated_at',
       'current_approval_level', 'brokerage', 'currency',
-      'remaining_face_value', 'matured', 'sell_back_amount', 'fund_movement'
+      'remaining_face_value', 'matured', 'sell_back_amount', 'fund_movement', 'custodian'
     ];
     
     // Resolve actual columns from DB so updates are schema-aware

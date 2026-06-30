@@ -8,6 +8,10 @@ const { computeGsecPerDayAccrual, computeGsecDailyAmortization } = require('../s
 const { postFinalApprovedBuyLedger } = require('../services/gsecApprovalLedgerService');
 const { postBuySellBuybackLedger } = require('../services/buybackBuySellLedgerService');
 const {
+  runBuySellDailyAccrualPosting,
+  runBuySellDailyAmortizationPosting
+} = require('../services/buybackBuySellEodService');
+const {
   getBuyRowsForDeal: getGsecBuyRowsForDeal,
   postGsecMaturityLedger
 } = require('../services/gsecMaturityLedgerService');
@@ -255,6 +259,18 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
     let mmSkippedAlreadyPosted = 0;
     let buybackLeg2BuyPosted = 0;
     let buybackBuySellPosted = 0;
+    let buySellAccrualEodResult = {
+      posted: 0,
+      skipped_already_posted: 0,
+      stored_value_corrected: 0,
+      deals_loaded: 0
+    };
+    let buySellAmortEodResult = {
+      posted: 0,
+      skipped_already_posted: 0,
+      enabled: true,
+      deals_loaded: 0
+    };
     for (const deal of deals) {
       let amount = Number(deal.per_day_interest);
       if (isNaN(amount) || amount === undefined) {
@@ -859,6 +875,22 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
       console.error('Buyback buy/sell ledger (EOD) block failed:', buySellEodErr);
     }
 
+    // Buy/Sell buyback leg1 daily accrual + amortization (fixed face; stops on leg2 value date)
+    try {
+      [buySellAccrualEodResult, buySellAmortEodResult] = await Promise.all([
+        runBuySellDailyAccrualPosting(systemDay),
+        runBuySellDailyAmortizationPosting(systemDay)
+      ]);
+      console.log(
+        `Buy/Sell buyback EOD accrual: posted=${buySellAccrualEodResult.posted}, skipped=${buySellAccrualEodResult.skipped_already_posted}, deals=${buySellAccrualEodResult.deals_loaded}`
+      );
+      console.log(
+        `Buy/Sell buyback EOD amort: posted=${buySellAmortEodResult.posted}, skipped=${buySellAmortEodResult.skipped_already_posted}, deals=${buySellAmortEodResult.deals_loaded}`
+      );
+    } catch (buySellDailyEodErr) {
+      console.error('Buy/Sell buyback daily accrual/amort (EOD) block failed:', buySellDailyEodErr);
+    }
+
     // Clear per_day_accrual for Buy deals whose value date is still in the future (or was posted before this rule)
     await db.query(
       `UPDATE gsec SET per_day_accrual = 0
@@ -1385,7 +1417,9 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
           skipped_already_posted: gsecMaturitySkippedCount
         },
         buyback_leg2_buy_posted: buybackLeg2BuyPosted,
-        buyback_buy_sell_posted: buybackBuySellPosted
+        buyback_buy_sell_posted: buybackBuySellPosted,
+        buyback_buy_sell_daily_accrual: buySellAccrualEodResult,
+        buyback_buy_sell_daily_amortization: buySellAmortEodResult
       },
       tbill_eod: {
         daily_accrual: {

@@ -21,4 +21,10 @@ router.get('/repo', reportController.getRepoReport);
 // T-Bill report endpoint
 router.get('/tbill', reportController.getTbillReport);
 
+// Broker report endpoint (GSEC + T-Bill deals with a broker assigned)
+router.get('/broker', reportController.getBrokerReport);
+
+// Daily Portfolio Balancing Report (per-ISIN opening/closing balance + custodian split)
+router.get('/daily-portfolio-balance', reportController.getDailyPortfolioBalanceReport);
+
 module.exports = router;

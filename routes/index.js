@@ -66,6 +66,9 @@ router.use('/reports/sell-transaction', reportSellTransactionRoutes);
 // Mount GSec workflow API
 router.use('/gsec', require('./gsecRoutes'));
 
+// Mount Deal Confirmation document generation API (PDF/Word for GSEC, Buyback, Repo)
+router.use('/deal-confirmation', require('./dealConfirmationRoutes'));
+
 // Mount Coupon Maturity Blotter API
 router.use('/coupon-maturity-blotter', require('./couponMaturityBlotterRoutes'));
 

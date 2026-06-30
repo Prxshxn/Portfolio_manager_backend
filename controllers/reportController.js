@@ -4,6 +4,8 @@ const counterpartyReportService = require('../services/counterpartyReportService
 const buybackReportService = require('../services/buybackReportService');
 const repoReportService = require('../services/repoReportService');
 const tbillReportService = require('../services/tbillReportService');
+const brokerReportService = require('../services/brokerReportService');
+const dailyPortfolioBalanceService = require('../services/dailyPortfolioBalanceService');
 const reportExporter = require('../utils/reportExporter');
 
 // GET /api/reports/gsec
@@ -435,5 +437,30 @@ exports.getTbillReport = async (req, res) => {
   } catch (err) {
     console.error('T-Bill Report Error:', err);
     res.status(500).json({ error: 'Failed to generate T-Bill report', details: err.message });
+  }
+};
+
+exports.getBrokerReport = async (req, res) => {
+  try {
+    const { startDate, endDate, broker } = req.query;
+    const result = await brokerReportService.getBrokerReport({ startDate, endDate, broker });
+    res.json(result);
+  } catch (err) {
+    console.error('Broker Report Error:', err);
+    res.status(500).json({ error: 'Failed to generate Broker report', details: err.message });
+  }
+};
+
+exports.getDailyPortfolioBalanceReport = async (req, res) => {
+  try {
+    const { asAtDate } = req.query;
+    if (!asAtDate) {
+      return res.status(400).json({ error: 'asAtDate is required' });
+    }
+    const result = await dailyPortfolioBalanceService.getDailyPortfolioBalance(asAtDate);
+    res.json(result);
+  } catch (err) {
+    console.error('Daily Portfolio Balance Report Error:', err);
+    res.status(500).json({ error: 'Failed to generate Daily Portfolio Balance report', details: err.message });
   }
 };

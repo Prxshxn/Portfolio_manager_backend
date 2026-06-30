@@ -29,6 +29,20 @@ const {
 const BUYBACK_TREASURY_ACCOUNT = '131-101-350-204-44'; // Treasury Bonds - Trading A/C (Buyback)
 const BUYBACK_ACCRUED_ACCOUNT = '131-101-350-208-44'; // Accrued Coupon Interest Paid at Purchase - TBond Trading (Buyback)
 
+// Buy/Sell buyback daily EOD + leg2 accrual reversal accounts
+const BUYSELL_ACCRUAL_ASSET = '131-101-290-216-44';
+const BUYSELL_ACCRUAL_INCOME = '467-101-190-488-44';
+const BUYSELL_AMORT_FA = '131-101-170-050-44';
+const BUYSELL_AMORT_REVENUE = '358-101-130-428-44';
+
+function syntheticLeg1BuyDealNumber(bbDealNumber) {
+  return `${bbDealNumber}/BB-L1/BUY`;
+}
+
+function syntheticLeg2SellDealNumber(bbDealNumber) {
+  return `${bbDealNumber}/BB-L2/SELL`;
+}
+
 function toYmd(d) {
   if (!d) return null;
   const x = new Date(d);
@@ -80,23 +94,21 @@ async function buildLeg1BuyDealContext(bb) {
   const couponRate = parseFloat(bb.coupon_rate ?? isin.coupon_rate ?? 0) || 0;
 
   return {
-    deal_number: `${bb.deal_number}/BB-L1/BUY`,
+    deal_number: syntheticLeg1BuyDealNumber(bb.deal_number),
     value_date: bb.leg1_value_date,
     trade_date: bb.leg1_trade_date || bb.leg1_value_date,
-    maturity_date: bb.maturity_date || isin.maturity_date || null,
+    maturity_date: bb.leg2_value_date || bb.maturity_date || isin.maturity_date || null,
     issue_date: bb.issue_date || isin.issue_date || null,
     face_value: legFace(bb.leg1_adjusted_face_value, bb.leg1_face_value),
     clean_price: bb.leg1_clean_price,
     dirty_price: bb.leg1_dirty_price,
     yield: bb.leg1_yield_rate,
-    // gsec stores the per-period (semi-annual) coupon; the sell service doubles it
-    // back to an annual rate for the effective-yield carry price.
     accrued_interest_calculation: couponRate ? couponRate / 2 : null,
     last_coupon_date: null,
     next_coupon_date: null,
-    per_day_amortization: 0,
+    per_day_amortization: Number(bb.leg1_per_day_amortization) || 0,
     coupon_interest: null,
-    remaining_face_value: null,
+    remaining_face_value: legFace(bb.leg1_adjusted_face_value, bb.leg1_face_value),
     isin_number: bb.leg1_isin
   };
 }
@@ -124,7 +136,7 @@ async function postBuySellBuybackLedger(bb, opts = {}) {
 
   // ---- leg1 = Buy ----------------------------------------------------------
   if (bb.leg1_transaction_type === 'Buy') {
-    const synthetic = `${bb.deal_number}/BB-L1/BUY`;
+    const synthetic = syntheticLeg1BuyDealNumber(bb.deal_number);
     const action = { leg: 'leg1', type: 'Buy', deal_number: synthetic, status: 'pending' };
 
     if ((await ledgerCount(synthetic)) > 0) {
@@ -170,7 +182,7 @@ async function postBuySellBuybackLedger(bb, opts = {}) {
   // single ledger entry with NO sell allocations and NO portfolio/holding deduction.
   // It is linked to leg1's buy context purely to derive full P&L.
   if (bb.leg2_transaction_type === 'Sell') {
-    const synthetic = `${bb.deal_number}/BB-L2/SELL`;
+    const synthetic = syntheticLeg2SellDealNumber(bb.deal_number);
     const action = { leg: 'leg2', type: 'Sell', deal_number: synthetic, status: 'pending' };
 
     if ((await ledgerCount(synthetic)) > 0) {
@@ -211,7 +223,9 @@ async function postBuySellBuybackLedger(bb, opts = {}) {
           descriptionPrefix: prefix,
           buyDealOverride,
           treasuryAccountOverride: BUYBACK_TREASURY_ACCOUNT,
-          accruedAtPurchaseAccountOverride: BUYBACK_ACCRUED_ACCOUNT
+          accruedAtPurchaseAccountOverride: BUYBACK_ACCRUED_ACCOUNT,
+          accruedIncomeAccountOverride: BUYSELL_ACCRUAL_INCOME,
+          accruedReceivableAccountOverride: BUYSELL_ACCRUAL_ASSET
         });
         action.status = r.success ? (r.legacy ? 'posted_legacy' : 'posted') : 'failed';
         if (!r.success) action.error = r.error;
@@ -223,4 +237,16 @@ async function postBuySellBuybackLedger(bb, opts = {}) {
   return { deal_number: bb.deal_number, actions };
 }
 
-module.exports = { postBuySellBuybackLedger };
+module.exports = {
+  postBuySellBuybackLedger,
+  buildLeg1BuyDealContext,
+  syntheticLeg1BuyDealNumber,
+  syntheticLeg2SellDealNumber,
+  valueDateOnOrBeforeSystemDay,
+  BUYBACK_TREASURY_ACCOUNT,
+  BUYBACK_ACCRUED_ACCOUNT,
+  BUYSELL_ACCRUAL_ASSET,
+  BUYSELL_ACCRUAL_INCOME,
+  BUYSELL_AMORT_FA,
+  BUYSELL_AMORT_REVENUE
+};
