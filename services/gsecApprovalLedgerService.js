@@ -165,9 +165,7 @@ async function postFinalApprovedBuyLedger(transaction, options = {}) {
   }
 
   const ledgerResult = await ledgerController.postCompoundLedgerEntry({
-    date: transaction.value_date
-      ? new Date(transaction.value_date).toISOString().slice(0, 10)
-      : new Date().toISOString().slice(0, 10),
+    date: toYmdUtc(transaction.value_date) || toYmdUtc(new Date()),
     dr_accounts: [
       {
         account_code: treasuryBondsAccount,
@@ -211,9 +209,7 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
   const dealId = options.dealIdOverride || transaction.deal_number;
   const amount = Number(transaction.settlement_amount || transaction.face_value || 0);
 
-  const sellDate = transaction.value_date
-    ? new Date(transaction.value_date).toISOString().slice(0, 10)
-    : new Date().toISOString().slice(0, 10);
+  const sellDate = toYmdUtc(transaction.value_date) || toYmdUtc(new Date());
 
   const drAccount = await resolveSellDrBankAccount(transaction);
 
@@ -399,9 +395,11 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
     (await accountMapping.getAccountCodeOptional(accountMapping.MAPPING_KEYS.GSEC_CAPITAL_GAIN_LOSS)) ||
     '358-101-130-398-44';
   const accruedIncomeAccount =
+    options.accruedIncomeAccountOverride ||
     (await accountMapping.getAccountCodeOptional(accountMapping.MAPPING_KEYS.GSEC_ACCRUAL_INCOME)) ||
     '467-101-190-470-44';
   const accruedReceivableAccount =
+    options.accruedReceivableAccountOverride ||
     (await accountMapping.getAccountCodeOptional(accountMapping.MAPPING_KEYS.GSEC_ACCRUAL_ASSET)) ||
     '131-101-290-218-44';
 
