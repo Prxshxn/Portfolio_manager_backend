@@ -108,6 +108,8 @@ router.post('/gsec-buyback', isinMasterController.saveGsecBuyback);
 router.get('/gsec/buy-deals', isinMasterController.getBuyDealsWithBalance);
 // Source buy-deal details for sell / sell-buyback authorizer slips
 router.get('/gsec/source-buy-deals', isinMasterController.getGsecSourceBuyDeals);
+// Sell history against a single Buy deal (Portfolio Report Face Value drill-down)
+router.get('/gsec/sell-history', isinMasterController.getGsecSellHistory);
 
 /**
  * @swagger
