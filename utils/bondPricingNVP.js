@@ -70,10 +70,11 @@ function calculateNVP({
   maturityDate,
   issueDate,
   couponDate1,
-  couponDate2
+  couponDate2,
+  quiet = false // suppress per-call debug logging (used by solveYieldFromPrice's bisection search)
 }) {
-  console.log("CALCULATE NVP FUNCTION CALLED");
-  
+  if (!quiet) console.log("CALCULATE NVP FUNCTION CALLED");
+
   if (!faceValue || !couponRate || !yieldRate || !systemDate || !maturityDate || !issueDate || !couponDate1 || !couponDate2) {
     return { nvp: '', accruedInterest: '' };
   }
@@ -174,35 +175,37 @@ function calculateNVP({
   const truncatedCleanPrice = Math.floor(cleanPrice * 10000) / 10000;
 
   // Debug logging with detailed calculation breakdown
-  console.log('=== NVP Calculation Debug ===');
-  console.log('Value Date (systemDate/asAtDate):', systemDate);
-  console.log('Issue Date:', issueDate);
-  console.log('Maturity Date:', maturityDate);
-  console.log('Face Value (input):', faceValue, '(using fv=100 for calculation)');
-  console.log('Coupon Rate:', couponRate);
-  console.log('Yield Rate:', yieldRate);
-  console.log('--- Coupon Dates ---');
-  console.log('Last Coupon Date:', lastCouponDate.toISOString().split('T')[0]);
-  console.log('Next Coupon Date:', nextCouponDate.toISOString().split('T')[0]);
-  console.log('Settle Date:', settle.toISOString().split('T')[0]);
-  console.log('--- Day Calculations (matching frontend) ---');
-  console.log('Days Accrued (settle - lastCoupon):', daysAccrued);
-  console.log('Days In Coupon Period (nextCoupon - lastCoupon):', daysInCouponPeriod);
-  console.log('Days To Next Coupon (nextCoupon - settle):', daysToNextCoupon);
-  console.log('Fractional Period (daysToNextCoupon / daysInCouponPeriod):', fractionalPeriod);
-  console.log('--- Cash Flows ---');
-  console.log('Number of cash flows:', cashFlows.length);
-  cashFlows.forEach((cf, idx) => {
-    const t = fractionalPeriod + cf.periodCount;
-    const pv = cf.amount / Math.pow(1 + ytmPerPeriod, t);
-    console.log(`  CF ${idx + 1}: date=${cf.date.toISOString().split('T')[0]}, amount=${cf.amount.toFixed(4)}, t=${t.toFixed(6)}, PV=${pv.toFixed(6)}`);
-  });
-  console.log('Raw Dirty Price (sum of PVs):', dirtyPrice);
-  console.log('--- Final Values ---');
-  console.log('Dirty Price Per 100 (truncated):', truncatedDirtyPrice);
-  console.log('Accrued Interest Per 100 (truncated):', truncatedAccruedInterestPer100);
-  console.log('Clean Price (dirty - accrued, truncated):', truncatedCleanPrice);
-  console.log('================================');
+  if (!quiet) {
+    console.log('=== NVP Calculation Debug ===');
+    console.log('Value Date (systemDate/asAtDate):', systemDate);
+    console.log('Issue Date:', issueDate);
+    console.log('Maturity Date:', maturityDate);
+    console.log('Face Value (input):', faceValue, '(using fv=100 for calculation)');
+    console.log('Coupon Rate:', couponRate);
+    console.log('Yield Rate:', yieldRate);
+    console.log('--- Coupon Dates ---');
+    console.log('Last Coupon Date:', lastCouponDate.toISOString().split('T')[0]);
+    console.log('Next Coupon Date:', nextCouponDate.toISOString().split('T')[0]);
+    console.log('Settle Date:', settle.toISOString().split('T')[0]);
+    console.log('--- Day Calculations (matching frontend) ---');
+    console.log('Days Accrued (settle - lastCoupon):', daysAccrued);
+    console.log('Days In Coupon Period (nextCoupon - lastCoupon):', daysInCouponPeriod);
+    console.log('Days To Next Coupon (nextCoupon - settle):', daysToNextCoupon);
+    console.log('Fractional Period (daysToNextCoupon / daysInCouponPeriod):', fractionalPeriod);
+    console.log('--- Cash Flows ---');
+    console.log('Number of cash flows:', cashFlows.length);
+    cashFlows.forEach((cf, idx) => {
+      const t = fractionalPeriod + cf.periodCount;
+      const pv = cf.amount / Math.pow(1 + ytmPerPeriod, t);
+      console.log(`  CF ${idx + 1}: date=${cf.date.toISOString().split('T')[0]}, amount=${cf.amount.toFixed(4)}, t=${t.toFixed(6)}, PV=${pv.toFixed(6)}`);
+    });
+    console.log('Raw Dirty Price (sum of PVs):', dirtyPrice);
+    console.log('--- Final Values ---');
+    console.log('Dirty Price Per 100 (truncated):', truncatedDirtyPrice);
+    console.log('Accrued Interest Per 100 (truncated):', truncatedAccruedInterestPer100);
+    console.log('Clean Price (dirty - accrued, truncated):', truncatedCleanPrice);
+    console.log('================================');
+  }
 
   return {
     nvp: truncatedCleanPrice.toFixed(4),
@@ -210,7 +213,69 @@ function calculateNVP({
   };
 }
 
+/**
+ * Inverse of calculateNVP: back-solve the yield that produces a given clean
+ * price. Used when a clean/dirty price is computed by some other method
+ * (e.g. simple-interest settlement on a premature buyback maturity) and the
+ * bond's implied yield needs to be derived from it for display/reporting,
+ * rather than the other way around.
+ *
+ * Clean price is monotonically decreasing in yield, so a plain bisection
+ * search is robust here (no need for Newton-Raphson/derivatives).
+ */
+function solveYieldFromPrice({
+  targetCleanPrice,
+  faceValue,
+  couponRate,
+  systemDate,
+  maturityDate,
+  issueDate,
+  couponDate1,
+  couponDate2,
+  minYield = 0.01,
+  maxYield = 50,
+  maxIterations = 60,
+  tolerance = 0.00005
+}) {
+  const target = Number(targetCleanPrice);
+  if (!isFinite(target)) return null;
+
+  const priceAt = (yieldRate) => {
+    const result = calculateNVP({
+      faceValue, couponRate, yieldRate, systemDate, maturityDate, issueDate, couponDate1, couponDate2, quiet: true
+    });
+    const price = parseFloat(result.nvp);
+    return isFinite(price) ? price : null;
+  };
+
+  let lo = minYield;
+  let hi = maxYield;
+  const priceAtLo = priceAt(lo);
+  const priceAtHi = priceAt(hi);
+  if (priceAtLo == null || priceAtHi == null) return null;
+  // Price decreases as yield increases, so priceAtLo should be >= target >= priceAtHi.
+  if (target > priceAtLo || target < priceAtHi) return null;
+
+  let mid = (lo + hi) / 2;
+  for (let i = 0; i < maxIterations; i += 1) {
+    mid = (lo + hi) / 2;
+    const priceAtMid = priceAt(mid);
+    if (priceAtMid == null) return null;
+    if (Math.abs(priceAtMid - target) <= tolerance) {
+      return Math.round(mid * 1000000) / 1000000;
+    }
+    // Higher yield => lower price.
+    if (priceAtMid > target) {
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+  }
+  return Math.round(mid * 1000000) / 1000000;
+}
+
 module.exports = {
   calculateNVP,
+  solveYieldFromPrice,
   truncate4
 };
