@@ -2491,12 +2491,19 @@ MaturityController.getMaturityBlotter = async (req, res) => {
           ELSE 0
         END AS interest_amount,
         -- Counterparty names
-        CASE 
+        CASE
           WHEN mm.id IS NOT NULL THEN COALESCE(corp_mm.short_name, ind_mm.short_name, joint_mm.short_name, mm.counterparty_id)
-          WHEN g.id IS NOT NULL THEN g.counterparty
+          WHEN g.id IS NOT NULL THEN COALESCE(corp_g.short_name, ind_g.short_name, joint_g.short_name, g.counterparty_id)
           WHEN rd.id IS NOT NULL THEN COALESCE(corp_rd.short_name, ind_rd.short_name, joint_rd.short_name, rd.counterparty_id)
           ELSE 'Unknown'
-        END AS counterparty_name
+        END AS counterparty_name,
+        -- Reference deal: for a GSec Sell, the Buy deal it originated from
+        -- (so the user can trace back why this position is maturing/settling
+        -- this way). Buy-type GSec rows and Money Market/Repo deals have no
+        -- separate reference - they ARE the originating deal.
+        CASE WHEN g.id IS NOT NULL THEN g.buy_deal_number ELSE NULL END AS reference_deal_number,
+        CASE WHEN g.id IS NOT NULL THEN g.isin_number ELSE NULL END AS gsec_isin,
+        CASE WHEN g.id IS NOT NULL THEN g.portfolio ELSE NULL END AS gsec_portfolio
       FROM maturity_processing_log mpl
       LEFT JOIN money_market_deals mm ON mpl.deal_id = mm.id
       LEFT JOIN gsec g ON mpl.deal_id = g.id
@@ -2505,6 +2512,10 @@ MaturityController.getMaturityBlotter = async (req, res) => {
       LEFT JOIN counterparty_master_corporate corp_mm ON mm.counterparty_id = corp_mm.id
       LEFT JOIN counterparty_master_individual ind_mm ON mm.counterparty_id = ind_mm.id
       LEFT JOIN counterparty_master_joint joint_mm ON mm.counterparty_id = joint_mm.id
+      -- Counterparty joins for gsec (g.counterparty_id is a prefixed id like 'c12'/'i5'/'j3')
+      LEFT JOIN counterparty_master_corporate corp_g ON (g.counterparty_id LIKE 'c%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = corp_g.id) OR (g.counterparty_id = corp_g.id)
+      LEFT JOIN counterparty_master_individual ind_g ON (g.counterparty_id LIKE 'i%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = ind_g.id) OR (g.counterparty_id = ind_g.id)
+      LEFT JOIN counterparty_master_joint joint_g ON (g.counterparty_id LIKE 'j%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = joint_g.id) OR (g.counterparty_id = joint_g.id)
       -- Counterparty joins for repo
       LEFT JOIN counterparty_master_corporate corp_rd ON rd.counterparty_id = corp_rd.id
       LEFT JOIN counterparty_master_individual ind_rd ON rd.counterparty_id = ind_rd.id
@@ -2515,6 +2526,30 @@ MaturityController.getMaturityBlotter = async (req, res) => {
         AND COALESCE(mm.matured, g.matured, rd.matured, 0) = 0
       ORDER BY mpl.processed_date DESC, mpl.deal_id DESC
     `, [targetDate, targetDate, targetDate]);
+
+    // Opening balance per GSec row - the ISIN/portfolio's available balance as
+    // of the day before processed_date, reusing the shared opening-balance
+    // helper (same one used by the Daily Portfolio Balancing Report).
+    const Gsec = require('../models/gsec');
+    const dayBefore = (d) => {
+      const dt = new Date(d);
+      dt.setDate(dt.getDate() - 1);
+      return dt.toISOString().slice(0, 10);
+    };
+    const balanceCache = new Map();
+    for (const row of rows) {
+      if (!row.gsec_isin) continue;
+      const asOfDate = dayBefore(row.first_logged_date || targetDate);
+      const cacheKey = `${row.gsec_isin}|${row.gsec_portfolio || ''}|${asOfDate}`;
+      if (!balanceCache.has(cacheKey)) {
+        try {
+          balanceCache.set(cacheKey, await Gsec.getOpeningBalance(row.gsec_isin, row.gsec_portfolio, asOfDate));
+        } catch (e) {
+          balanceCache.set(cacheKey, null);
+        }
+      }
+      row.opening_balance = balanceCache.get(cacheKey);
+    }
 
     return res.json({ success: true, data: rows });
   } catch (error) {
