@@ -3019,6 +3019,7 @@ const {
   resolveIsinCouponDates,
   getCouponPeriodEOverride
 } = require('../services/gsecCouponPeriod');
+const { solveYieldFromPrice } = require('../utils/bondPricingNVP');
     const { deals } = req.body || {};
     const userId = req.user?.id || 1;
     const [buybackLinkColRows] = await db.query(
@@ -3174,7 +3175,7 @@ const {
         // rows is a sentinel/garbage value (e.g. 999999.9999) that corrupts the clean
         // price (clean = dirty - accrued).
         const [leg2IsinMasterRows] = await connection.query(
-          'SELECT coupon_rate, issue_date, coupon_date_1, coupon_date_2 FROM isin_master WHERE isin_number = ? LIMIT 1',
+          'SELECT coupon_rate, issue_date, coupon_date_1, coupon_date_2, maturity_date FROM isin_master WHERE isin_number = ? LIMIT 1',
           [deal.leg2_isin]
         );
         const leg2IsinMaster = (leg2IsinMasterRows && leg2IsinMasterRows[0]) || {};
@@ -3204,10 +3205,33 @@ const {
           ? round4(cleanPricePer100 + accruedInterestPer100)
           : null;
 
+        // The settlement/price above are derived from simple interest on the
+        // financing rate, not from the bond's yield - so leg2_yield_rate would
+        // otherwise be left stale at whatever yield was stored before this
+        // premature maturity. Back-solve the yield implied by the new clean
+        // price so it stays consistent with reality for future reporting.
+        let impliedYieldRate = parseFloat(deal.leg2_yield_rate);
+        if (cleanPricePer100 != null) {
+          const solvedYield = solveYieldFromPrice({
+            targetCleanPrice: cleanPricePer100,
+            faceValue: 100,
+            couponRate: deal.coupon_rate || leg2IsinMaster.coupon_rate,
+            systemDate: leg2ValueDate,
+            maturityDate: deal.maturity_date || leg2IsinMaster.maturity_date,
+            issueDate: deal.issue_date || leg2IsinMaster.issue_date,
+            couponDate1: deal.coupon_date1 || leg2IsinMaster.coupon_date_1,
+            couponDate2: deal.coupon_date2 || leg2IsinMaster.coupon_date_2
+          });
+          if (solvedYield != null) {
+            impliedYieldRate = solvedYield;
+          }
+        }
+
         await connection.query(
           `UPDATE buyback_deals
            SET leg1_interest_rate = ?,
                leg1_yield_rate = ?,
+               leg2_yield_rate = ?,
                leg2_value_date = ?,
                leg2_settlement_amount = ?,
                leg2_clean_price = ?,
@@ -3218,6 +3242,7 @@ const {
           [
             rate,
             rate,
+            impliedYieldRate,
             leg2ValueDate,
             newLeg2Settlement,
             cleanPricePer100,
@@ -3306,10 +3331,15 @@ const {
               throw new Error(`Cannot replace linked GSEC deal ${oldGsecDealNumber}; downstream usage found (${reason})`);
             }
 
+            // Clear buyback_deal_id on the old row before cancelling it - this column
+            // has a UNIQUE constraint (uq_gsec_buyback_deal_id), and the replacement
+            // row created below needs to claim the same buyback_deal_id. Without this,
+            // the INSERT/UPDATE for the new row fails with a duplicate-key error.
             await connection.query(
               `UPDATE gsec
                SET status = 'cancelled',
                    per_day_accrual = 0,
+                   ${hasBuybackDealId ? 'buyback_deal_id = NULL,' : ''}
                    updated_at = NOW()
                WHERE id = ?`,
               [oldGsec.id]
@@ -3428,7 +3458,7 @@ const {
             issueDate,
             maturityDate,
             couponDates: couponDate1 && couponDate2 ? `${couponDate1},${couponDate2}` : `${couponDate1 || ''},${couponDate2 || ''}`,
-            yield: deal.leg2_yield_rate,
+            yield: impliedYieldRate,
             brokerage: deal.leg1_brokerage || 0,
             currency: deal.leg2_currency || 'LKR',
             portfolio: deal.leg2_portfolio,
@@ -3462,7 +3492,7 @@ const {
           gsecUpdatedDealNumbers = newGsecDealNumber ? [newGsecDealNumber] : [];
         }
 
-        const notes = `Premature maturity: leg1_interest_rate=${rate}, leg2_value_date=${leg2ValueDate}, days=${days}, basis=${basis}, new leg2_settlement_amount=${newLeg2Settlement.toFixed(2)}, leg2_clean_price=${cleanPricePer100 ?? 'NA'}, leg2_dirty_price=${finalDirtyPricePer100 ?? 'NA'}`;
+        const notes = `Premature maturity: leg1_interest_rate=${rate}, leg2_value_date=${leg2ValueDate}, days=${days}, basis=${basis}, new leg2_settlement_amount=${newLeg2Settlement.toFixed(2)}, leg2_clean_price=${cleanPricePer100 ?? 'NA'}, leg2_dirty_price=${finalDirtyPricePer100 ?? 'NA'}, leg2_yield_rate=${impliedYieldRate ?? 'NA'}`;
 
         await connection.query(
           `INSERT INTO maturity_processing_log
@@ -3496,6 +3526,7 @@ const {
           leg2_clean_price: cleanPricePer100,
           leg2_dirty_price: finalDirtyPricePer100,
           leg2_accrued_interest: accruedInterestPer100,
+          leg2_yield_rate: impliedYieldRate,
           gsec_updated_rows: gsecUpdatedRows,
           gsec_updated_deal_numbers: gsecUpdatedDealNumbers,
           old_gsec_deal_number: oldGsecDealNumber,
