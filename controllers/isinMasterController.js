@@ -82,6 +82,23 @@ module.exports = {
     }
   },
   /**
+   * Sell history against a single Buy deal - for the GSec Portfolio Report's
+   * "click Face Value" drill-down.
+   * GET /api/isin-master/gsec/sell-history?buyDealNumber=...
+   */
+  getGsecSellHistory: async (req, res) => {
+    try {
+      const buyDealNumber = req.query.buyDealNumber || req.query.buy_deal_number;
+      if (!buyDealNumber) {
+        return res.status(400).json({ success: false, error: 'buyDealNumber is required' });
+      }
+      const history = await Gsec.getSellHistoryForBuyDeal(buyDealNumber);
+      res.json({ success: true, data: history });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  },
+  /**
    * Get the latest deal number for Gsec transactions up to a given date
    * GET /api/isin-master/gsec-latest-deal-number?date=YYYY-MM-DD
    */
