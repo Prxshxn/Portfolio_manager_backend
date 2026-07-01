@@ -1,6 +1,7 @@
 const RepoDeal = require('../models/repoDealModel');
 const { resolveRepoDealNumber } = RepoDeal;
 const holidayValidationService = require('../services/holidayValidationService');
+const { resolveRequestUserId } = require('../utils/requestUser');
 
 const parseCounterpartyId = (value) => {
   if (value === undefined || value === null || value === '') return null;
@@ -266,7 +267,7 @@ const repoDealController = {
         fundMovement: String(fundMovement || 'no').toLowerCase() === 'yes' ? 'yes' : 'no',
         approvalStatus: 'pending',
         currentApprovalLevel: 'front_office',
-        createdBy: req.user?.id || 1 // From auth middleware, fallback to user ID 1
+        createdBy: resolveRequestUserId(req)
       };
 
       // Create the repo deal
