@@ -666,102 +666,105 @@ MaturityController.getMaturityHandling = async (req, res) => {
       return res.status(400).json({ success: false, error: 'Invalid date format. Use YYYY-MM-DD' });
     }
 
-    const db = require('../config/database');
-    const MoneyMarketDeal = require('../models/moneyMarketDealModel');
-    const GsecDeal = require('../models/gsec');
-    const RepoDeal = require('../models/repoDealModel');
+    const { getDailyMaturityCashflow } = require('../services/dailyMaturityCashflowService');
+    const { rows, totals } = await getDailyMaturityCashflow(date, { type, status });
 
-    const wantMM = !type || type === 'all' || type === 'money_market';
-    const wantGsec = !type || type === 'all' || type === 'gsec';
-    const wantRepo = !type || type === 'all' || type === 'repo';
-
-    // Get deals with approval level information from maturity processing log
-    const [mmRows, gsecRows, repoRows] = await Promise.all([
-      wantMM ? getMaturitiesWithApprovalLevel(db, 'money_market', date) : Promise.resolve([]),
-      wantGsec ? getMaturitiesWithApprovalLevel(db, 'gsec', date) : Promise.resolve([]),
-      wantRepo ? getMaturitiesWithApprovalLevel(db, 'repo', date) : Promise.resolve([])
-    ]);
-
-    // Map to common UI shape with approval level information
-    const mmMapped = (mmRows || []).map((row, idx) => {
-      const principalAmount = parseFloat(row.principal_amount || 0);
-      const interestAmount = parseFloat(row.interest_amount || 0);
-      const maturityValue = parseFloat(row.maturity_value || 0);
-      
-      return {
-        id: row.id || row.deal_number || `mm-${idx}`,
-        deal_number: row.deal_number,
-        deal_type: 'money_market',
-        isin: row.isin || '',
-        counterparty: row.counterparty_name || row.counterparty_id,
-        face_value: principalAmount,
-        interest_amount: interestAmount,
-        maturity_amount: maturityValue,
-        maturity_date: row.maturity_date,
-        days_to_maturity: row.days_to_maturity,
-        status: row.deal_status || 'pending',
-        approval_level: row.approval_level,
-        approval_level_display: row.approval_level_display,
-        is_selectable: row.is_selectable === 1
-      };
-    });
-    
-    const gsecMapped = (gsecRows || []).map((row, idx) => {
-      const faceValue = parseFloat(row.principal_amount || 0); // principal_amount contains face_value for GSEC
-      const settlementAmount = parseFloat(row.maturity_value || 0); // maturity_value contains settlement_amount for GSEC
-      const accruedInterest = parseFloat(row.interest_amount || 0); // interest_amount contains accrued_interest for GSEC
-      
-      return {
-        id: row.id || row.deal_number || `gsec-${idx}`,
-        deal_number: row.deal_number || row.isin || `GSEC-${idx}`,
-        deal_type: 'gsec',
-        isin: row.isin,
-        counterparty: row.counterparty_name || row.counterparty,
-        face_value: faceValue,
-        interest_amount: accruedInterest,
-        maturity_amount: settlementAmount,
-        maturity_date: row.maturity_date,
-        days_to_maturity: row.days_to_maturity,
-        status: row.deal_status || 'pending',
-        approval_level: row.approval_level,
-        approval_level_display: row.approval_level_display,
-        is_selectable: row.is_selectable === 1
-      };
-    });
-
-    const repoMapped = (repoRows || []).map((row, idx) => {
-      const principalAmount = parseFloat(row.principal_amount || 0);
-      const interestAmount = parseFloat(row.interest_amount || 0);
-      const maturityAmount = parseFloat(row.maturity_value || 0);
-      
-      return {
-        id: row.id || row.deal_number || `repo-${idx}`,
-        deal_number: row.deal_number,
-        deal_type: 'repo',
-        isin: row.isin || '',
-        counterparty: row.counterparty_name || row.counterparty_id,
-        face_value: principalAmount,
-        interest_amount: interestAmount,
-        maturity_amount: maturityAmount,
-        maturity_date: row.maturity_date,
-        days_to_maturity: row.days_to_maturity,
-        status: row.deal_status || 'pending',
-        approval_level: row.approval_level,
-        approval_level_display: row.approval_level_display,
-        is_selectable: row.is_selectable === 1
-      };
-    });
-
-    let combined = [...mmMapped, ...gsecMapped, ...repoMapped];
-
-    // Optional status filter
-    if (status && status !== 'all') {
-      combined = combined.filter(d => (d.status || '').toLowerCase() === status.toLowerCase());
-    }
-
-    return res.json({ success: true, data: combined });
+    return res.json({ success: true, data: rows, totals });
   } catch (error) {
     console.error('Error fetching maturity handling data:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+/** Full deal record for authorizer deal slip / deal ticket modal */
+MaturityController.getDealTicket = async (req, res) => {
+  try {
+    const { productType, id } = req.params;
+    if (!productType || id === undefined || id === null || id === '') {
+      return res.status(400).json({ success: false, error: 'productType and id are required' });
+    }
+
+    const db = require('../config/database');
+    const lookupId = Number.isFinite(Number(id)) ? Number(id) : id;
+    const lookupDealNumber = String(id);
+
+    if (productType === 'money_market') {
+      const [rows] = await db.query(
+        `SELECT mmd.*,
+          COALESCE(corp.short_name, ind.short_name, joint.short_name, mmd.counterparty_id) AS counterparty_name
+         FROM money_market_deals mmd
+         LEFT JOIN counterparty_master_corporate corp ON mmd.counterparty_id = corp.id
+         LEFT JOIN counterparty_master_individual ind ON mmd.counterparty_id = ind.id
+         LEFT JOIN counterparty_master_joint joint ON mmd.counterparty_id = joint.id
+         WHERE mmd.id = ? OR mmd.deal_number = ?
+         LIMIT 1`,
+        [lookupId, lookupDealNumber]
+      );
+      const deal = rows[0];
+      if (!deal) {
+        return res.status(404).json({ success: false, error: 'Money market deal not found' });
+      }
+      return res.json({ success: true, dealType: 'MoneyMarket', transaction: deal });
+    }
+
+    if (productType === 'gsec') {
+      const [rows] = await db.query(
+        `SELECT g.*,
+          COALESCE(corp.short_name, ind.short_name, joint.short_name, g.counterparty_id) AS counterparty_name
+         FROM gsec g
+         LEFT JOIN counterparty_master_corporate corp ON
+           (g.counterparty_id LIKE 'c%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = corp.id)
+           OR (g.counterparty_id = corp.id)
+         LEFT JOIN counterparty_master_individual ind ON
+           (g.counterparty_id LIKE 'i%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = ind.id)
+           OR (g.counterparty_id = ind.id)
+         LEFT JOIN counterparty_master_joint joint ON
+           (g.counterparty_id LIKE 'j%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = joint.id)
+           OR (g.counterparty_id = joint.id)
+         WHERE g.id = ? OR g.deal_number = ?
+         LIMIT 1`,
+        [lookupId, lookupDealNumber]
+      );
+      const deal = rows[0];
+      if (!deal) {
+        return res.status(404).json({ success: false, error: 'GSEC deal not found' });
+      }
+      return res.json({ success: true, dealType: 'GSec', transaction: deal });
+    }
+
+    if (productType === 'repo') {
+      const RepoDeal = require('../models/repoDealModel');
+      const deal = await RepoDeal.getById(lookupId);
+      if (!deal) {
+        return res.status(404).json({ success: false, error: 'Repo deal not found' });
+      }
+      return res.json({
+        success: true,
+        dealType: 'Repo',
+        transaction: {
+          ...deal,
+          principal_amount: deal.principal_amount,
+          maturity_value: deal.maturity_amount,
+          face_value: deal.face_value || deal.principal_amount,
+          collateral_face_value: deal.face_value || deal.face_value_as_per_counterparty,
+          status: deal.approval_status,
+          current_approval_level: deal.current_approval_level
+        }
+      });
+    }
+
+    if (productType === 'buyback') {
+      const BuybackDeal = require('../models/buybackDealModel');
+      const deal = await BuybackDeal.getById(lookupId);
+      if (!deal) {
+        return res.status(404).json({ success: false, error: 'Buyback deal not found' });
+      }
+      return res.json({ success: true, dealType: 'Buyback', transaction: deal });
+    }
+
+    return res.status(400).json({ success: false, error: `Unsupported product type: ${productType}` });
+  } catch (error) {
+    console.error('Error fetching maturity deal ticket:', error);
     return res.status(500).json({ success: false, error: error.message });
   }
 };
@@ -1654,68 +1657,34 @@ MaturityController.exportMaturities = async (req, res) => {
     if (isNaN(selectedDate.getTime())) {
       return res.status(400).json({ success: false, error: 'Invalid date format. Use YYYY-MM-DD' });
     }
-    const MoneyMarketDeal = require('../models/moneyMarketDealModel');
-    const GsecDeal = require('../models/gsec');
 
-    const wantMM = !type || type === 'all' || type === 'money_market';
-    const wantGsec = !type || type === 'all' || type === 'gsec';
+    const { getDailyMaturityCashflow } = require('../services/dailyMaturityCashflowService');
+    const { rows } = await getDailyMaturityCashflow(date, { type, status });
 
-    const [mmRows, gsecRows] = await Promise.all([
-      wantMM ? MoneyMarketDeal.getMaturitiesByDate(date) : Promise.resolve([]),
-      wantGsec ? GsecDeal.getMaturitiesByDate(date) : Promise.resolve([])
-    ]);
-    // Map to exportable shape; reusing UI mapping keys where applicable
-    let combined = [
-      ...(mmRows || []).map((row, idx) => ({
-        portfolio: '',
-        custodian: '',
-        deal_number: row.deal_number,
-        face_value: row.principal_amount,
-        value_date: row.value_date || '',
-        maturity_date: row.maturity_date,
-        isin: row.isin || '',
-        coupon_interest: '',
-        clean_price: '',
-        nvp: '',
-        yield: '',
-        dtm: row.days_to_maturity,
-        balance: row.principal_amount,
-        available_balance: row.principal_amount,
-        wap: '',
-        repo_collateral: '',
-        sell_back: '',
-        counterparty: row.counterparty_name || row.counterparty_id
-      })),
-      ...(gsecRows || []).map((row, idx) => ({
-        portfolio: row.portfolio || '',
-        custodian: row.custodian || '',
-        deal_number: row.deal_number || '',
-        face_value: row.face_value,
-        value_date: row.value_date || '',
-        maturity_date: row.maturity_date,
-        isin: row.isin,
-        coupon_interest: row.coupon_interest || '',
-        clean_price: row.clean_price || '',
-        nvp: '',
-        yield: row.yield || '',
-        dtm: row.days_to_maturity,
-        balance: row.face_value,
-        available_balance: row.face_value,
-        wap: '',
-        repo_collateral: '',
-        sell_back: '',
-        counterparty: row.counterparty_name || row.counterparty
-      }))
-    ];
-    if (status && status !== 'all') {
-      // No status field in export rows; skip filter or map if available
-    }
+    const combined = (rows || []).map((row) => ({
+      cash_flow: row.cash_flow,
+      instrument: row.instrument,
+      description: row.description,
+      deal_number: row.deal_number,
+      reference_deal_number: row.reference_deal_number || '',
+      settlement_value: row.settlement_value ?? row.maturity_amount,
+      val_mat: row.val_mat,
+      status: row.status,
+      value_date: row.value_date || '',
+      maturity_date: row.maturity_date,
+      isin: row.isin || '',
+      counterparty: row.counterparty,
+      face_value: row.face_value,
+      maturity_amount: row.maturity_amount,
+      opening_balance: row.opening_balance ?? ''
+    }));
+
     const exporter = require('../utils/reportExporter');
     const buf = await exporter.export(format, combined);
     const mime = exporter.getMimeType(format);
     res.setHeader('Content-Type', mime);
     const dateStr = String(date);
-    res.setHeader('Content-Disposition', `attachment; filename="maturity-handling-${dateStr}.${format === 'excel' ? 'xlsx' : format === 'csv' ? 'csv' : 'pdf'}"`);
+    res.setHeader('Content-Disposition', `attachment; filename="daily-maturity-cashflow-${dateStr}.${format === 'excel' ? 'xlsx' : format === 'csv' ? 'csv' : 'pdf'}"`);
     return res.status(200).send(buf);
   } catch (error) {
     console.error('Error exporting maturities:', error);
