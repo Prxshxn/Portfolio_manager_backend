@@ -1,4 +1,5 @@
 const BuybackDeal = require('../models/buybackDealModel');
+const { resolveRequestUserId } = require('../utils/requestUser');
 const Gsec = require('../models/gsec');
 const db = require('../config/database');
 const { getSystemDay } = require('../models/systemDayModel');
@@ -408,7 +409,7 @@ const buybackDealController = {
         // Status and tracking
         deal_status: 'Pending_Verification',
         fund_movement: String(fund_movement || 'no').toLowerCase() === 'yes' ? 'yes' : 'no',
-        created_by: req.user?.id || 1, // TODO: Get from auth middleware
+        created_by: resolveRequestUserId(req),
         notes: req.body.notes || null,
         source_buy_deal_number: source_buy_deal_number || null,
         // Persist per-deal allocations so approval can deduct exact amounts from each buy deal
