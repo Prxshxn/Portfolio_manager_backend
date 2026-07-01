@@ -25,6 +25,7 @@ router.get('/tbill', reportController.getTbillReport);
 router.get('/broker', reportController.getBrokerReport);
 
 // Daily Portfolio Balancing Report (per-ISIN opening/closing balance + custodian split)
+router.get('/daily-portfolio-balance/breakdown', reportController.getDailyPortfolioBalanceBreakdown);
 router.get('/daily-portfolio-balance', reportController.getDailyPortfolioBalanceReport);
 
 module.exports = router;

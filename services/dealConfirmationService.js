@@ -202,20 +202,41 @@ function renderPartyColumn(doc, { label, party, x, y, width, lineHeight = 13 }) 
   return cursorY;
 }
 
-// Same explicit-y / explicit-x reasoning as renderPartyColumn: pdfkit's
-// `continued: true` does NOT reserve the declared `width` for the first
-// chunk, it just wraps at that width - so a short label like "Coupon %"
-// leaves the value sitting right next to it instead of in a clean aligned
-// column. Writing label and value at fixed x positions guarantees every
-// row's value starts at the same x, regardless of label length.
-function renderLabelValueRows(doc, rows, { x, valueX, lineHeight = 13, labelWidth, valueWidth }) {
+// Bordered grid table - draws a stroked rectangle per row plus vertical
+// column separators, so values line up in a visible table format rather
+// than relying on whitespace alone. cellsFn(row) returns the text for each
+// column; boldFirstCol bolds column 0 (used for label:value rows).
+function renderGridTable(doc, rows, { x, colWidths, rowHeight = 18, fontSize = 9.5, boldFirstCol = false, headerRow = null }) {
   let cursorY = doc.y;
-  for (const [label, value] of rows) {
-    doc.text(label, x, cursorY, { width: labelWidth });
-    doc.text(value == null || value === '' ? '-' : String(value), valueX, cursorY, { width: valueWidth });
-    cursorY += lineHeight;
-  }
-  doc.y = cursorY;
+  const totalWidth = colWidths.reduce((a, b) => a + b, 0);
+
+  const drawRow = (cells, isHeader) => {
+    doc.rect(x, cursorY, totalWidth, rowHeight).stroke();
+    let cx = x;
+    for (let i = 0; i < colWidths.length - 1; i += 1) {
+      cx += colWidths[i];
+      doc.moveTo(cx, cursorY).lineTo(cx, cursorY + rowHeight).stroke();
+    }
+    cx = x;
+    cells.forEach((cellText, i) => {
+      const bold = isHeader || (boldFirstCol && i === 0);
+      doc.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(fontSize);
+      const text = cellText == null || cellText === '' ? (isHeader ? '' : '-') : String(cellText);
+      doc.text(text, cx + 6, cursorY + (rowHeight - fontSize) / 2 - 1, { width: colWidths[i] - 12 });
+      cx += colWidths[i];
+    });
+    cursorY += rowHeight;
+  };
+
+  if (headerRow) drawRow(headerRow, true);
+  rows.forEach((r) => drawRow(r, false));
+  // Each cell's .text() call leaves doc.x wherever it last wrote, which is
+  // NOT the table's left edge - any subsequent .text() call without an
+  // explicit x (e.g. a heading or centered paragraph right after the table)
+  // would silently inherit that stale x instead of starting at the margin.
+  // Reset both cursor coordinates back to the table's origin column.
+  doc.x = x;
+  doc.y = cursorY + 8;
 }
 
 function renderGsecLegPdf(doc, content) {
@@ -239,9 +260,8 @@ function renderGsecLegPdf(doc, content) {
 
   doc.font('Helvetica-Bold').fontSize(10).text('DEAL DETAILS', { underline: true });
   doc.moveDown(0.3);
-  doc.font('Helvetica').fontSize(9.5);
-  renderLabelValueRows(doc, content.dealDetails, {
-    x: doc.page.margins.left, valueX: doc.page.margins.left + 160, labelWidth: 150, valueWidth: 300
+  renderGridTable(doc, content.dealDetails, {
+    x: doc.page.margins.left, colWidths: [160, 300], boldFirstCol: true
   });
 
   doc.moveDown(1);
@@ -274,32 +294,23 @@ function renderRepoPdf(doc, content) {
 
   doc.font('Helvetica-Bold').fontSize(10).text('DEAL DETAILS', { underline: true });
   doc.moveDown(0.3);
-  doc.font('Helvetica').fontSize(9.5);
-  renderLabelValueRows(doc, content.dealDetails, {
-    x: doc.page.margins.left, valueX: doc.page.margins.left + 180, labelWidth: 170, valueWidth: 280
+  renderGridTable(doc, content.dealDetails, {
+    x: doc.page.margins.left, colWidths: [180, 280], boldFirstCol: true
   });
 
   doc.moveDown(1);
   doc.font('Helvetica-Bold').fontSize(10).text('UNDERLYING SECURITIES', { underline: true });
   doc.moveDown(0.3);
-  doc.font('Helvetica-Bold').fontSize(9.5);
-  const tableX = doc.page.margins.left;
-  const valueX = tableX + 220;
-  let tableY = doc.y;
-  doc.text('ISIN', tableX, tableY, { width: 200 });
-  doc.text('Face Value', valueX, tableY, { width: 200 });
-  tableY += 14;
-  doc.font('Helvetica').fontSize(9.5);
-  (content.underlyingSecurities || []).forEach((s) => {
-    doc.text(s.isin || '', tableX, tableY, { width: 200 });
-    doc.text(formatMoney(s.faceValue), valueX, tableY, { width: 200 });
-    tableY += 14;
-  });
-  doc.y = tableY;
+  renderGridTable(
+    doc,
+    (content.underlyingSecurities || []).map((s) => [s.isin || '', formatMoney(s.faceValue)]),
+    { x: doc.page.margins.left, colWidths: [230, 230], headerRow: ['ISIN', 'Face Value'] }
+  );
 
+  const contentWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
   doc.moveDown(1);
-  doc.font('Helvetica-Bold').fontSize(10).text('SETTLEMENT PROCESS', { underline: true });
-  doc.font('Helvetica').fontSize(9.5).text(content.settlementProcess);
+  doc.font('Helvetica-Bold').fontSize(10).text('SETTLEMENT PROCESS', doc.page.margins.left, doc.y, { underline: true, width: contentWidth });
+  doc.font('Helvetica').fontSize(9.5).text(content.settlementProcess, doc.page.margins.left, doc.y, { align: 'center', width: contentWidth });
 
   doc.moveDown(3);
   const sigY = doc.y;
@@ -427,7 +438,7 @@ function buildRepoDocx(content) {
         }),
         new Paragraph(' '),
         new Paragraph({ children: [new TextRun({ text: 'SETTLEMENT PROCESS', bold: true, underline: {} })] }),
-        new Paragraph(content.settlementProcess || ''),
+        new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun(content.settlementProcess || '')] }),
         new Paragraph(' '),
         new Paragraph(' '),
         new Paragraph('_______________________                    _______________________'),

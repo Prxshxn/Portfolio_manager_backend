@@ -696,7 +696,8 @@ const Gsec = {
       portfolio,
       value_date,
       transaction_type,
-      status
+      status,
+      custodian
     FROM gsec 
     WHERE transaction_type = 'Buy' 
       AND status IN ('Approved', 'Settled', 'final_approved')`;
