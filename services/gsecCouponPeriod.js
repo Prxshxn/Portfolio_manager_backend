@@ -361,6 +361,29 @@ function computeGsecDailyAmortization(deal, _settlementDate) {
   return { ok: true, dailyAmount, scenario, days, scaledCal2 };
 }
 
+/**
+ * Remaining face for EOD accrual/amortization: derive from linked sells and buybacks
+ * when available so stale gsec.remaining_face_value cannot keep posting after exit.
+ */
+function resolveGsecRemainingForDailyPosting(deal, options = {}) {
+  const faceVal = parseNumberLike(deal.face_value) || 0;
+  const soldRaw = parseNumberLike(deal.linked_sold_face_value);
+  const buybackRaw = parseNumberLike(
+    options.linked_buyback_face_value ?? deal.linked_buyback_face_value
+  );
+  const sold = Number.isFinite(soldRaw) ? soldRaw : 0;
+  const buyback = Number.isFinite(buybackRaw) ? buybackRaw : 0;
+  if (sold > 0 || buyback > 0) {
+    return Math.max(0, faceVal - sold - buyback);
+  }
+  let remaining = deal.remaining_face_value;
+  if (remaining === null || remaining === undefined || remaining === '') {
+    return faceVal;
+  }
+  remaining = parseNumberLike(remaining);
+  return Number.isFinite(remaining) ? Math.max(0, remaining) : faceVal;
+}
+
 module.exports = {
   getDaysDifference,
   findCouponPeriodFromMaturity,
@@ -373,5 +396,6 @@ module.exports = {
   getCouponPeriodEOverride,
   computeGsecPerDayAccrual,
   daysFromValueToMaturity,
-  computeGsecDailyAmortization
+  computeGsecDailyAmortization,
+  resolveGsecRemainingForDailyPosting
 };
