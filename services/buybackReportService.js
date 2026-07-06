@@ -61,6 +61,7 @@ exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturi
   const hasLeg2Clean = cols.has('leg2_clean_price');
   const hasLeg2Dirty = cols.has('leg2_dirty_price');
   const hasLeg2Face = cols.has('leg2_face_value');
+  const hasLeg1AdjustedFace = cols.has('leg1_adjusted_face_value');
 
   const normalizedPair = String(transactionPair || '').trim().toLowerCase().replace(/[\s-]/g, '_');
   const sellBuyCondition = `(LOWER(TRIM(bd.leg1_transaction_type)) = 'sell' AND LOWER(TRIM(bd.leg2_transaction_type)) = 'buy')`;
@@ -134,6 +135,7 @@ exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturi
       bd.leg1_counterparty,
       bd.leg1_portfolio,
       bd.leg1_face_value,
+      ${hasLeg1AdjustedFace ? 'bd.leg1_adjusted_face_value' : 'NULL as leg1_adjusted_face_value'},
       bd.leg1_yield_rate,
       bd.leg1_settlement_amount,
       bd.leg1_currency,
@@ -204,6 +206,9 @@ exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturi
 
   const data = rows.map((row) => {
     const leg1FaceValue = Number(row.leg1_face_value) || 0;
+    const leg1AdjustedFaceValue = row.leg1_adjusted_face_value !== null && row.leg1_adjusted_face_value !== undefined
+      ? Number(row.leg1_adjusted_face_value)
+      : leg1FaceValue;
     const leg2SettlementAmount = Number(row.leg2_settlement_amount) || 0;
     const leg1CleanPrice = Number(row.leg1_clean_price) || 0;
     const leg1DirtyPrice = Number(row.leg1_dirty_price) || 0;
@@ -225,7 +230,7 @@ exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturi
       portfolio: row.leg1_portfolio || row.leg2_portfolio || '',
       counterparty: row.counterparty_name || row.leg1_counterparty || row.leg2_counterparty || '',
       isin: row.leg1_isin || row.leg2_isin || '',
-      face_value: leg1FaceValue,
+      face_value: leg1AdjustedFaceValue,
       leg1_clean_price: leg1CleanPrice,
       leg1_dirty_price: leg1DirtyPrice,
       leg1_clean_price_amount: leg1CleanPrice * leg1FaceValue / 100,
