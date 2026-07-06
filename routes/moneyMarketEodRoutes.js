@@ -4,7 +4,11 @@ const { getAllDeals } = require('../models/moneyMarketDealModel');
 const { getSystemDay, setSystemDay } = require('../models/systemDayModel');
 const { checkAuth, checkAdmin } = require('../middleware/auth');
 const accountMapping = require('../services/accountMappingService');
-const { computeGsecPerDayAccrual, computeGsecDailyAmortization } = require('../services/gsecCouponPeriod');
+const {
+  computeGsecPerDayAccrual,
+  computeGsecDailyAmortization,
+  resolveGsecRemainingForDailyPosting
+} = require('../services/gsecCouponPeriod');
 const { postFinalApprovedBuyLedger } = require('../services/gsecApprovalLedgerService');
 const { postBuySellBuybackLedger } = require('../services/buybackBuySellLedgerService');
 const {
@@ -378,7 +382,16 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
       ),
       db.query(
         `SELECT g.id, g.deal_number, g.value_date, g.maturity_date, g.face_value,
-                g.remaining_face_value, g.clean_price
+                g.remaining_face_value, g.clean_price,
+                COALESCE((
+                  SELECT SUM(s.face_value)
+                  FROM gsec s
+                  WHERE s.transaction_type = 'Sell'
+                    AND s.buy_deal_number IS NOT NULL
+                    AND TRIM(s.buy_deal_number) = TRIM(g.deal_number)
+                    AND s.value_date IS NOT NULL
+                    AND DATE(s.value_date) <= DATE(?)
+                ), 0) AS linked_sold_face_value
          FROM gsec g
          WHERE g.transaction_type = 'Buy'
            AND g.status = 'final_approved'
@@ -387,7 +400,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
            AND g.value_date IS NOT NULL
            AND DATE(g.value_date) <= DATE(?)
            AND COALESCE(g.remaining_face_value, g.face_value, 0) > 0`,
-        [systemDay, systemDay]
+        [systemDay, systemDay, systemDay]
       ),
       db.query(
         `SELECT DISTINCT deal_number
@@ -554,7 +567,11 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
           }
           const dnForBB = String(deal.deal_number || '').trim();
           const linkedBuybackForDeal = Number(buybackByDealForAccrual[dnForBB] || 0);
+          const effectiveRemaining = resolveGsecRemainingForDailyPosting(deal, {
+            linked_buyback_face_value: linkedBuybackForDeal
+          });
           const dealForAccrual = Object.assign({}, deal, {
+            remaining_face_value: effectiveRemaining,
             linked_buyback_face_value: linkedBuybackForDeal
           });
           const computed = computeGsecPerDayAccrual(dealForAccrual, systemDay, 2);
@@ -628,7 +645,21 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
           if (!valueDateOnOrBeforeSystemDay(deal.value_date, systemDay)) {
             continue;
           }
-          const computed = computeGsecDailyAmortization(deal, systemDay);
+          const dnForAmort = String(deal.deal_number || '').trim();
+          const linkedBuybackForAmort = Number(buybackByDealForAccrual[dnForAmort] || 0);
+          const effectiveRemainingAmort = resolveGsecRemainingForDailyPosting(deal, {
+            linked_buyback_face_value: linkedBuybackForAmort
+          });
+          if (effectiveRemainingAmort <= 0) {
+            if (hasPerDayAmortizationColumn) {
+              await db.query('UPDATE gsec SET per_day_amortization = 0 WHERE id = ?', [deal.id]);
+            }
+            continue;
+          }
+          const dealForAmort = Object.assign({}, deal, {
+            remaining_face_value: effectiveRemainingAmort
+          });
+          const computed = computeGsecDailyAmortization(dealForAmort, systemDay);
           if (!computed.ok) {
             if (hasPerDayAmortizationColumn) {
               await db.query('UPDATE gsec SET per_day_amortization = 0 WHERE id = ?', [deal.id]);
