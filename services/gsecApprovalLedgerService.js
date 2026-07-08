@@ -106,6 +106,9 @@ async function resolveSellDrBankAccount(transaction) {
  * @param {object} [options]
  * @param {string} [options.descriptionPrefix] - e.g. "Buyback BB-1 - "
  * @param {string} [options.dealIdOverride] - ledger deal_number if different from transaction.deal_number
+ * @param {boolean} [options.bankAmountFromSettlement] - Buyback callers only: post the bank
+ *   leg at the deal's stored settlement_amount instead of Face×Dirty/100. Treasury stays at
+ *   Face×Clean/100; Accrued Interest absorbs the difference so DR still balances CR.
  * @returns {Promise<{ success: boolean, error?: string }>}
  */
 async function postFinalApprovedBuyLedger(transaction, options = {}) {
@@ -129,9 +132,17 @@ async function postFinalApprovedBuyLedger(transaction, options = {}) {
   //   Bank (464) CR  = Face × Dirty / 100  (= Treasury + Accrued)
   // Stored settlement_amount can differ slightly from Face×Dirty/100 on buyback legs.
   if (faceVal > 0 && buyClean > 0 && buyDirty > 0 && buyDirty >= buyClean) {
-    accruedInterest = truncate8(((buyDirty - buyClean) * faceVal) / 100);
     netAmount = truncate8((buyClean * faceVal) / 100);
-    bankTotal = truncate8((buyDirty * faceVal) / 100);
+    if (options.bankAmountFromSettlement) {
+      // Buyback: bank leg = stored settlement_amount; Accrued Interest is the plug
+      // that reconciles Treasury (price-based) up to the settlement amount.
+      const settlementAmt = Number(transaction.settlement_amount || 0);
+      bankTotal = settlementAmt > 0 ? settlementAmt : truncate8((buyDirty * faceVal) / 100);
+      accruedInterest = truncate8(bankTotal - netAmount);
+    } else {
+      accruedInterest = truncate8(((buyDirty - buyClean) * faceVal) / 100);
+      bankTotal = truncate8((buyDirty * faceVal) / 100);
+    }
   } else {
     // Fallback when prices missing: split stored settlement.
     if (!accruedInterest && bankTotal > 0) accruedInterest = 0;
@@ -200,9 +211,6 @@ async function postFinalApprovedBuyLedger(transaction, options = {}) {
  * @returns {Promise<{ success: boolean, error?: string, legacy?: boolean }>}
  */
 async function postFinalApprovedSellLedger(transaction, options = {}) {
-  // #region agent log
-  fetch('http://127.0.0.1:7392/ingest/b636a3d1-1bd5-46f2-b184-ba446816f4e4',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ea67d3'},body:JSON.stringify({sessionId:'ea67d3',location:'gsecApprovalLedgerService.js:135',message:'postFinalApprovedSellLedger ENTRY',data:{deal_number:transaction.deal_number,settlement_amount:transaction.settlement_amount,face_value:transaction.face_value,buy_deal_number:transaction.buy_deal_number},timestamp:Date.now(),hypothesisId:'A',runId:'verify'})}).catch(()=>{});
-  // #endregion
   const ledgerController = require('../controllers/ledgerController');
   const accountMapping = require('./accountMappingService');
   const prefix = options.descriptionPrefix || '';
@@ -451,9 +459,6 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
   const totalDr = sumLines(mainDrClean);
   const totalCr = sumLines(mainCrClean);
   const residual = truncate8(totalDr - totalCr);
-  // #region agent log
-  fetch('http://127.0.0.1:7392/ingest/b636a3d1-1bd5-46f2-b184-ba446816f4e4',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ea67d3'},body:JSON.stringify({sessionId:'ea67d3',location:'gsecApprovalLedgerService.js:288',message:'Before balance check',data:{mainDrClean,mainCrClean,totalDr,totalCr,residual},timestamp:Date.now(),hypothesisId:'B',runId:'verify'})}).catch(()=>{});
-  // #endregion
   if (Number.isFinite(residual) && Math.abs(residual) > 0.00000001) {
     const roundingLine = {
       account_code: capitalGainLossAccount,
@@ -529,9 +534,6 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
     deal_id: dealId,
     description: mainDescription
   });
-  // #region agent log
-  fetch('http://127.0.0.1:7392/ingest/b636a3d1-1bd5-46f2-b184-ba446816f4e4',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ea67d3'},body:JSON.stringify({sessionId:'ea67d3',location:'gsecApprovalLedgerService.js:329',message:'Main posting result',data:{success:mainResult.success,error:mainResult.error,dealId,drCount:mainDrClean.length,crCount:mainCrClean.length},timestamp:Date.now(),hypothesisId:'A',runId:'verify'})}).catch(()=>{});
-  // #endregion
   if (!mainResult.success) {
     console.error('Failed to post GSec sell multi-line entry:', mainResult.error);
     return { success: false, error: mainResult.error };
@@ -545,9 +547,6 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
       deal_id: dealId,
       description: reversalDescription
     });
-    // #region agent log
-    fetch('http://127.0.0.1:7392/ingest/b636a3d1-1bd5-46f2-b184-ba446816f4e4',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ea67d3'},body:JSON.stringify({sessionId:'ea67d3',location:'gsecApprovalLedgerService.js:343',message:'Reversal posting result',data:{success:revResult.success,error:revResult.error},timestamp:Date.now(),hypothesisId:'D',runId:'verify'})}).catch(()=>{});
-    // #endregion
     if (!revResult.success) {
       // Match gsec.updateStatus: log but do not fail the overall approval path after main leg posted.
       console.error('Failed to post GSec sell accrued reversal entry:', revResult.error);

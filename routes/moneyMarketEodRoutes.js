@@ -841,7 +841,10 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
         try {
           const bbNum = gsecRow.buyback_deal_number != null ? String(gsecRow.buyback_deal_number) : '';
           const bbPrefix = bbNum ? `Buyback ${bbNum} - ` : 'Buyback - ';
-          const buyLedgerRes = await postFinalApprovedBuyLedger(gsecRow, { descriptionPrefix: bbPrefix });
+          const buyLedgerRes = await postFinalApprovedBuyLedger(gsecRow, {
+            descriptionPrefix: bbPrefix,
+            bankAmountFromSettlement: true
+          });
           if (!isLedgerPostOk(buyLedgerRes)) {
             console.error(
               'Buyback leg2 buy ledger (EOD) failed:',
