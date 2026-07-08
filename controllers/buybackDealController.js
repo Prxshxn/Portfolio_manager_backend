@@ -907,7 +907,10 @@ const buybackDealController = {
                       );
                     } else {
                       const bbPrefix = `Buyback ${buybackDeal.deal_number} - `;
-                      const buyLedgerRes = await postFinalApprovedBuyLedger(gsecRow, { descriptionPrefix: bbPrefix });
+                      const buyLedgerRes = await postFinalApprovedBuyLedger(gsecRow, {
+                        descriptionPrefix: bbPrefix,
+                        bankAmountFromSettlement: true
+                      });
                       if (!buyLedgerRes.success) {
                         console.error(
                           `Buyback leg2 buy ledger failed for ${buybackDeal.deal_number}:`,
