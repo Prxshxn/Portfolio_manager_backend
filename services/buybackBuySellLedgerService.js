@@ -168,7 +168,8 @@ async function postBuySellBuybackLedger(bb, opts = {}) {
         const r = await postFinalApprovedBuyLedger(buyLike, {
           descriptionPrefix: prefix,
           treasuryAccountOverride: BUYBACK_TREASURY_ACCOUNT,
-          accruedAccountOverride: BUYBACK_ACCRUED_ACCOUNT
+          accruedAccountOverride: BUYBACK_ACCRUED_ACCOUNT,
+          bankAmountFromSettlement: true
         });
         action.status = r.success ? 'posted' : 'failed';
         if (!r.success) action.error = r.error;
