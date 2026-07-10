@@ -183,8 +183,8 @@ const Gsec = {
         coupon_interest, clean_price, dirty_price, accrued_interest_calculation, accrued_interest_six_decimals,
         accrued_interest_for_100, settlement_amount, settlement_mode, issue_date, maturity_date, coupon_dates,
         yield, brokerage, currency, portfolio, strategy, broker, accrued_interest_adjustment, clean_price_adjustment,
-        buy_deal_number, status, current_approval_level, fund_movement, per_day_accrual, remaining_face_value, per_day_amortization, custodian
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+        buy_deal_number, sell_deal_allocations, status, current_approval_level, fund_movement, per_day_accrual, remaining_face_value, per_day_amortization, custodian
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
       
       const values = [
         data.transactionType,
@@ -219,6 +219,7 @@ const Gsec = {
         cleanNumericValue(data.accruedInterestAdjustment),
         cleanNumericValue(data.cleanPriceAdjustment),
         data.buyDealNumber || null,
+        data.sellDealAllocations ? JSON.stringify(data.sellDealAllocations) : null,
         data.status || 'pending', // Status: pending by default
         data.current_approval_level || 'front_office', // 3-tier: start at front_office for Front Office Verifier
         fundMovementValue,
@@ -1397,9 +1398,14 @@ const Gsec = {
   }
 };
 
-Gsec.getLatestDealNumber = async (date) => {
-  // date should be in YYYYMMDD format for the new pattern
-  const [results] = await db.query(
+Gsec.getLatestDealNumber = async (date, connection) => {
+  // date should be in YYYYMMDD format for the new pattern.
+  // Use the caller's transaction connection when supplied (e.g. multi-lot Sell
+  // creation loops that INSERT more than once inside one open transaction) so
+  // this SELECT sees prior uncommitted inserts from the same transaction —
+  // otherwise every leg computes the same "next" number and collides.
+  const runner = connection || db;
+  const [results] = await runner.query(
     'SELECT deal_number FROM gsec WHERE deal_number LIKE ? ORDER BY deal_number DESC LIMIT 1',
     [`${date}/GSEC/%`]
   );
@@ -1410,12 +1416,14 @@ Gsec.getLatestDealNumber = async (date) => {
 /**
  * Generate the next deal number for GSec in the format GSEC-YYYY-MM-DD-###
  * @param {string} date - in YYYY-MM-DD format
+ * @param {object} [connection] - transaction connection to read through, so
+ *   uncommitted inserts from the same transaction are visible (see getLatestDealNumber).
  * @returns {string} nextDealNumber
  */
-Gsec.generateNextDealNumber = async (date) => {
+Gsec.generateNextDealNumber = async (date, connection) => {
   try {
     // Get the latest deal number for this date
-    const latest = await Gsec.getLatestDealNumber(date);
+    const latest = await Gsec.getLatestDealNumber(date, connection);
     let nextSeq = 1;
     
     if (latest) {
