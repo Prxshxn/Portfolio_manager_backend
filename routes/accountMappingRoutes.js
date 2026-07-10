@@ -209,7 +209,7 @@ router.get('/keys/all', async (req, res) => {
         GSEC_ACCRUAL_INCOME: 'GSec Interest Income (Accrued) (467-101-190-470-44)',
         GSEC_COUPON_INCOME: 'Coupon Interest Income TBond (467-101-190-476-44)',
         GSEC_AMORTISATION_TRADING: 'Amortised Discount Received/Premium Paid TBonds - Trading (358-101-130-416-44)',
-        GSEC_FINANCIAL_ASSETS_AMORTISED_COST: 'Financial Assets at amortised cost (111-101-170-044-44)',
+        GSEC_FINANCIAL_ASSETS_AMORTISED_COST: 'Financial Assets at amortised cost (131-101-170-044-44)',
         FD_ACCRUAL_ASSET: 'Fixed Deposit Daily Accrual Asset',
         FD_ACCRUAL_INCOME: 'Fixed Deposit Daily Accrual Income',
         MM_LENDING_CONTROL: 'Money Market Lending Control Account',

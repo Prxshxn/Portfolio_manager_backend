@@ -332,9 +332,12 @@ module.exports = {
       console.log('formData.transaction_type:', formData.transaction_type);
       
       if (Array.isArray(sell_deals) && String(formData.transaction_type).toLowerCase() === 'sell') {
-        // For sell transactions with multiple deals, create individual sell transactions only
-        // Don't create a main sell transaction to avoid double deduction
-        
+        // A multi-lot Sell (drawing face value from more than one Buy deal) is ONE
+        // deal, allocated across multiple buy lots - not multiple independent deals.
+        // Create a single gsec row for the full sell face value, carrying the
+        // allocation breakdown in sell_deal_allocations (mirrors buyback_deals'
+        // sell_deal_allocations). buy_deal_number keeps pointing at the first/primary
+        // allocation for callers that only look at a single buy deal.
         for (const sell of sell_deals) {
           if (!sell?.buy_deal_number) {
             await connection.rollback();
@@ -343,40 +346,51 @@ module.exports = {
               error: 'Invalid sell_deals payload: buy_deal_number is required for each sell leg'
             });
           }
+        }
 
-          // Create individual sell transaction for each buy deal
-          const individualSellData = {
-            ...formData,
-            // Force canonical sequence generator in Gsec.createWithConnection()
-            // so every sell gets YYYYMMDD/GSEC/####.
-            dealNumber: null,
-            faceValue: sell.amountToSell,
-            buyDealNumber: sell.buy_deal_number, // This should be the selected deal's deal_number
-            transactionType: 'Sell'
-          };
-          
-          console.log(`Creating sell transaction for deal: ${sell.buy_deal_number}, amount: ${sell.amountToSell}`);
-          
-          // Insert individual sell transaction
-          const individualResult = await Gsec.createWithConnection(individualSellData, connection);
-          if (!result) result = individualResult; // Use first result as main result
-          
+        const totalSellFace = sell_deals.reduce(
+          (sum, sell) => sum + (parseFloat(sell?.amountToSell) || 0),
+          0
+        );
+
+        const allocations = sell_deals.map((sell) => ({
+          deal_number: sell.buy_deal_number,
+          amountToSell: parseFloat(sell.amountToSell) || 0
+        }));
+
+        const sellData = {
+          ...formData,
+          // Force canonical sequence generator in Gsec.createWithConnection()
+          // so this sell gets a single YYYYMMDD/GSEC/####.
+          dealNumber: null,
+          faceValue: totalSellFace,
+          settlementAmount: formData.settlementAmount,
+          buyDealNumber: sell_deals[0].buy_deal_number,
+          sellDealAllocations: allocations,
+          transactionType: 'Sell'
+        };
+
+        console.log(`Creating multi-lot sell transaction: total face=${totalSellFace}, allocations=${JSON.stringify(allocations)}`);
+
+        result = await Gsec.createWithConnection(sellData, connection);
+
+        for (const alloc of allocations) {
           // Update remaining face value for the referenced buy deal
-          console.log(`Updating remaining face value for buy deal: ${sell.buy_deal_number}`);
-          const [buyDeals] = await connection.query('SELECT * FROM gsec WHERE deal_number = ? AND transaction_type = "Buy"', [sell.buy_deal_number]);
+          console.log(`Updating remaining face value for buy deal: ${alloc.deal_number}`);
+          const [buyDeals] = await connection.query('SELECT * FROM gsec WHERE deal_number = ? AND transaction_type = "Buy"', [alloc.deal_number]);
           if (buyDeals && buyDeals.length > 0) {
             const buyDeal = buyDeals[0];
             const original = parseFloat(buyDeal.remaining_face_value || buyDeal.face_value || 0);
-            const sold = parseFloat(sell.amountToSell || 0);
+            const sold = alloc.amountToSell;
             let newRemaining = original - sold;
             newRemaining = Math.trunc(newRemaining * 10000) / 10000;
-            
-            console.log(`Buy deal ${sell.buy_deal_number}: original=${original}, sold=${sold}, newRemaining=${newRemaining}`);
-            
+
+            console.log(`Buy deal ${alloc.deal_number}: original=${original}, sold=${sold}, newRemaining=${newRemaining}`);
+
             await connection.query('UPDATE gsec SET remaining_face_value = ? WHERE id = ?', [newRemaining.toFixed(4), buyDeal.id]);
-            await Gsec.syncFutureCouponCashflowsForBuyDeal(sell.buy_deal_number, connection);
+            await Gsec.syncFutureCouponCashflowsForBuyDeal(alloc.deal_number, connection);
           } else {
-            console.error(`Buy deal not found: ${sell.buy_deal_number}`);
+            console.error(`Buy deal not found: ${alloc.deal_number}`);
           }
         }
       } else {
