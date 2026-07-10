@@ -434,9 +434,16 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
     // ── true remaining face. Without this, deals that were partially bought back have
     // ── remaining_face_value < face_value but linked_sold_face_value = 0, which makes
     // ── the safety guard in computeGsecPerDayAccrual reset remaining back to face and
-    // ── inflate the accrual. We sum (a) source_buy_deal_number direct links, and
-    // ── (b) sell_deal_allocations JSON entries, both restricted to approved buybacks
-    // ── on/before the system day.
+    // ── inflate the accrual.
+    //
+    // Each buyback deal contributes ONCE, using whichever field actually drove its
+    // remaining_face_value deduction at approval time (buybackDealController.js: when
+    // sell_deal_allocations is present it is authoritative and source_buy_deal_number
+    // is just a legacy mirror of the primary allocation; only fall back to
+    // source_buy_deal_number when there are no allocations). Summing both fields
+    // independently double-counts every buyback that has both populated (which is
+    // every single-allocation buyback), zeroing out the effective remaining face and
+    // suppressing that day's accrual for the underlying buy deal.
     const buybackByDealForAccrual = {};
     try {
       const buyDealNumbersForBB = (gsecDeals || [])
@@ -459,51 +466,40 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
       } catch (_) { /* leave defaults */ }
 
       if (buyDealNumbersForBB.length) {
-        const ph = buyDealNumbersForBB.map(() => '?').join(',');
-        let directBBSql = `
-          SELECT TRIM(source_buy_deal_number) AS dn,
-                 COALESCE(SUM(leg1_face_value), 0) AS bb
+        let bbSql = `
+          SELECT deal_number, TRIM(source_buy_deal_number) AS source_buy_deal_number,
+                 leg1_face_value${hasSellDealAllocationsCol ? ', sell_deal_allocations' : ''}
           FROM buyback_deals
           WHERE deal_status = 'Approved'
-            AND source_buy_deal_number IS NOT NULL
-            AND TRIM(source_buy_deal_number) IN (${ph})
             AND approved_at IS NOT NULL
             AND DATE(approved_at) <= DATE(?)`;
-        const directBBParams = [...buyDealNumbersForBB, systemDay];
-        if (hasBBTransactionTypeCol) directBBSql += ` AND leg1_transaction_type = 'Sell'`;
-        directBBSql += ' GROUP BY TRIM(source_buy_deal_number)';
-        const [directBBRows] = await db.query(directBBSql, directBBParams);
-        directBBRows.forEach((r) => {
-          const dn = String(r.dn || '').trim();
-          if (dn) buybackByDealForAccrual[dn] = Number(r.bb) || 0;
-        });
+        const bbParams = [systemDay];
+        if (hasBBTransactionTypeCol) bbSql += ` AND leg1_transaction_type = 'Sell'`;
+        const [bbRows] = await db.query(bbSql, bbParams);
 
-        if (hasSellDealAllocationsCol) {
-          let allocBBSql = `
-            SELECT sell_deal_allocations
-            FROM buyback_deals
-            WHERE deal_status = 'Approved'
-              AND sell_deal_allocations IS NOT NULL
-              AND approved_at IS NOT NULL
-              AND DATE(approved_at) <= DATE(?)`;
-          const allocBBParams = [systemDay];
-          if (hasBBTransactionTypeCol) allocBBSql += ` AND leg1_transaction_type = 'Sell'`;
-          const [allocRows] = await db.query(allocBBSql, allocBBParams);
-          const buyDealSet = new Set(buyDealNumbersForBB);
-          for (const r of allocRows || []) {
-            try {
-              const allocs = typeof r.sell_deal_allocations === 'string'
-                ? JSON.parse(r.sell_deal_allocations)
-                : r.sell_deal_allocations;
-              if (!Array.isArray(allocs)) continue;
-              for (const a of allocs) {
-                const dn = String((a && a.deal_number) || '').trim();
-                const amt = Number(a && a.amountToSell) || 0;
-                if (dn && amt > 0 && buyDealSet.has(dn)) {
-                  buybackByDealForAccrual[dn] = (buybackByDealForAccrual[dn] || 0) + amt;
-                }
+        const buyDealSet = new Set(buyDealNumbersForBB);
+        for (const r of bbRows || []) {
+          let allocs = hasSellDealAllocationsCol ? r.sell_deal_allocations : null;
+          if (typeof allocs === 'string') {
+            try { allocs = JSON.parse(allocs); } catch { allocs = null; }
+          }
+
+          if (Array.isArray(allocs) && allocs.length > 0) {
+            // Authoritative: this is what actually drove the remaining_face_value deduction.
+            for (const a of allocs) {
+              const dn = String((a && a.deal_number) || '').trim();
+              const amt = Number(a && a.amountToSell) || 0;
+              if (dn && amt > 0 && buyDealSet.has(dn)) {
+                buybackByDealForAccrual[dn] = (buybackByDealForAccrual[dn] || 0) + amt;
               }
-            } catch (_) { /* ignore malformed JSON */ }
+            }
+          } else if (r.source_buy_deal_number) {
+            // Legacy fallback: only used when the buyback has no allocations breakdown.
+            const dn = r.source_buy_deal_number;
+            const amt = Number(r.leg1_face_value) || 0;
+            if (dn && amt > 0 && buyDealSet.has(dn)) {
+              buybackByDealForAccrual[dn] = (buybackByDealForAccrual[dn] || 0) + amt;
+            }
           }
         }
       }
@@ -1234,7 +1230,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
             // is recognised in its own expense account and the daily accrual is unwound:
             //   1. Reverse accrued interest: DR Interest Payable (780) / CR daily-accrual Interest Expense (752)
             //   2. Settle principal:         DR Repo Liability (308)    / CR Bank
-            //   3. Recognise interest:       DR Intrest Expense R/Repo (768) / CR Bank
+            //   3. Recognise interest:       DR Interest Expense R/Repo (768) / CR Bank
             const liabilityAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REVERSE_REPO_LIABILITY);
             const interestPayable = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REVERSE_REPO_INTEREST_PAYABLE);
             const accrualInterestExpense = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REVERSE_REPO_INTEREST_EXPENSE);
