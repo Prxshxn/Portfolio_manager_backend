@@ -204,6 +204,88 @@ async function postFinalApprovedBuyLedger(transaction, options = {}) {
 }
 
 /**
+ * Compute the P&L breakdown for one sold face-value slice against the one buy
+ * lot it was sourced from. Shared by both the single-buy-deal Sell path and the
+ * multi-lot (sell_deal_allocations) aggregation path so both stay in sync.
+ */
+async function computeLotPnl({ sellFace, sellClean, sellDirty, sellDate, buyDeal, dealNumberForLog }) {
+  const buyFace = Number(buyDeal.face_value || 0);
+  const scale = buyFace > 0 ? sellFace / buyFace : 1;
+  const buyClean = Number(buyDeal.clean_price || 0);
+  const buyDirty = Number(buyDeal.dirty_price || 0);
+  const holdingDays = Math.max(0, utcDayDiffSigned(sellDate, buyDeal.value_date));
+  const sellAccruedPer100 = Math.max(0, sellDirty - sellClean);
+
+  // 1) Treasury Bonds reversal at buy clean price.
+  const treasuryBondsAmt = truncate8((sellFace * buyClean) / 100);
+
+  // 2) Buy-side accrued reversal (unwinds the accrued asset created when buy posted).
+  let buyAccruedPer100 = Math.max(0, buyDirty - buyClean);
+  if (buyAccruedPer100 <= 0 && sellAccruedPer100 > 0 && holdingDays === 0) {
+    buyAccruedPer100 = sellAccruedPer100;
+  }
+  const accruedAtPurchaseAmt = truncate8((sellFace * buyAccruedPer100) / 100);
+
+  // 4) Holding-period coupon income — only what accrued WHILE we held the bond.
+  const holdingPeriodAccruedPer100 = holdingDays === 0
+    ? 0
+    : Math.max(0, sellAccruedPer100 - buyAccruedPer100);
+  const holdingCouponIncome = truncate8((sellFace * holdingPeriodAccruedPer100) / 100);
+
+  // 3) Amort via effective-yield — only when the bond was actually held (holdingDays > 0).
+  let amortToSell = 0;
+  let carryClean = null;
+  if (holdingDays > 0) {
+    const buyYield = Number(buyDeal.yield || 0);
+    const annualCouponRate = await resolveAnnualCouponRatePercent(buyDeal);
+    if (
+      buyYield > 0 &&
+      annualCouponRate != null &&
+      annualCouponRate > 0 &&
+      buyDeal.maturity_date &&
+      sellFace > 0
+    ) {
+      try {
+        const carry = priceTripletAtYield({
+          couponRate: annualCouponRate,
+          yieldRate: buyYield,
+          valueDate: sellDate,
+          maturityDate: toYmdUtc(buyDeal.maturity_date)
+        });
+        if (carry && isSaneCleanPer100(carry.cleanPrice)) {
+          carryClean = Number(carry.cleanPrice);
+          amortToSell = truncate8((sellFace * (carryClean - buyClean)) / 100);
+        } else if (carry && !isSaneCleanPer100(carry.cleanPrice)) {
+          console.warn(
+            `[gsecSellLedger] carry clean out of range for ${dealNumberForLog}:`,
+            carry.cleanPrice,
+            '(annualCouponRate=',
+            annualCouponRate,
+            ') — using per_day_amort fallback'
+          );
+        }
+      } catch (e) {
+        console.warn(
+          `[gsecSellLedger] effective-yield carry calc failed for ${dealNumberForLog}:`,
+          e.message
+        );
+      }
+    }
+    if (amortToSell === 0 && carryClean == null) {
+      // Legacy fallback: straight-line per-day premium/discount amortisation.
+      const perDayAmort = Number(buyDeal.per_day_amortization || 0);
+      amortToSell = truncate8(perDayAmort * holdingDays) * scale;
+    }
+  }
+
+  return {
+    buyFace, scale, buyClean, buyDirty, holdingDays, sellAccruedPer100,
+    treasuryBondsAmt, accruedAtPurchaseAmt, holdingPeriodAccruedPer100,
+    holdingCouponIncome, amortToSell, carryClean
+  };
+}
+
+/**
  * @param {object} transaction - gsec-shaped row; must include deal_number, transaction_type Sell fields
  * @param {object} [options]
  * @param {string} [options.descriptionPrefix]
@@ -221,8 +303,18 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
 
   const drAccount = await resolveSellDrBankAccount(transaction);
 
+  // A multi-lot Sell (allocated across more than one Buy deal) carries the
+  // allocation breakdown in sell_deal_allocations. When present with 2+ entries,
+  // compute the P&L per lot (each against its own buy-side cost basis) and sum
+  // the components into one combined journal, instead of the single-buyDeal path.
+  let allocations = transaction.sell_deal_allocations;
+  if (typeof allocations === 'string') {
+    try { allocations = JSON.parse(allocations); } catch { allocations = null; }
+  }
+  const isMultiLot = Array.isArray(allocations) && allocations.length > 1;
+
   let buyDeal = null;
-  if (transaction.buy_deal_number) {
+  if (!isMultiLot && transaction.buy_deal_number) {
     const [buyRows] = await db.query(
       `SELECT deal_number, value_date, trade_date, maturity_date, issue_date,
               face_value, clean_price, dirty_price, yield,
@@ -243,11 +335,11 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
   // Allow callers (e.g. Buy/Sell buybacks that don't persist a GSec holding) to
   // supply the buy-side context so the full P&L sell journal is produced instead
   // of the simplified legacy entry.
-  if (!buyDeal && options.buyDealOverride) {
+  if (!isMultiLot && !buyDeal && options.buyDealOverride) {
     buyDeal = options.buyDealOverride;
   }
 
-  if (!buyDeal) {
+  if (!isMultiLot && !buyDeal) {
     const crAccount =
       (await accountMapping.getAccountCodeOptional(accountMapping.MAPPING_KEYS.GSEC_ASSET_TBONDS)) ||
       '131-101-350-098-44';
@@ -294,86 +386,78 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
   // ---------------------------------------------------------------------------
 
   const sellFace = Number(transaction.face_value || 0);
-  const buyFace = Number(buyDeal.face_value || 0);
-  const scale = buyFace > 0 ? sellFace / buyFace : 1;
-  const buyClean = Number(buyDeal.clean_price || 0);
-  const buyDirty = Number(buyDeal.dirty_price || 0);
   const sellClean = Number(transaction.clean_price || 0);
   const sellDirty = Number(transaction.dirty_price || 0);
   const sellSettlement = Number(transaction.settlement_amount || 0);
-  const holdingDays = Math.max(0, utcDayDiffSigned(sellDate, buyDeal.value_date));
   const sellAccruedPer100 = Math.max(0, sellDirty - sellClean);
 
-  // 1) Treasury Bonds reversal at buy clean price.
-  const treasuryBondsAmt = truncate8((sellFace * buyClean) / 100);
-
-  // 2) Buy-side accrued reversal (unwinds the accrued asset created when buy posted).
-  // Prefer linked buy dirty/clean. On same-day exit (e.g. buyback leg1) when buy prices
-  // are missing on the row, the sell-side accrued spread equals what was paid at purchase.
-  let buyAccruedPer100 = Math.max(0, buyDirty - buyClean);
-  if (buyAccruedPer100 <= 0 && sellAccruedPer100 > 0 && holdingDays === 0) {
-    buyAccruedPer100 = sellAccruedPer100;
-  }
-  let accruedAtPurchaseAmt = truncate8((sellFace * buyAccruedPer100) / 100);
-
-  // 4) Holding-period coupon income — only what accrued WHILE we held the bond.
-  // Same-day buy/sell (buyback): nothing earned; full spread unwinds via 458, not 574.
-  let holdingPeriodAccruedPer100 = holdingDays === 0
-    ? 0
-    : Math.max(0, sellAccruedPer100 - buyAccruedPer100);
-  let holdingCouponIncome = truncate8((sellFace * holdingPeriodAccruedPer100) / 100);
-
-  // 3) Amort via effective-yield — only when the bond was actually held (holdingDays > 0).
-  // Same-day buyback has no premium/discount amortisation to recognise.
+  let treasuryBondsAmt = 0;
+  let accruedAtPurchaseAmt = 0;
+  let holdingCouponIncome = 0;
   let amortToSell = 0;
-  let carryClean = null;
-  if (holdingDays > 0) {
-    const buyYield = Number(buyDeal.yield || 0);
-    const annualCouponRate = await resolveAnnualCouponRatePercent(buyDeal);
-    if (
-      buyYield > 0 &&
-      annualCouponRate != null &&
-      annualCouponRate > 0 &&
-      buyDeal.maturity_date &&
-      sellFace > 0
-    ) {
-      try {
-        const carry = priceTripletAtYield({
-          couponRate: annualCouponRate,
-          yieldRate: buyYield,
-          valueDate: sellDate,
-          maturityDate: toYmdUtc(buyDeal.maturity_date)
-        });
-        if (carry && isSaneCleanPer100(carry.cleanPrice)) {
-          carryClean = Number(carry.cleanPrice);
-          amortToSell = truncate8((sellFace * (carryClean - buyClean)) / 100);
-        } else if (carry && !isSaneCleanPer100(carry.cleanPrice)) {
-          console.warn(
-            `[gsecSellLedger] carry clean out of range for ${transaction.deal_number}:`,
-            carry.cleanPrice,
-            '(annualCouponRate=',
-            annualCouponRate,
-            ') — using per_day_amort fallback'
-          );
-        }
-      } catch (e) {
-        console.warn(
-          `[gsecSellLedger] effective-yield carry calc failed for ${transaction.deal_number}:`,
-          e.message
-        );
-      }
-    }
-    if (amortToSell === 0 && carryClean == null) {
-      // Legacy fallback: straight-line per-day premium/discount amortisation.
-      const perDayAmort = Number(buyDeal.per_day_amortization || 0);
-      amortToSell = truncate8(perDayAmort * holdingDays) * scale;
-    }
-  }
+  // Representative single-lot values kept for the dryRun debug payload below;
+  // meaningless as single figures in the multi-lot case (each lot has its own).
+  let buyFace = 0, scale = 1, buyClean = 0, buyDirty = 0, holdingDays = 0,
+    buyAccruedPer100 = 0, holdingPeriodAccruedPer100 = 0, carryClean = null;
 
-  // Same-day buy/sell (e.g. Sell/Buy buyback leg1): no amortisation or carryClean.
-  if (holdingDays === 0) {
-    amortToSell = 0;
-    carryClean = null;
+  if (isMultiLot) {
+    // Sum each lot's P&L components, each computed against its own buy-side cost basis.
+    for (const alloc of allocations) {
+      const legFace = Number(alloc.amountToSell || alloc.faceValue || 0);
+      const buyDealNumber = alloc.deal_number || alloc.buy_deal_number;
+      if (!buyDealNumber || legFace <= 0) continue;
+
+      const [buyRows] = await db.query(
+        `SELECT deal_number, value_date, trade_date, maturity_date, issue_date,
+                face_value, clean_price, dirty_price, yield,
+                accrued_interest_calculation, last_coupon_date, next_coupon_date,
+                per_day_amortization, coupon_interest, remaining_face_value, isin_number
+         FROM gsec
+         WHERE transaction_type = 'Buy' AND deal_number = ?
+         LIMIT 1`,
+        [buyDealNumber]
+      );
+      const legBuyDeal = buyRows && buyRows[0];
+      if (!legBuyDeal) {
+        console.warn(`[gsecSellLedger] allocation buy deal not found: ${buyDealNumber} (sell ${transaction.deal_number})`);
+        continue;
+      }
+
+      const lot = await computeLotPnl({
+        sellFace: legFace,
+        sellClean,
+        sellDirty,
+        sellDate,
+        buyDeal: legBuyDeal,
+        dealNumberForLog: transaction.deal_number
+      });
+
+      treasuryBondsAmt = truncate8(treasuryBondsAmt + lot.treasuryBondsAmt);
+      accruedAtPurchaseAmt = truncate8(accruedAtPurchaseAmt + lot.accruedAtPurchaseAmt);
+      holdingCouponIncome = truncate8(holdingCouponIncome + lot.holdingCouponIncome);
+      amortToSell = truncate8(amortToSell + (lot.holdingDays > 0 ? lot.amortToSell : 0));
+    }
+  } else {
+    const lot = await computeLotPnl({
+      sellFace,
+      sellClean,
+      sellDirty,
+      sellDate,
+      buyDeal,
+      dealNumberForLog: transaction.deal_number
+    });
+    buyFace = lot.buyFace;
+    scale = lot.scale;
+    buyClean = lot.buyClean;
+    buyDirty = lot.buyDirty;
+    holdingDays = lot.holdingDays;
+    buyAccruedPer100 = Math.max(0, buyDirty - buyClean);
+    holdingPeriodAccruedPer100 = lot.holdingPeriodAccruedPer100;
+    carryClean = lot.holdingDays > 0 ? lot.carryClean : null;
+    treasuryBondsAmt = lot.treasuryBondsAmt;
+    accruedAtPurchaseAmt = lot.accruedAtPurchaseAmt;
+    holdingCouponIncome = lot.holdingCouponIncome;
+    amortToSell = lot.holdingDays > 0 ? lot.amortToSell : 0;
   }
 
   // 5) Capital gain as the plug, which equals sellFace * (sellClean - carryClean) / 100
