@@ -130,6 +130,7 @@ exports.getTbillReport = async ({ asAtDate, portfolio, isin, valueDate, maturity
         SELECT TRIM(buy_deal_number) AS buy_deal_number, COALESCE(SUM(face_value), 0) AS total_sold
         FROM tbill
         WHERE transaction_type = 'Sell'
+          AND status != 'rejected'
           AND buy_deal_number IS NOT NULL
           AND TRIM(buy_deal_number) IN (${placeholders})
       `;
@@ -155,7 +156,7 @@ exports.getTbillReport = async ({ asAtDate, portfolio, isin, valueDate, maturity
           SELECT id, portfolio_id, isin_number AS isin, face_value,
                  TRIM(buy_deal_number) AS buy_deal_number, value_date
           FROM tbill
-          WHERE transaction_type = 'Sell' AND isin_number IN (${ph})
+          WHERE transaction_type = 'Sell' AND status != 'rejected' AND isin_number IN (${ph})
         `;
         const sellAllocParams = [...uniqueIsins];
         if (portfolio) {
