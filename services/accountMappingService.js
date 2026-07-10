@@ -21,7 +21,7 @@ const MAPPING_KEYS = {
   GSEC_ACCRUAL_INCOME: 'GSEC_ACCRUAL_INCOME', // Credit: 467-101-190-470-44 — GSec Interest Income (Accrued)
   GSEC_COUPON_INCOME: 'GSEC_COUPON_INCOME', // Credit: 467-101-190-476-44 — Coupon Interest Income TBond
   GSEC_AMORTISATION_TRADING: 'GSEC_AMORTISATION_TRADING', // 358-101-130-416-44 — Amortised Discount Received/Premium Paid TBonds - Trading
-  GSEC_FINANCIAL_ASSETS_AMORTISED_COST: 'GSEC_FINANCIAL_ASSETS_AMORTISED_COST', // 111-101-170-044-44 — Financial Assets at amortised cost
+  GSEC_FINANCIAL_ASSETS_AMORTISED_COST: 'GSEC_FINANCIAL_ASSETS_AMORTISED_COST', // 131-101-170-044-44 — Financial Assets at amortised cost
   GSEC_TRADING_ACCOUNT: 'GSEC_TRADING_ACCOUNT', // Treasury Bonds - Trading A/c (131-101-350-098-44)
   GSEC_ACCRUED_INTEREST_PAID: 'GSEC_ACCRUED_INTEREST_PAID', // Accrued Coupon Interest Paid at Purchase (131-101-350-128-44)
   GSEC_CAPITAL_GAIN_LOSS: 'GSEC_CAPITAL_GAIN_LOSS', // Capital Gain/Loss on Treasury Bond (358-101-130-398-44)
@@ -63,7 +63,7 @@ const MAPPING_KEYS = {
   REVERSE_REPO_LIABILITY: 'REVERSE_REPO_LIABILITY',       // 249-101-330-308-44 Repo with Banks and Other Financial Institutes (principal borrowing CR, maturity, etc.)
   REVERSE_REPO_INTEREST_PAYABLE: 'REVERSE_REPO_INTEREST_PAYABLE', // 249-101-330-780-44 Interest Payable Repo Borrowing (Reverse Repo daily interest accrual CR)
   REVERSE_REPO_INTEREST_EXPENSE: 'REVERSE_REPO_INTEREST_EXPENSE', // 669-101-240-752-44 Interest Paid on Repo with Banks and Other Financial Institutes (daily accrual DR)
-  REVERSE_REPO_MATURITY_INTEREST_EXPENSE: 'REVERSE_REPO_MATURITY_INTEREST_EXPENSE', // 669-101-240-768-44 Intrest Expense R/Repo (interest expense recognised at maturity DR)
+  REVERSE_REPO_MATURITY_INTEREST_EXPENSE: 'REVERSE_REPO_MATURITY_INTEREST_EXPENSE', // 669-101-240-768-44 Interest Expense R/Repo (interest expense recognised at maturity DR)
 
   // General Accounts
   CASH_BANK_ASSET: 'CASH_BANK_ASSET',
