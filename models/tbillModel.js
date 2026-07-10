@@ -513,14 +513,15 @@ const Tbill = {
   updateStatus: async (id, data) => {
     await ensureTbillSchema();
     const [currentTx] = await db.query(
-      'SELECT current_approval_level, status FROM tbill WHERE id = ?',
+      'SELECT current_approval_level, status, transaction_type, face_value, buy_deal_number FROM tbill WHERE id = ?',
       [id]
     );
     if (!currentTx || currentTx.length === 0) {
       throw new Error('Transaction not found');
     }
+    const before = currentTx[0];
 
-    const currentLevel = currentTx[0].current_approval_level || 'front_office';
+    const currentLevel = before.current_approval_level || 'front_office';
     let newStatus = data.status;
     let newApprovalLevel;
 
@@ -557,6 +558,28 @@ const Tbill = {
       : [newStatus, newApprovalLevel, authorizedBy, id];
 
     const [result] = await db.query(sql, values);
+
+    // Restore the linked Buy deal's remaining_face_value when a Sell is rejected
+    // (mirrors gsec.updateStatus's re-lock-on-rejection behavior). Sell rows deduct
+    // from their buy deal at creation time regardless of approval status, so a
+    // rejection must give that face value back. Guard on before.status !== 'rejected'
+    // so re-rejecting an already-rejected row can't restore the amount twice.
+    if (
+      newStatus === 'rejected' &&
+      before.status !== 'rejected' &&
+      before.transaction_type === 'Sell' &&
+      before.buy_deal_number
+    ) {
+      try {
+        await Tbill.updateBuyRemainingFaceValue(
+          before.buy_deal_number,
+          -(parseFloat(before.face_value) || 0),
+          null
+        );
+      } catch (restoreErr) {
+        console.error('Failed to restore remaining_face_value on T-Bill Sell rejection:', restoreErr);
+      }
+    }
 
     // On final approval, post Buy/Sell ledger entries (mirrors gsec.updateStatus).
     if (newStatus === 'final_approved' && newApprovalLevel === 'final_approved') {
