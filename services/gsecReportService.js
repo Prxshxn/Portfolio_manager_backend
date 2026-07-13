@@ -86,6 +86,71 @@ function resolveEffectiveRemainingFace(row) {
   return Math.max(0, Number(row.remaining_face_value_report ?? face) || 0);
 }
 
+function parseSellDealAllocations(raw) {
+  if (!raw) return null;
+  try {
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return Array.isArray(parsed) && parsed.length > 0 ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Sum sell reductions per buy deal as-of a report date.
+ * Multi-lot sells store the true split in sell_deal_allocations; using sell.face_value
+ * against buy_deal_number alone over-deducts the primary buy (e.g. 150M counted when
+ * only 100M was allocated from that lot).
+ */
+async function buildSoldByDealMap(dealNumbers, asAtDate) {
+  const soldByDeal = {};
+  if (!dealNumbers.length) return soldByDeal;
+
+  const dealSet = new Set(dealNumbers.map((d) => String(d || '').trim()).filter(Boolean));
+  const normalized = [...dealSet];
+  if (!normalized.length) return soldByDeal;
+
+  const placeholders = normalized.map(() => '?').join(',');
+  let sql = `
+    SELECT TRIM(buy_deal_number) AS buy_deal_number, face_value, sell_deal_allocations
+    FROM gsec
+    WHERE transaction_type = 'Sell'
+      AND (
+        TRIM(buy_deal_number) IN (${placeholders})
+        OR sell_deal_allocations IS NOT NULL
+      )
+  `;
+  const params = [...normalized];
+
+  if (asAtDate) {
+    sql += ' AND DATE(value_date) <= DATE(?)';
+    params.push(asAtDate);
+  }
+
+  const [sellRows] = await db.query(sql, params);
+  for (const row of sellRows) {
+    const allocations = parseSellDealAllocations(row.sell_deal_allocations);
+    if (allocations) {
+      for (const alloc of allocations) {
+        const buyDealNumber = String((alloc.deal_number || alloc.buy_deal_number) || '').trim();
+        const amount = Number(alloc.amountToSell || alloc.faceValue) || 0;
+        if (buyDealNumber && dealSet.has(buyDealNumber) && amount > 0) {
+          soldByDeal[buyDealNumber] = (soldByDeal[buyDealNumber] || 0) + amount;
+        }
+      }
+      continue;
+    }
+
+    const buyDealNumber = String(row.buy_deal_number || '').trim();
+    const amount = Number(row.face_value) || 0;
+    if (buyDealNumber && dealSet.has(buyDealNumber) && amount > 0) {
+      soldByDeal[buyDealNumber] = (soldByDeal[buyDealNumber] || 0) + amount;
+    }
+  }
+
+  return soldByDeal;
+}
+
 exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityDate, page, pageSize }) => {
   try {
     // Debug: Log the asAtDate parameter
@@ -156,47 +221,9 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
 
   // Build a map of total sold per buy deal_number to compute remaining face value per row
   const dealNumbers = rows.map(r => (r.deal_number || '').trim()).filter(Boolean);
-  const soldByDeal = {};
-  if (dealNumbers.length) {
-    // Grouped query to sum sells referencing these buy deals
-    // Include asAtDate filter for backdating support
-    const placeholders = dealNumbers.map(() => '?').join(',');
-    let sellRefSql = `
-      SELECT TRIM(buy_deal_number) AS buy_deal_number, COALESCE(SUM(face_value), 0) AS total_sold
-      FROM gsec
-      WHERE transaction_type = 'Sell' 
-      AND buy_deal_number IS NOT NULL 
-      AND TRIM(buy_deal_number) IN (${placeholders})
-    `;
-    const sellRefParams = [...dealNumbers];
-    
-    // Add asAtDate filter for backdating - only include sell transactions on or before asAtDate
-    // CRITICAL: Only count sells that occurred on or BEFORE the asAtDate based on value_date
-    // This ensures future-dated sells (like 10/30) don't affect reports for earlier dates (like 10/27)
-    if (asAtDate) {
-      console.log(`[GSEC Report] Filtering sell transactions for asAtDate: ${asAtDate}`);
-      console.log(`[GSEC Report] Will exclude sells with value_date > ${asAtDate}`);
-      // Filter by value_date - DATE comparison to exclude future-dated sells
-      sellRefSql += ' AND DATE(value_date) <= DATE(?)';
-      sellRefParams.push(asAtDate);
-    } else {
-      // For current date reports, count all sells regardless of status
-      // (they'll be shown in the table and counted in balance)
-      sellRefSql += '';
-    }
-    
-    sellRefSql += ' GROUP BY TRIM(buy_deal_number)';
-    
-    console.log(`[DEBUG] Sell query: ${sellRefSql}`);
-    console.log(`[DEBUG] Sell query params:`, sellRefParams);
-    
-    const [sellRefRows] = await db.query(sellRefSql, sellRefParams);
-    console.log(`[DEBUG] Sell query returned ${sellRefRows.length} rows:`, sellRefRows);
-    sellRefRows.forEach(r => {
-      const trimmedKey = (r.buy_deal_number || '').trim();
-      soldByDeal[trimmedKey] = Number(r.total_sold) || 0;
-      console.log(`[DEBUG] soldByDeal["${trimmedKey}"] = ${soldByDeal[trimmedKey]}`);
-    });
+  const soldByDeal = await buildSoldByDealMap(dealNumbers, asAtDate);
+  if (asAtDate) {
+    console.log(`[GSEC Report] Sell reductions as at ${asAtDate}:`, soldByDeal);
   }
 
   // Fallback: allocate "unlinked" sells (missing/invalid buy_deal_number) using FIFO per ISIN/portfolio.
@@ -779,33 +806,7 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     
     // Calculate remaining face value for each deal (same logic as in main query)
     const dealNumbers = balanceRows.map(r => (r.deal_number || '').trim()).filter(Boolean);
-    const soldByDeal = {};
-    if (dealNumbers.length) {
-      const placeholders = dealNumbers.map(() => '?').join(',');
-      let sellSql = `
-        SELECT TRIM(buy_deal_number) AS buy_deal_number, COALESCE(SUM(face_value), 0) AS total_sold
-        FROM gsec
-        WHERE transaction_type = 'Sell' 
-        AND buy_deal_number IS NOT NULL 
-        AND TRIM(buy_deal_number) IN (${placeholders})
-      `;
-      const sellParams = [...dealNumbers];
-      
-      // Filter by date - ONLY include sells that occurred on or BEFORE the asAtDate
-      // Status check is lenient to include pending sells in the count
-      if (asAtDate) {
-        console.log(`[GSEC Report] Filtering total balance sells for asAtDate: ${asAtDate}`);
-        sellSql += ' AND DATE(value_date) <= DATE(?)';
-        sellParams.push(asAtDate);
-      }
-      
-      sellSql += ' GROUP BY TRIM(buy_deal_number)';
-      const [sellRows] = await db.query(sellSql, sellParams);
-      sellRows.forEach(row => {
-        const trimmedKey = (row.buy_deal_number || '').trim();
-        soldByDeal[trimmedKey] = Number(row.total_sold) || 0;
-      });
-    }
+    const soldByDeal = await buildSoldByDealMap(dealNumbers, asAtDate);
 
     // Same fallback as main table: allocate unlinked sells FIFO per ISIN/portfolio
     // so total balance matches deal-level rows even when sell rows are not linked correctly.
