@@ -9,6 +9,7 @@ const {
   computeGsecDailyAmortization,
   resolveGsecRemainingForDailyPosting
 } = require('../services/gsecCouponPeriod');
+const { buildSoldByDealMap } = require('../services/gsecSellDeductionService');
 const { postFinalApprovedBuyLedger } = require('../services/gsecApprovalLedgerService');
 const { postBuySellBuybackLedger } = require('../services/buybackBuySellLedgerService');
 const {
@@ -427,6 +428,24 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
 
     console.log('GSec accrual deals loaded:', gsecDeals.length);
     console.log('GSec amortization deals loaded:', gsecAmortDeals.length);
+
+    const accrualDealNumbers = (gsecDeals || [])
+      .map((d) => String(d.deal_number || '').trim())
+      .filter(Boolean);
+    const soldByDealForAccrual = await buildSoldByDealMap(db, accrualDealNumbers, systemDay);
+    for (const deal of gsecDeals || []) {
+      const dn = String(deal.deal_number || '').trim();
+      deal.linked_sold_face_value = Number(soldByDealForAccrual[dn] || 0);
+    }
+
+    const amortDealNumbers = (gsecAmortDeals || [])
+      .map((d) => String(d.deal_number || '').trim())
+      .filter(Boolean);
+    const soldByDealForAmort = await buildSoldByDealMap(db, amortDealNumbers, systemDay);
+    for (const deal of gsecAmortDeals || []) {
+      const dn = String(deal.deal_number || '').trim();
+      deal.linked_sold_face_value = Number(soldByDealForAmort[dn] || 0);
+    }
 
     const hasPerDayAmortizationColumn = Array.isArray(colRows) && colRows.length > 0;
 
