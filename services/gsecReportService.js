@@ -6,6 +6,7 @@ const {
   resolveIsinCouponDates,
   computeGsecPerDayAccrual
 } = require('./gsecCouponPeriod');
+const { buildSoldByDealMap } = require('./gsecSellDeductionService');
 
 // Helper to truncate to 4 decimals
 function truncate4(val) {
@@ -86,71 +87,6 @@ function resolveEffectiveRemainingFace(row) {
   return Math.max(0, Number(row.remaining_face_value_report ?? face) || 0);
 }
 
-function parseSellDealAllocations(raw) {
-  if (!raw) return null;
-  try {
-    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-    return Array.isArray(parsed) && parsed.length > 0 ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Sum sell reductions per buy deal as-of a report date.
- * Multi-lot sells store the true split in sell_deal_allocations; using sell.face_value
- * against buy_deal_number alone over-deducts the primary buy (e.g. 150M counted when
- * only 100M was allocated from that lot).
- */
-async function buildSoldByDealMap(dealNumbers, asAtDate) {
-  const soldByDeal = {};
-  if (!dealNumbers.length) return soldByDeal;
-
-  const dealSet = new Set(dealNumbers.map((d) => String(d || '').trim()).filter(Boolean));
-  const normalized = [...dealSet];
-  if (!normalized.length) return soldByDeal;
-
-  const placeholders = normalized.map(() => '?').join(',');
-  let sql = `
-    SELECT TRIM(buy_deal_number) AS buy_deal_number, face_value, sell_deal_allocations
-    FROM gsec
-    WHERE transaction_type = 'Sell'
-      AND (
-        TRIM(buy_deal_number) IN (${placeholders})
-        OR sell_deal_allocations IS NOT NULL
-      )
-  `;
-  const params = [...normalized];
-
-  if (asAtDate) {
-    sql += ' AND DATE(value_date) <= DATE(?)';
-    params.push(asAtDate);
-  }
-
-  const [sellRows] = await db.query(sql, params);
-  for (const row of sellRows) {
-    const allocations = parseSellDealAllocations(row.sell_deal_allocations);
-    if (allocations) {
-      for (const alloc of allocations) {
-        const buyDealNumber = String((alloc.deal_number || alloc.buy_deal_number) || '').trim();
-        const amount = Number(alloc.amountToSell || alloc.faceValue) || 0;
-        if (buyDealNumber && dealSet.has(buyDealNumber) && amount > 0) {
-          soldByDeal[buyDealNumber] = (soldByDeal[buyDealNumber] || 0) + amount;
-        }
-      }
-      continue;
-    }
-
-    const buyDealNumber = String(row.buy_deal_number || '').trim();
-    const amount = Number(row.face_value) || 0;
-    if (buyDealNumber && dealSet.has(buyDealNumber) && amount > 0) {
-      soldByDeal[buyDealNumber] = (soldByDeal[buyDealNumber] || 0) + amount;
-    }
-  }
-
-  return soldByDeal;
-}
-
 exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityDate, page, pageSize }) => {
   try {
     // Debug: Log the asAtDate parameter
@@ -221,7 +157,7 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
 
   // Build a map of total sold per buy deal_number to compute remaining face value per row
   const dealNumbers = rows.map(r => (r.deal_number || '').trim()).filter(Boolean);
-  const soldByDeal = await buildSoldByDealMap(dealNumbers, asAtDate);
+  const soldByDeal = await buildSoldByDealMap(db, dealNumbers, asAtDate);
   if (asAtDate) {
     console.log(`[GSEC Report] Sell reductions as at ${asAtDate}:`, soldByDeal);
   }
@@ -806,7 +742,7 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     
     // Calculate remaining face value for each deal (same logic as in main query)
     const dealNumbers = balanceRows.map(r => (r.deal_number || '').trim()).filter(Boolean);
-    const soldByDeal = await buildSoldByDealMap(dealNumbers, asAtDate);
+    const soldByDeal = await buildSoldByDealMap(db, dealNumbers, asAtDate);
 
     // Same fallback as main table: allocate unlinked sells FIFO per ISIN/portfolio
     // so total balance matches deal-level rows even when sell rows are not linked correctly.
