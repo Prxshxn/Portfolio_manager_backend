@@ -344,6 +344,21 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
       (await accountMapping.getAccountCodeOptional(accountMapping.MAPPING_KEYS.GSEC_ASSET_TBONDS)) ||
       '131-101-350-098-44';
     const description = `${prefix}GSec Sale - Final Approval - ${transaction.deal_number}`;
+    if (options.dryRun) {
+      return {
+        success: true,
+        dryRun: true,
+        legacy: true,
+        date: sellDate,
+        deal_id: dealId,
+        main: {
+          dr_lines: [{ account_code: drAccount, amount, description }],
+          cr_lines: [{ account_code: crAccount, amount, description }],
+          description
+        },
+        reversal: null
+      };
+    }
     const ledgerResult = await ledgerController.postLedgerEntry({
       date: sellDate,
       dr_account: drAccount,
