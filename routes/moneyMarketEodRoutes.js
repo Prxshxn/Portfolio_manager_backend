@@ -1444,6 +1444,16 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
     }
 
     await setSystemDay(tomorrowStr);
+
+    // Force every other logged-in user to log in again once EOD completes; the
+    // triggering admin's own session is exempted so they aren't logged out too.
+    try {
+      const { forceLogoutAllExcept } = require('../models/authSettingsModel');
+      await forceLogoutAllExcept(req.user?.id);
+    } catch (logoutErr) {
+      console.error('Failed to set force-logout state after EOD:', logoutErr);
+    }
+
     res.json({
       success: true,
       message: `EOD complete. Posted for ${postedCount} money market deals, ${gsecPostedCount} GSec accrual deals, ${gsecAmortPostedCount} GSec amortization, ${gsecCouponPostedCount} GSec coupon settlements, ${gsecMaturityPostedCount} GSec maturity redemptions, ${fdPostedCount} fixed deposit deals, ${repoAccrualCount} repo accrual + ${repoMaturityCount} repo maturity + ${repoBackfillCount} repo backfill entries, and ${tbillAccrualPostedCount} T-Bill accrual + ${tbillMaturityPostedCount} T-Bill maturity entries.`,

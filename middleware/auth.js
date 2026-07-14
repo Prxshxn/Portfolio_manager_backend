@@ -1,18 +1,44 @@
 const jwt = require('jsonwebtoken');
 const db = require('../config/database');
 
+// Cache the force-logout cutoff briefly so every request doesn't hit the DB.
+let forceLogoutCache = { at: null, exemptUserId: null, fetchedAt: 0 };
+const FORCE_LOGOUT_CACHE_TTL_MS = 5000;
+
+async function getForceLogoutCutoff() {
+  const now = Date.now();
+  if (now - forceLogoutCache.fetchedAt < FORCE_LOGOUT_CACHE_TTL_MS) {
+    return forceLogoutCache;
+  }
+  try {
+    const [rows] = await db.query(
+      'SELECT force_logout_at, force_logout_exempt_user_id FROM auth_settings WHERE id = 1'
+    );
+    const row = rows[0];
+    forceLogoutCache = {
+      at: row?.force_logout_at || null,
+      exemptUserId: row?.force_logout_exempt_user_id ?? null,
+      fetchedAt: now
+    };
+  } catch (err) {
+    // Table may not exist yet on older environments; fail open rather than lock everyone out.
+    forceLogoutCache = { at: null, exemptUserId: null, fetchedAt: now };
+  }
+  return forceLogoutCache;
+}
+
 // Check if user is authenticated
-exports.checkAuth = (req, res, next) => {
+exports.checkAuth = async (req, res, next) => {
   try {
     // For development/testing, allow requests without authentication
     if (process.env.NODE_ENV === 'development' && process.env.SKIP_AUTH === 'true') {
       console.log('Skipping authentication in development mode');
       return next();
     }
-    
+
     // Get token from header
     const token = req.headers.authorization?.split(' ')[1];
-    
+
     // If no token, check if there's user data in headers (for testing)
     if (!token && req.headers['x-user-data']) {
       try {
@@ -23,17 +49,33 @@ exports.checkAuth = (req, res, next) => {
         console.error('Error parsing x-user-data:', error);
       }
     }
-    
+
     if (!token) {
-      return res.status(401).json({ 
-        success: false, 
-        message: 'Access denied. No token provided.' 
+      return res.status(401).json({
+        success: false,
+        message: 'Access denied. No token provided.'
       });
     }
-    
+
     // Verify token
     const jwtSecret = process.env.JWT_SECRET || 'your-secret-key';
     const decoded = jwt.verify(token, jwtSecret);
+
+    // Reject tokens issued before the last EOD-triggered force-logout, unless this
+    // is the admin who triggered that specific EOD run (their session is exempted).
+    const cutoff = await getForceLogoutCutoff();
+    if (cutoff.at && decoded.id !== cutoff.exemptUserId) {
+      const tokenIssuedAtMs = (decoded.iat || 0) * 1000;
+      const cutoffMs = new Date(cutoff.at).getTime();
+      if (tokenIssuedAtMs < cutoffMs) {
+        return res.status(401).json({
+          success: false,
+          message: 'Your session was ended because End of Day processing ran. Please log in again.',
+          sessionInvalidated: true
+        });
+      }
+    }
+
     req.user = decoded;
     next();
   } catch (error) {
