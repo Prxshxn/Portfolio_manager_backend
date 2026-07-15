@@ -28,4 +28,7 @@ router.get('/broker', reportController.getBrokerReport);
 router.get('/daily-portfolio-balance/breakdown', reportController.getDailyPortfolioBalanceBreakdown);
 router.get('/daily-portfolio-balance', reportController.getDailyPortfolioBalanceReport);
 
+// Per-account "as per report" figures for reconciling the external GSec trial balance
+router.get('/account-figures', reportController.getAccountReportFigures);
+
 module.exports = router;
