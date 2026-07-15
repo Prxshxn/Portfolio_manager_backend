@@ -769,6 +769,35 @@ MaturityController.getDealTicket = async (req, res) => {
   }
 };
 
+// GET /api/maturity/matured-slip-number
+// Issues the next Matured Deal Slip ticket number for the current month,
+// format YYYYMM-#### (e.g. 202607-0024). Atomically increments a per-month
+// counter so concurrent requests never collide.
+MaturityController.getMaturedSlipNumber = async (req, res) => {
+  try {
+    const db = require('../config/database');
+    const now = new Date();
+    const periodYm = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}`;
+
+    await db.query(
+      `INSERT INTO matured_slip_sequence (period_ym, last_seq)
+       VALUES (?, 1)
+       ON DUPLICATE KEY UPDATE last_seq = last_seq + 1`,
+      [periodYm]
+    );
+    const [rows] = await db.query(
+      'SELECT last_seq FROM matured_slip_sequence WHERE period_ym = ?',
+      [periodYm]
+    );
+    const seq = rows[0]?.last_seq || 1;
+    const slipNumber = `${periodYm}-${String(seq).padStart(4, '0')}`;
+    return res.json({ success: true, slipNumber });
+  } catch (error) {
+    console.error('Error generating matured slip number:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
 MaturityController.processMaturities = async (req, res) => {
   try {
     const { dealIds, processDate, maturityAction, bankPaymentCode } = req.body || {};
