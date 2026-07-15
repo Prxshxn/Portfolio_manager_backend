@@ -157,6 +157,9 @@ router.get('/summary', MaturityController.getMaturitySummary);
 router.get('/handling', MaturityController.getMaturityHandling);
 router.get('/deal-ticket/:productType/:id', MaturityController.getDealTicket);
 
+// Issue the next Matured Deal Slip ticket number (format YYYYMM-####).
+router.get('/matured-slip-number', MaturityController.getMaturedSlipNumber);
+
 /**
  * @swagger
  * /maturity/process:
