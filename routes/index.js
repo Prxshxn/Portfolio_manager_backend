@@ -90,4 +90,8 @@ router.use('/issuer-master', require('./issuerMasterRoutes'));
 // Mount Investment Approver Master API
 router.use('/investment-approver-master', require('./investmentApproverMasterRoutes'));
 
+// Mount External Accounting proxy (Trial Balance / GSec Balance Sheet) - avoids
+// browser CORS by relaying server-to-server to the external accounting API.
+router.use('/external-accounting', require('./externalAccountingRoutes'));
+
 module.exports = router;

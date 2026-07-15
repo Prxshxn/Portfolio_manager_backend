@@ -26,6 +26,14 @@ function daysBetweenYMD(valueDateYmd, maturityDateYmd) {
   return Math.round((t1 - t0) / MS_PER_DAY);
 }
 
+/** Round cash settlement UP to the nearest ones place (e.g. 3005737.5 → 3005738). */
+function ceilSettlementToOnes(amount) {
+  const n = Number(amount);
+  if (!Number.isFinite(n) || n <= 0) return n;
+  const at4 = Math.round(n * 10000) / 10000;
+  return Math.ceil(at4 - 1e-9);
+}
+
 function compute({ valueDate, maturityDate, faceValue, discountRatePercent }) {
   const days = daysBetweenYMD(valueDate, maturityDate);
   const fv = parseFloat(faceValue);
@@ -42,14 +50,16 @@ function compute({ valueDate, maturityDate, faceValue, discountRatePercent }) {
     return { ok: false, error: 'Invalid discount — check rate and days' };
   }
   const factor = 1 / denominator;
-  // Round quoted price per 100 to 4 decimals, then derive settlement from it
-  // so the cash amount matches the displayed price exactly.
+  // Round quoted price per 100 to 4 decimals, derive cash, then ceil settlement
+  // to the nearest ones place so ledger posts whole currency units.
   const pricePer100 = Math.round(100 * factor * 10000) / 10000;
-  const cashPrice = fv * (pricePer100 / 100);
+  const cashPriceRaw = fv * (pricePer100 / 100);
+  const cashPrice = ceilSettlementToOnes(cashPriceRaw);
   return {
     ok: true,
     days,
     cashPrice,
+    cashPriceRaw,
     pricePer100,
     discountEarned: fv - cashPrice
   };
@@ -57,5 +67,6 @@ function compute({ valueDate, maturityDate, faceValue, discountRatePercent }) {
 
 module.exports = {
   daysBetweenYMD,
+  ceilSettlementToOnes,
   compute
 };
