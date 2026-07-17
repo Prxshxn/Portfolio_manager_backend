@@ -120,7 +120,8 @@ exports.login = async (req, res) => {
     const [assignments] = await require('../config/db').query('SELECT * FROM authorizer_assignments WHERE user_id = ?', [user.id]);
     if (assignments && assignments.length > 0) {
       // Priority: back_office_final > back_office_verifier > back_office > front_office > authorizer > others
-      const rolePriority = ['back_office_final', 'back_office_verifier', 'back_office', 'front_office', 'authorizer'];
+      // Prefer specialized FO/BO authorizer roles over a generic authorizer assignment.
+      const rolePriority = ['back_office_final', 'back_office_verifier', 'back_office', 'front_office', 'front_office_verifier', 'authorizer'];
       let bestAssignment = assignments[0];
       for (const role of rolePriority) {
         const found = assignments.find(a => a.role === role);
