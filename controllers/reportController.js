@@ -6,6 +6,7 @@ const repoReportService = require('../services/repoReportService');
 const tbillReportService = require('../services/tbillReportService');
 const brokerReportService = require('../services/brokerReportService');
 const dailyPortfolioBalanceService = require('../services/dailyPortfolioBalanceService');
+const accountReportFiguresService = require('../services/accountReportFiguresService');
 const reportExporter = require('../utils/reportExporter');
 
 // GET /api/reports/gsec
@@ -533,10 +534,9 @@ exports.getDailyPortfolioBalanceBreakdown = async (req, res) => {
 };
 
 // GET /api/reports/account-figures?asAtDate=YYYY-MM-DD
-// Per-account "as per report" figures for reconciling the external GSec trial
-// balance / balance sheet against this system's own product reports. Sums the
-// GSec and T-Bill product reports (holdings as at the given date) into the
-// ledger account codes each figure should post to.
+// Per-account "as per report" figures for reconciling Combined TB / GSec Balance
+// Sheet nets against this system's product reports (GSec, T-Bill, Buy/Sell
+// buyback, Repo / Reverse Repo) as at the given date.
 exports.getAccountReportFigures = async (req, res) => {
   try {
     const { asAtDate } = req.query;
@@ -544,30 +544,7 @@ exports.getAccountReportFigures = async (req, res) => {
       return res.status(400).json({ error: 'asAtDate is required' });
     }
 
-    const parseNum = (v) => Number(String(v ?? '0').replace(/,/g, '')) || 0;
-    const sumField = (rows, field) => rows.reduce((s, r) => s + parseNum(r[field]), 0);
-
-    const [gsecResult, tbillResult] = await Promise.all([
-      gsecReportService.getGsecReport({ asAtDate, page: 1, pageSize: 100000 }),
-      tbillReportService.getTbillReport({ asAtDate, page: 1, pageSize: 100000 })
-    ]);
-    const gsecRows = gsecResult.data || [];
-    const tbillRows = tbillResult.data || [];
-
-    // account_code -> figure from this system's reports (holdings as at asAtDate)
-    const figures = {
-      // Treasury Bonds - Trading A/c <- GSec report clean price amount total
-      '131-101-350-098-44': sumField(gsecRows, 'clean_price_amount'),
-      // GSec Accrued Interest Receivable <- GSec report cumulative accrual total
-      '131-101-290-218-44': sumField(gsecRows, 'cumulative_accrual'),
-      // Financial Assets at amortised cost <- GSec report cumulative amortization total
-      '131-101-170-044-44': sumField(gsecRows, 'cumulative_amortization'),
-      // Treasury Bills - Trading A/c <- T-Bill report settlement (on remaining face) total
-      '131-101-350-104-44': sumField(tbillRows, 'settlement_amount'),
-      // Interest Receivable TBill - Trading <- T-Bill report accrued interest total
-      '131-101-350-122-44': sumField(tbillRows, 'accrued_interest_to_date')
-    };
-
+    const { figures } = await accountReportFiguresService.getAccountReportFigures(asAtDate);
     res.json({ success: true, asAtDate, figures });
   } catch (err) {
     console.error('Account Report Figures Error:', err);
