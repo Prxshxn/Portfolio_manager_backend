@@ -129,15 +129,33 @@ async function getRepoConfirmationContent(id) {
     throw err;
   }
 
+  // repo_deal_isins stores per-ISIN collateral (column is isin_number, not isin).
+  // Match DealSlipViewModal / repoDealModel.getById so the letter lists the full
+  // ISIN-wise allocation instead of falling back to the single header ISIN.
   let underlyingSecurities = [];
   try {
-    const [isinRows] = await db.query(`SELECT isin, face_value FROM repo_deal_isins WHERE repo_deal_id = ?`, [id]);
-    underlyingSecurities = isinRows.map((r) => ({ isin: r.isin, faceValue: r.face_value }));
+    const [isinRows] = await db.query(
+      `SELECT isin_number, face_value
+       FROM repo_deal_isins
+       WHERE repo_deal_id = ?
+       ORDER BY id`,
+      [id]
+    );
+    underlyingSecurities = (isinRows || [])
+      .filter((r) => r.isin_number)
+      .map((r) => ({
+        isin: r.isin_number,
+        faceValue: r.face_value
+      }));
   } catch (e) {
     // repo_deal_isins may not exist for legacy single-ISIN deals
+    console.warn('repo_deal_isins lookup failed for confirmation:', e.message);
   }
   if (underlyingSecurities.length === 0 && deal.isin_number) {
-    underlyingSecurities = [{ isin: deal.isin_number, faceValue: deal.face_value }];
+    underlyingSecurities = [{
+      isin: deal.isin_number,
+      faceValue: deal.face_value ?? deal.face_value_as_per_counterparty
+    }];
   }
 
   return dealConfirmationService.buildRepoContent({
@@ -214,13 +232,13 @@ exports.getBuybackConfirmationDocx = async (req, res) => {
 function buildTwoLegDocx(leg1, leg2) {
   const { Document, Paragraph, PageBreak } = require('docx');
   return new Document({
-    sections: [{
-      children: [
+    sections: [
+      dealConfirmationService.letterheadSection([
         ...dealConfirmationService.buildGsecLegDocxChildren(leg1),
         new Paragraph({ children: [new PageBreak()] }),
         ...dealConfirmationService.buildGsecLegDocxChildren(leg2)
-      ]
-    }]
+      ])
+    ]
   });
 }
 

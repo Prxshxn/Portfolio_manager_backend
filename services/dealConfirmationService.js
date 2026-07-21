@@ -8,7 +8,9 @@
 const db = require('../config/db');
 const PDFDocument = require('pdfkit');
 const { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
-  AlignmentType, HeadingLevel, BorderStyle, WidthType } = require('docx');
+  AlignmentType, HeadingLevel, BorderStyle, WidthType, Header, Footer,
+  TextDirection, VerticalAlignTable, HeightRule, TableAnchorType,
+  OverlapType, TableBorders, UnderlineType } = require('docx');
 
 const COMPANY = {
   name: 'Sherwood Capital (Pvt) Ltd.',
@@ -16,6 +18,22 @@ const COMPANY = {
   telephone: '0115328131',
   contactPerson: 'Mr. Palihawadana'
 };
+
+// Matches the Sherwood Capital letterhead used on GSEC letters
+// (gsecLetterController.js): vertical company name on the left margin,
+// address/contact footer, and Ambeon branding strip.
+const LETTERHEAD = {
+  company: 'SHERWOOD CAPITAL (PRIVATE) LIMITED',
+  regNo: 'Reg No. PV00241251',
+  address: 'No; 100/1, 2nd floor, Elvitigala Mawatha, Colombo 08. Sri Lanka',
+  phoneFax: 'T : 0115328133 | F : 0112680225',
+  email: 'E: treasury@sherwood.lk',
+  web: 'W: www.ambeongroup.com',
+  colors: { navy: '#1c3f7c', orange: '#f5821f', text: '#222222' }
+};
+
+// A4 margins tuned for the left sidebar + footer letterhead (points).
+const PDF_MARGINS = { top: 56, right: 50, bottom: 100, left: 100 };
 
 function formatMoney(value) {
   const n = Number(value);
@@ -206,11 +224,14 @@ function renderPartyColumn(doc, { label, party, x, y, width, lineHeight = 13 }) 
 // column separators, so values line up in a visible table format rather
 // than relying on whitespace alone. cellsFn(row) returns the text for each
 // column; boldFirstCol bolds column 0 (used for label:value rows).
-function renderGridTable(doc, rows, { x, colWidths, rowHeight = 18, fontSize = 9.5, boldFirstCol = false, headerRow = null }) {
+function renderGridTable(doc, rows, {
+  x, colWidths, rowHeight = 18, fontSize = 9.5, boldFirstCol = false, headerRow = null,
+  boldLastRow = false, doubleUnderlineLastValue = false
+}) {
   let cursorY = doc.y;
   const totalWidth = colWidths.reduce((a, b) => a + b, 0);
 
-  const drawRow = (cells, isHeader) => {
+  const drawRow = (cells, isHeader, forceBold = false, doubleUnderlineValue = false) => {
     doc.rect(x, cursorY, totalWidth, rowHeight).stroke();
     let cx = x;
     for (let i = 0; i < colWidths.length - 1; i += 1) {
@@ -219,17 +240,26 @@ function renderGridTable(doc, rows, { x, colWidths, rowHeight = 18, fontSize = 9
     }
     cx = x;
     cells.forEach((cellText, i) => {
-      const bold = isHeader || (boldFirstCol && i === 0);
+      const bold = isHeader || forceBold || (boldFirstCol && i === 0);
       doc.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(fontSize);
       const text = cellText == null || cellText === '' ? (isHeader ? '' : '-') : String(cellText);
       doc.text(text, cx + 6, cursorY + (rowHeight - fontSize) / 2 - 1, { width: colWidths[i] - 12 });
+      // Client mark-up: double-underline the Face Value total (last column).
+      if (doubleUnderlineValue && i === cells.length - 1) {
+        const uy = cursorY + rowHeight - 4;
+        doc.moveTo(cx + 6, uy).lineTo(cx + colWidths[i] - 6, uy).stroke();
+        doc.moveTo(cx + 6, uy + 2.5).lineTo(cx + colWidths[i] - 6, uy + 2.5).stroke();
+      }
       cx += colWidths[i];
     });
     cursorY += rowHeight;
   };
 
   if (headerRow) drawRow(headerRow, true);
-  rows.forEach((r) => drawRow(r, false));
+  rows.forEach((r, idx) => {
+    const isLast = idx === rows.length - 1;
+    drawRow(r, false, boldLastRow && isLast, doubleUnderlineLastValue && isLast);
+  });
   // Each cell's .text() call leaves doc.x wherever it last wrote, which is
   // NOT the table's left edge - any subsequent .text() call without an
   // explicit x (e.g. a heading or centered paragraph right after the table)
@@ -237,6 +267,71 @@ function renderGridTable(doc, rows, { x, colWidths, rowHeight = 18, fontSize = 9
   // Reset both cursor coordinates back to the table's origin column.
   doc.x = x;
   doc.y = cursorY + 8;
+}
+
+/** Stamp Sherwood letterhead onto the current PDFKit page (sidebar + footer). */
+function drawLetterhead(doc) {
+  const pageW = doc.page.width;
+  const pageH = doc.page.height;
+  const { navy, orange, text } = LETTERHEAD.colors;
+
+  // Vertical company name flush to the far left page edge (client: "shift to left").
+  doc.save();
+  doc.font('Helvetica-Bold').fontSize(12);
+  const nameW = doc.widthOfString(LETTERHEAD.company);
+  doc.font('Helvetica').fontSize(7);
+  const regW = doc.widthOfString(`  ${LETTERHEAD.regNo}`);
+  doc.translate(3, 56 + nameW + regW);
+  doc.rotate(-90);
+  doc.fillColor(navy);
+  doc.font('Helvetica-Bold').fontSize(12);
+  doc.text(LETTERHEAD.company, 0, 0, { lineBreak: false });
+  doc.font('Helvetica').fontSize(7);
+  doc.text(`  ${LETTERHEAD.regNo}`, nameW, 2, { lineBreak: false });
+  doc.restore();
+
+  // Address / contact left; Ambeon strip centered (matches sample letter footer).
+  let fy = pageH - 88;
+  const left = 56;
+  doc.fillColor(text);
+  doc.font('Helvetica').fontSize(8);
+  [
+    LETTERHEAD.address,
+    LETTERHEAD.phoneFax,
+    LETTERHEAD.email,
+    LETTERHEAD.web
+  ].forEach((line) => {
+    doc.text(line, left, fy, { lineBreak: false });
+    fy += 11;
+  });
+
+  const ambeonY = pageH - 26;
+  const parts = [
+    { t: '● ', color: orange, font: 'Helvetica' },
+    { t: 'AN ', color: text, font: 'Helvetica' },
+    { t: 'AMBEON', color: navy, font: 'Helvetica-Bold' },
+    { t: ' COMPANY', color: text, font: 'Helvetica' }
+  ];
+  const widths = parts.map((p) => {
+    doc.font(p.font).fontSize(8);
+    return doc.widthOfString(p.t);
+  });
+  let ax = (pageW - widths.reduce((a, b) => a + b, 0)) / 2;
+  parts.forEach((p, i) => {
+    doc.font(p.font).fontSize(8).fillColor(p.color);
+    doc.text(p.t, ax, ambeonY, { lineBreak: false });
+    ax += widths[i];
+  });
+  doc.fillColor('#000000');
+}
+
+/** ISIN / Face Value rows only (Total is rendered separately below the table). */
+function securitiesAllocationRows(securities) {
+  return (securities || []).map((s) => [s.isin || '', formatMoney(s.faceValue)]);
+}
+
+function securitiesFaceValueTotal(securities) {
+  return (securities || []).reduce((sum, s) => sum + (Number(s.faceValue) || 0), 0);
 }
 
 function renderGsecLegPdf(doc, content) {
@@ -274,19 +369,22 @@ function renderGsecLegPdf(doc, content) {
 }
 
 function renderRepoPdf(doc, content) {
+  doc.fillColor('#000000');
   doc.font('Helvetica-Bold').fontSize(10).text(`Ref :- ${content.refNumber}`);
   doc.moveDown(0.3);
-  doc.fontSize(13).text(content.title, { align: 'center', underline: true });
+  // Client: title must be black & bold (underlined).
+  doc.font('Helvetica-Bold').fontSize(13).fillColor('#000000')
+    .text(content.title, { align: 'center', underline: true });
   doc.moveDown(1);
 
-  const colWidth = (doc.page.width - doc.page.margins.left - doc.page.margins.right) / 2;
+  const halfWidth = (doc.page.width - doc.page.margins.left - doc.page.margins.right) / 2;
   const startY = doc.y;
 
   const borrowerEndY = renderPartyColumn(doc, {
-    label: 'BORROWER', party: content.borrower, x: doc.page.margins.left, y: startY, width: colWidth - 10
+    label: 'BORROWER', party: content.borrower, x: doc.page.margins.left, y: startY, width: halfWidth - 10
   });
   const lenderEndY = renderPartyColumn(doc, {
-    label: 'LENDER', party: content.lender, x: doc.page.margins.left + colWidth, y: startY, width: colWidth - 10
+    label: 'LENDER', party: content.lender, x: doc.page.margins.left + halfWidth, y: startY, width: halfWidth - 10
   });
 
   doc.y = Math.max(borrowerEndY, lenderEndY) + 16;
@@ -301,29 +399,51 @@ function renderRepoPdf(doc, content) {
   doc.moveDown(1);
   doc.font('Helvetica-Bold').fontSize(10).text('UNDERLYING SECURITIES', { underline: true });
   doc.moveDown(0.3);
+  const secColWidths = [230, 230];
+  const secX = doc.page.margins.left;
   renderGridTable(
     doc,
-    (content.underlyingSecurities || []).map((s) => [s.isin || '', formatMoney(s.faceValue)]),
-    { x: doc.page.margins.left, colWidths: [230, 230], headerRow: ['ISIN', 'Face Value'] }
+    securitiesAllocationRows(content.underlyingSecurities),
+    { x: secX, colWidths: secColWidths, headerRow: ['ISIN', 'Face Value'] }
   );
+
+  // Total shown separately below the table (not as a table row).
+  const totalAmount = formatMoney(securitiesFaceValueTotal(content.underlyingSecurities));
+  const totalY = doc.y + 2;
+  doc.font('Helvetica-Bold').fontSize(9.5).fillColor('#000000');
+  doc.text('Total', secX + 6, totalY, { width: secColWidths[0] - 12 });
+  doc.text(totalAmount, secX + secColWidths[0] + 6, totalY, { width: secColWidths[1] - 12 });
+  const underlineY = totalY + 12;
+  const valueLeft = secX + secColWidths[0] + 6;
+  const valueRight = secX + secColWidths[0] + secColWidths[1] - 6;
+  doc.moveTo(valueLeft, underlineY).lineTo(valueRight, underlineY).stroke();
+  doc.moveTo(valueLeft, underlineY + 2.5).lineTo(valueRight, underlineY + 2.5).stroke();
+  doc.y = underlineY + 14;
+  doc.x = secX;
 
   const contentWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
   doc.moveDown(1);
   doc.font('Helvetica-Bold').fontSize(10).text('SETTLEMENT PROCESS', doc.page.margins.left, doc.y, { underline: true, width: contentWidth });
   doc.font('Helvetica').fontSize(9.5).text(content.settlementProcess, doc.page.margins.left, doc.y, { align: 'center', width: contentWidth });
 
-  doc.moveDown(3);
-  const sigY = doc.y;
-  doc.fontSize(9.5);
-  doc.text('_______________________', doc.page.margins.left, sigY);
-  doc.text('Authorized Signatory', doc.page.margins.left, sigY + 14);
-  doc.text('_______________________', doc.page.margins.left + colWidth, sigY);
-  doc.text('Authorized Signatory', doc.page.margins.left + colWidth, sigY + 14);
+  // Signature blocks lower on the page: one flush left, one flush right.
+  doc.moveDown(5);
+  const sigY = Math.max(doc.y, doc.page.height - doc.page.margins.bottom - 70);
+  const sigLine = '_______________________';
+  const sigLabel = 'Authorized Signatory';
+  doc.font('Helvetica').fontSize(9.5).fillColor('#000000');
+  const lineW = doc.widthOfString(sigLine);
+  const leftX = doc.page.margins.left;
+  const rightX = doc.page.width - doc.page.margins.right - lineW;
+  doc.text(sigLine, leftX, sigY);
+  doc.text(sigLabel, leftX, sigY + 14);
+  doc.text(sigLine, rightX, sigY);
+  doc.text(sigLabel, rightX, sigY + 14);
 }
 
 function streamPdf(renderFn, contentOrContents) {
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ size: 'A4', margin: 50, bufferPages: true });
+    const doc = new PDFDocument({ size: 'A4', margins: PDF_MARGINS, bufferPages: true });
     const chunks = [];
     doc.on('data', (c) => chunks.push(c));
     doc.on('end', () => resolve(Buffer.concat(chunks)));
@@ -334,6 +454,14 @@ function streamPdf(renderFn, contentOrContents) {
       if (idx > 0) doc.addPage();
       renderFn(doc, content);
     });
+
+    // Stamp letterhead on every page after content is laid out so multi-page
+    // confirmations (e.g. two-leg buyback) all carry the same branding.
+    const range = doc.bufferedPageRange();
+    for (let i = 0; i < range.count; i++) {
+      doc.switchToPage(range.start + i);
+      drawLetterhead(doc);
+    }
     doc.end();
   });
 }
@@ -341,6 +469,131 @@ function streamPdf(renderFn, contentOrContents) {
 // ---------------------------------------------------------------------------
 // Word rendering (docx)
 // ---------------------------------------------------------------------------
+
+/**
+ * Shared header/footer letterhead for Word confirmations (repo + buyback).
+ * Mirrors the PDF layout: vertical company name down the left page margin,
+ * address/contact block bottom-left, Ambeon strip centered at the very bottom.
+ */
+function letterheadSection(children) {
+  const navy = '1C3F7C';
+  const orange = 'F5821F';
+  const noBorder = { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' };
+  const noBorders = { top: noBorder, bottom: noBorder, left: noBorder, right: noBorder };
+
+  // Floating narrow cell flush to the far left page edge (client: "shift to left").
+  const sidebarTable = new Table({
+    width: { size: 420, type: WidthType.DXA },
+    columnWidths: [420],
+    borders: TableBorders.NONE,
+    float: {
+      horizontalAnchor: TableAnchorType.PAGE,
+      verticalAnchor: TableAnchorType.PAGE,
+      absoluteHorizontalPosition: 0,
+      absoluteVerticalPosition: 560,
+      overlap: OverlapType.OVERLAP,
+      leftFromText: 0,
+      rightFromText: 0,
+      topFromText: 0,
+      bottomFromText: 0
+    },
+    rows: [
+      new TableRow({
+        height: { value: 8200, rule: HeightRule.EXACT },
+        children: [
+          new TableCell({
+            width: { size: 420, type: WidthType.DXA },
+            borders: noBorders,
+            textDirection: TextDirection.BOTTOM_TO_TOP_LEFT_TO_RIGHT,
+            verticalAlign: VerticalAlignTable.TOP,
+            children: [
+              new Paragraph({
+                spacing: { before: 0, after: 0, line: 240 },
+                children: [
+                  new TextRun({
+                    text: LETTERHEAD.company,
+                    bold: true,
+                    color: navy,
+                    size: 22,
+                    font: 'Arial'
+                  }),
+                  new TextRun({
+                    text: `  ${LETTERHEAD.regNo}`,
+                    color: navy,
+                    size: 14,
+                    font: 'Arial'
+                  })
+                ]
+              })
+            ]
+          })
+        ]
+      })
+    ]
+  });
+
+  return {
+    properties: {
+      page: {
+        // Match PDF margins: room for left sidebar + footer address block.
+        // Twips (1440 = 1"). left ~0.85", bottom ~1.1", top/right ~0.7".
+        margin: {
+          top: 1000,
+          right: 1000,
+          bottom: 1600,
+          left: 1220,
+          header: 200,
+          footer: 400
+        }
+      }
+    },
+    headers: {
+      // Empty body header; sidebar is a floating table so it does not push
+      // content down the way a normal header line would.
+      default: new Header({
+        children: [sidebarTable, new Paragraph({ children: [] })]
+      })
+    },
+    footers: {
+      default: new Footer({
+        children: [
+          new Paragraph({
+            alignment: AlignmentType.LEFT,
+            spacing: { before: 0, after: 0, line: 240 },
+            children: [new TextRun({ text: LETTERHEAD.address, size: 16, font: 'Arial', color: '222222' })]
+          }),
+          new Paragraph({
+            alignment: AlignmentType.LEFT,
+            spacing: { before: 0, after: 0, line: 240 },
+            children: [new TextRun({ text: LETTERHEAD.phoneFax, size: 16, font: 'Arial', color: '222222' })]
+          }),
+          new Paragraph({
+            alignment: AlignmentType.LEFT,
+            spacing: { before: 0, after: 0, line: 240 },
+            children: [new TextRun({ text: LETTERHEAD.email, size: 16, font: 'Arial', color: '222222' })]
+          }),
+          new Paragraph({
+            alignment: AlignmentType.LEFT,
+            spacing: { before: 0, after: 60, line: 240 },
+            children: [new TextRun({ text: LETTERHEAD.web, size: 16, font: 'Arial', color: '222222' })]
+          }),
+          new Paragraph({
+            alignment: AlignmentType.CENTER,
+            spacing: { before: 60, after: 0 },
+            children: [
+              new TextRun({ text: '● ', color: orange, size: 16, font: 'Arial' }),
+              new TextRun({ text: 'AN ', size: 16, font: 'Arial', color: '222222' }),
+              new TextRun({ text: 'AMBEON', bold: true, color: navy, size: 16, font: 'Arial' }),
+              new TextRun({ text: ' COMPANY', size: 16, font: 'Arial', color: '222222' })
+            ]
+          })
+        ]
+      })
+    },
+    children
+  };
+}
+
 function dealDetailsTable(rows) {
   return new Table({
     width: { size: 9000, type: WidthType.DXA },
@@ -399,52 +652,128 @@ function buildGsecLegDocxChildren(content) {
 
 function buildGsecLegDocx(content) {
   return new Document({
-    sections: [{ children: buildGsecLegDocxChildren(content) }]
+    sections: [letterheadSection(buildGsecLegDocxChildren(content))]
   });
 }
 
 function buildRepoDocx(content) {
-  const secRows = (content.underlyingSecurities || []).map((s) => new TableRow({
-    children: [
-      new TableCell({ width: { size: 4500, type: WidthType.DXA }, children: [new Paragraph(s.isin || '')] }),
-      new TableCell({ width: { size: 4500, type: WidthType.DXA }, children: [new Paragraph(formatMoney(s.faceValue))] })
-    ]
+  const noBorders = {
+    top: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' },
+    bottom: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' },
+    left: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' },
+    right: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' }
+  };
+  const allocationRows = securitiesAllocationRows(content.underlyingSecurities);
+  const secRows = allocationRows.map((cells) => new TableRow({
+    children: cells.map((cellText) => new TableCell({
+      width: { size: 4500, type: WidthType.DXA },
+      children: [new Paragraph({
+        children: [new TextRun({ text: String(cellText ?? ''), color: '000000' })]
+      })]
+    }))
   }));
+  const totalAmount = formatMoney(securitiesFaceValueTotal(content.underlyingSecurities));
 
   return new Document({
-    sections: [{
-      children: [
-        new Paragraph({ children: [new TextRun({ text: `Ref :- ${content.refNumber}`, bold: true })] }),
-        new Paragraph({ heading: HeadingLevel.HEADING_2, alignment: AlignmentType.CENTER, children: [new TextRun({ text: content.title, underline: {} })] }),
-        new Paragraph(' '),
-        ...partyParagraphs('BORROWER', content.borrower),
-        new Paragraph(' '),
-        ...partyParagraphs('LENDER', content.lender),
-        new Paragraph(' '),
-        new Paragraph({ children: [new TextRun({ text: 'DEAL DETAILS', bold: true, underline: {} })] }),
-        dealDetailsTable(content.dealDetails),
-        new Paragraph(' '),
-        new Paragraph({ children: [new TextRun({ text: 'UNDERLYING SECURITIES', bold: true, underline: {} })] }),
-        new Table({
-          width: { size: 9000, type: WidthType.DXA },
-          columnWidths: [4500, 4500],
-          rows: [
-            new TableRow({ children: [
-              new TableCell({ width: { size: 4500, type: WidthType.DXA }, children: [new Paragraph({ children: [new TextRun({ text: 'ISIN', bold: true })] })] }),
-              new TableCell({ width: { size: 4500, type: WidthType.DXA }, children: [new Paragraph({ children: [new TextRun({ text: 'Face Value', bold: true })] })] })
-            ] }),
-            ...secRows
-          ]
-        }),
-        new Paragraph(' '),
-        new Paragraph({ children: [new TextRun({ text: 'SETTLEMENT PROCESS', bold: true, underline: {} })] }),
-        new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun(content.settlementProcess || '')] }),
-        new Paragraph(' '),
-        new Paragraph(' '),
-        new Paragraph('_______________________                    _______________________'),
-        new Paragraph('Authorized Signatory                                  Authorized Signatory')
-      ]
-    }]
+    sections: [letterheadSection([
+      new Paragraph({ children: [new TextRun({ text: `Ref :- ${content.refNumber}`, bold: true, color: '000000' })] }),
+      // Client: title black & bold (avoid Heading styles that can apply theme blue).
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        children: [new TextRun({
+          text: content.title,
+          bold: true,
+          color: '000000',
+          size: 26,
+          underline: { type: UnderlineType.SINGLE }
+        })]
+      }),
+      new Paragraph(' '),
+      ...partyParagraphs('BORROWER', content.borrower),
+      new Paragraph(' '),
+      ...partyParagraphs('LENDER', content.lender),
+      new Paragraph(' '),
+      new Paragraph({ children: [new TextRun({ text: 'DEAL DETAILS', bold: true, underline: {} })] }),
+      dealDetailsTable(content.dealDetails),
+      new Paragraph(' '),
+      new Paragraph({ children: [new TextRun({ text: 'UNDERLYING SECURITIES', bold: true, underline: {} })] }),
+      new Table({
+        width: { size: 9000, type: WidthType.DXA },
+        columnWidths: [4500, 4500],
+        rows: [
+          new TableRow({ children: [
+            new TableCell({ width: { size: 4500, type: WidthType.DXA }, children: [new Paragraph({ children: [new TextRun({ text: 'ISIN', bold: true })] })] }),
+            new TableCell({ width: { size: 4500, type: WidthType.DXA }, children: [new Paragraph({ children: [new TextRun({ text: 'Face Value', bold: true })] })] })
+          ] }),
+          ...secRows
+        ]
+      }),
+      // Total outside the securities table, aligned under ISIN / Face Value columns.
+      new Table({
+        width: { size: 9000, type: WidthType.DXA },
+        columnWidths: [4500, 4500],
+        rows: [
+          new TableRow({
+            children: [
+              new TableCell({
+                width: { size: 4500, type: WidthType.DXA },
+                borders: noBorders,
+                children: [new Paragraph({
+                  spacing: { before: 120, after: 60 },
+                  children: [new TextRun({ text: 'Total', bold: true, color: '000000' })]
+                })]
+              }),
+              new TableCell({
+                width: { size: 4500, type: WidthType.DXA },
+                borders: noBorders,
+                children: [new Paragraph({
+                  spacing: { before: 120, after: 60 },
+                  children: [new TextRun({
+                    text: totalAmount,
+                    bold: true,
+                    color: '000000',
+                    underline: { type: UnderlineType.DOUBLE }
+                  })]
+                })]
+              })
+            ]
+          })
+        ]
+      }),
+      new Paragraph(' '),
+      new Paragraph({ children: [new TextRun({ text: 'SETTLEMENT PROCESS', bold: true, underline: {} })] }),
+      new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun(content.settlementProcess || '')] }),
+      new Paragraph(' '),
+      new Paragraph(' '),
+      new Paragraph(' '),
+      new Paragraph(' '),
+      new Table({
+        width: { size: 9000, type: WidthType.DXA },
+        columnWidths: [4500, 4500],
+        rows: [
+          new TableRow({
+            children: [
+              new TableCell({
+                width: { size: 4500, type: WidthType.DXA },
+                borders: noBorders,
+                children: [
+                  new Paragraph({ alignment: AlignmentType.LEFT, children: [new TextRun('_______________________')] }),
+                  new Paragraph({ alignment: AlignmentType.LEFT, children: [new TextRun('Authorized Signatory')] })
+                ]
+              }),
+              new TableCell({
+                width: { size: 4500, type: WidthType.DXA },
+                borders: noBorders,
+                children: [
+                  new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun('_______________________')] }),
+                  new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun('Authorized Signatory')] })
+                ]
+              })
+            ]
+          })
+        ]
+      })
+    ])]
   });
 }
 
@@ -459,5 +788,6 @@ module.exports = {
   buildGsecLegDocx,
   buildGsecLegDocxChildren,
   buildRepoDocx,
+  letterheadSection,
   Packer
 };
