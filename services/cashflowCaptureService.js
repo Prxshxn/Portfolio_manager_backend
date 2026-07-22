@@ -430,7 +430,7 @@ class CashflowCaptureService {
       for (const row of repoRows) {
         const captured = await this.captureRepoCashflow(
           row.deal_number || String(row.id),
-          row.deal_type === 'Reverse Repo' ? 'borrowing' : 'repo_in',
+          row.deal_type === 'Reverse Repo' ? 'repo_in' : 'borrowing',
           row.principal_amount,
           row.trade_date,
           row.counterparty_id
