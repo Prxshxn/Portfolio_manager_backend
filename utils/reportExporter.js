@@ -147,6 +147,20 @@ const TBILL_EXPORT_COLUMNS = [
   { key: 'deal_number', label: 'Deal Number' }
 ];
 
+// Daily Maturity Handling screen — matches on-screen table columns
+const MATURITY_CASHFLOW_EXPORT_COLUMNS = [
+  { key: 'cash_flow', label: 'Cash Flow' },
+  { key: 'instrument', label: 'Instrument' },
+  { key: 'description', label: 'Description' },
+  { key: 'deal_number', label: 'Ref. No.' },
+  { key: 'reference_deal_number', label: 'Reference Deal' },
+  { key: 'settlement_value', label: 'Settlement Value' },
+  { key: 'val_mat', label: 'Val/Mat' },
+  { key: 'status', label: 'Status' },
+  { key: 'value_date', label: 'Val Date' },
+  { key: 'opening_balance', label: 'Opening Balance' }
+];
+
 /** Parse numbers that may include thousand separators (e.g. API-formatted strings). */
 function parseLocaleNumber(val) {
   if (val === undefined || val === null || val === '') return NaN;
@@ -1639,6 +1653,170 @@ exports.exportCounterpartyMaster = async (format, data) => {
     });
   }
   
+  throw new Error('Unsupported export format');
+};
+
+/**
+ * Daily Maturity Handling export — same fields/values as the on-screen table,
+ * plus a trailing Balance row under Settlement Value.
+ */
+exports.exportDailyMaturityCashflow = async (format, rows, totals = {}) => {
+  const processedData = (rows || []).map((row) => {
+    const settlement =
+      row.settlement_value != null
+        ? Number(row.settlement_value)
+        : row.cash_flow === 'Less'
+          ? -Math.abs(Number(row.maturity_amount) || 0)
+          : Math.abs(Number(row.maturity_amount) || 0);
+    return {
+      cash_flow: row.cash_flow || '',
+      instrument: row.instrument || '',
+      description: row.description || '',
+      deal_number: row.deal_number || '',
+      reference_deal_number: row.reference_deal_number || '—',
+      settlement_value: Number.isFinite(settlement) ? settlement : null,
+      val_mat: row.val_mat || '',
+      status: row.status || '',
+      value_date: formatDate(row.value_date || row.maturity_date || ''),
+      opening_balance:
+        row.opening_balance == null || row.opening_balance === ''
+          ? null
+          : toExcelNumber(row.opening_balance)
+    };
+  });
+
+  const balanceAmount = toExcelNumber(totals.net_cashflow ?? 0);
+  const balanceRow = {
+    cash_flow: '',
+    instrument: '',
+    description: '',
+    deal_number: '',
+    reference_deal_number: 'Balance',
+    settlement_value: balanceAmount,
+    val_mat: '',
+    status: '',
+    value_date: '',
+    opening_balance: null
+  };
+
+  if (format === 'csv') {
+    const parser = new Parser({
+      fields: MATURITY_CASHFLOW_EXPORT_COLUMNS.map((col) => ({ label: col.label, value: col.key }))
+    });
+    return parser.parse([...processedData, balanceRow]);
+  }
+
+  if (format === 'excel') {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Maturity Cashflow');
+    sheet.columns = MATURITY_CASHFLOW_EXPORT_COLUMNS.map((col) => ({
+      header: col.label,
+      key: col.key,
+      width: col.key === 'description' ? 42 : col.key === 'deal_number' || col.key === 'reference_deal_number' ? 22 : 16
+    }));
+
+    const excelRows = processedData.map((row) => ({
+      ...row,
+      settlement_value: toExcelNumber(row.settlement_value),
+      opening_balance: toExcelNumber(row.opening_balance)
+    }));
+    sheet.addRows(excelRows);
+
+    const bal = sheet.addRow({
+      ...balanceRow,
+      settlement_value: balanceAmount
+    });
+    bal.font = { bold: true };
+
+    for (const k of ['settlement_value', 'opening_balance']) {
+      const col = sheet.getColumn(k);
+      if (col) col.numFmt = '#,##0.00';
+    }
+
+    return workbook.xlsx.writeBuffer();
+  }
+
+  if (format === 'pdf') {
+    const doc = new PDFDocument({ margin: 28, size: 'A4', layout: 'landscape' });
+    const buffers = [];
+    doc.on('data', buffers.push.bind(buffers));
+
+    doc.fontSize(16).font('Helvetica-Bold').text('Daily Maturity Cashflow', { align: 'center' });
+    doc.moveDown(0.8);
+
+    const columns = MATURITY_CASHFLOW_EXPORT_COLUMNS.map((col) => ({
+      key: col.key,
+      label: col.label,
+      width:
+        col.key === 'description' ? 150
+          : col.key === 'deal_number' || col.key === 'reference_deal_number' ? 95
+            : col.key === 'settlement_value' || col.key === 'opening_balance' ? 85
+              : 70,
+      align: ['settlement_value', 'opening_balance'].includes(col.key) ? 'right' : 'left'
+    }));
+
+    const maxWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+    const totalWidth = columns.reduce((sum, col) => sum + col.width, 0);
+    if (totalWidth > maxWidth) {
+      const scale = maxWidth / totalWidth;
+      columns.forEach((col) => {
+        col.width = Math.floor(col.width * scale);
+      });
+    }
+
+    const rowHeight = 18;
+    const cellPadding = 3;
+    const startX = doc.page.margins.left;
+    let y = doc.y;
+
+    const drawHeader = () => {
+      const headerWidth = columns.reduce((sum, col) => sum + col.width, 0);
+      doc.rect(startX, y, headerWidth, rowHeight).fillAndStroke('#f0f0f0', '#000000');
+      doc.fillColor('#000000').fontSize(7).font('Helvetica-Bold');
+      let x = startX;
+      columns.forEach((col) => {
+        doc.text(col.label, x + cellPadding, y + 5, {
+          width: col.width - 2 * cellPadding,
+          align: col.align
+        });
+        x += col.width;
+      });
+      y += rowHeight;
+    };
+
+    const drawRow = (row, bold = false) => {
+      if (y > doc.page.height - doc.page.margins.bottom - rowHeight) {
+        doc.addPage();
+        y = doc.page.margins.top;
+        drawHeader();
+      }
+      doc.font(bold ? 'Helvetica-Bold' : 'Helvetica').fontSize(7).fillColor('#000000');
+      let x = startX;
+      columns.forEach((col) => {
+        let val = row[col.key];
+        if (val == null || val === '') val = '';
+        else if (['settlement_value', 'opening_balance'].includes(col.key) && typeof val === 'number') {
+          val = val.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        } else val = String(val);
+        doc.text(val, x + cellPadding, y + 4, {
+          width: col.width - 2 * cellPadding,
+          align: col.align
+        });
+        x += col.width;
+      });
+      y += rowHeight;
+    };
+
+    drawHeader();
+    processedData.forEach((row) => drawRow(row));
+    drawRow(balanceRow, true);
+
+    doc.end();
+    return new Promise((resolve) => {
+      doc.on('end', () => resolve(Buffer.concat(buffers)));
+    });
+  }
+
   throw new Error('Unsupported export format');
 };
 

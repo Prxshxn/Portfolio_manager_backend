@@ -1688,28 +1688,11 @@ MaturityController.exportMaturities = async (req, res) => {
     }
 
     const { getDailyMaturityCashflow } = require('../services/dailyMaturityCashflowService');
-    const { rows } = await getDailyMaturityCashflow(date, { type, status });
+    const { rows, totals } = await getDailyMaturityCashflow(date, { type, status });
 
-    const combined = (rows || []).map((row) => ({
-      cash_flow: row.cash_flow,
-      instrument: row.instrument,
-      description: row.description,
-      deal_number: row.deal_number,
-      reference_deal_number: row.reference_deal_number || '',
-      settlement_value: row.settlement_value ?? row.maturity_amount,
-      val_mat: row.val_mat,
-      status: row.status,
-      value_date: row.value_date || '',
-      maturity_date: row.maturity_date,
-      isin: row.isin || '',
-      counterparty: row.counterparty,
-      face_value: row.face_value,
-      maturity_amount: row.maturity_amount,
-      opening_balance: row.opening_balance ?? ''
-    }));
-
+    // Export the same columns/values shown on Maturity Handling (not GSec report columns).
     const exporter = require('../utils/reportExporter');
-    const buf = await exporter.export(format, combined);
+    const buf = await exporter.exportDailyMaturityCashflow(format, rows || [], totals || {});
     const mime = exporter.getMimeType(format);
     res.setHeader('Content-Type', mime);
     const dateStr = String(date);
