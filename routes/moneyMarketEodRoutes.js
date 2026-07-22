@@ -1036,14 +1036,16 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
           let crAccount;
           let description;
 
-          if (deal.deal_type === 'Repo') {
+          if (deal.deal_type === 'Reverse Repo') {
+            // Reverse Repo (Sherwood lends, asset side): DR Reverse Repo asset, CR Bank
             drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REPO_REVERSE_REPO_ASSET);
             crAccount = bankAccount;
-            description = `Repo Purchase (Backfill) - Deal ${dealNumber}`;
-          } else if (deal.deal_type === 'Reverse Repo') {
+            description = `Reverse Repo Purchase (Backfill) - Deal ${dealNumber}`;
+          } else if (deal.deal_type === 'Repo') {
+            // Repo (Sherwood borrows): DR Bank, CR Repo liability
             drAccount = bankAccount;
             crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REVERSE_REPO_LIABILITY);
-            description = `Reverse Repo Borrowing (Backfill) - Deal ${dealNumber}`;
+            description = `Repo Borrowing (Backfill) - Deal ${dealNumber}`;
           } else {
             console.warn(`Skipping backfill for repo deal ${deal.id}: unsupported deal_type=${deal.deal_type}`);
             continue;
@@ -1099,8 +1101,9 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
           const amount = Number(deal.daily_accrual);
           if (isNaN(amount) || amount === 0) continue;
 
-          if (deal.deal_type === 'Repo') {
-            const description = `Repo Daily Interest Accrual - Deal ${dealNumber}`;
+          if (deal.deal_type === 'Reverse Repo') {
+            // Reverse Repo (asset side): accrue interest income on the asset.
+            const description = `Reverse Repo Daily Interest Accrual - Deal ${dealNumber}`;
             const key = `${dealNumber}|${description}`;
             if (repoAccrualAlready.has(key)) {
               continue;
@@ -1116,13 +1119,14 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
               description
             });
             if (!isLedgerPostOk(lr)) {
-              console.error('Repo accrual ledger post failed:', dealNumber, lr && lr.error);
+              console.error('Reverse repo accrual ledger post failed:', dealNumber, lr && lr.error);
               continue;
             }
             repoAccrualAlready.add(key);
             repoAccrualCount++;
-          } else if (deal.deal_type === 'Reverse Repo') {
-            const description = `Reverse Repo Daily Interest Accrual - Deal ${dealNumber}`;
+          } else if (deal.deal_type === 'Repo') {
+            // Repo (borrowing): accrue interest expense / payable.
+            const description = `Repo Daily Interest Accrual - Deal ${dealNumber}`;
             const key = `${dealNumber}|${description}`;
             if (repoAccrualAlready.has(key)) {
               continue;
@@ -1138,7 +1142,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
               description
             });
             if (!isLedgerPostOk(lr)) {
-              console.error('Reverse repo accrual ledger post failed:', dealNumber, lr && lr.error);
+              console.error('Repo accrual ledger post failed:', dealNumber, lr && lr.error);
               continue;
             }
             repoAccrualAlready.add(key);
@@ -1173,6 +1177,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
          WHERE DATE(entry_date) = DATE(?)
            AND (description LIKE 'Repo Maturity - Deal %'
                 OR description LIKE 'Reverse Repo Maturity - Deal %'
+                OR description LIKE 'Repo Interest Accrual Reversal - Deal %'
                 OR description LIKE 'Reverse Repo Interest Accrual Reversal - Deal %')`,
         [tomorrowStr]
       );
@@ -1210,9 +1215,10 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
             ? new Date(deal.maturity_date).toISOString().slice(0, 10)
             : tomorrowStr;
 
-          if (deal.deal_type === 'Repo') {
+          if (deal.deal_type === 'Reverse Repo') {
+            // Reverse Repo (asset side): proceeds come back → DR Bank, CR asset.
             const repoAsset = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REPO_REVERSE_REPO_ASSET);
-            const description = `Repo Maturity - Deal ${dealNumber}`;
+            const description = `Reverse Repo Maturity - Deal ${dealNumber}`;
             const maturityKey = `${dealNumber}|${description}`;
             if (repoMaturityAlready.has(maturityKey)) {
               await db.query("UPDATE repo_deals SET matured = 1, status = 'Matured' WHERE id = ?", [deal.id]);
@@ -1227,15 +1233,16 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
               description
             });
             if (!isLedgerPostOk(lr)) {
-              console.error('Repo maturity ledger post failed:', dealNumber, lr && lr.error);
+              console.error('Reverse repo maturity ledger post failed:', dealNumber, lr && lr.error);
               continue;
             }
             await db.query("UPDATE repo_deals SET matured = 1, status = 'Matured' WHERE id = ?", [deal.id]);
             repoMaturityAlready.add(maturityKey);
             repoMaturityCount++;
-          } else if (deal.deal_type === 'Reverse Repo') {
-            const description = `Reverse Repo Maturity - Deal ${dealNumber}`;
-            const reversalDescription = `Reverse Repo Interest Accrual Reversal - Deal ${dealNumber}`;
+          } else if (deal.deal_type === 'Repo') {
+            // Repo (borrowing): unwind accrual, repay principal + interest.
+            const description = `Repo Maturity - Deal ${dealNumber}`;
+            const reversalDescription = `Repo Interest Accrual Reversal - Deal ${dealNumber}`;
             const maturityKey = `${dealNumber}|${description}`;
             if (repoMaturityAlready.has(maturityKey)) {
               // If already posted previously (e.g., prior timed-out attempt), only mark matured.
@@ -1245,7 +1252,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
               continue;
             }
 
-            // Reverse Repo maturity is booked as three balanced pairs so the interest
+            // Repo (borrowing) maturity is booked as three balanced pairs so the interest
             // is recognised in its own expense account and the daily accrual is unwound:
             //   1. Reverse accrued interest: DR Interest Payable (780) / CR daily-accrual Interest Expense (752)
             //   2. Settle principal:         DR Repo Liability (308)    / CR Bank
@@ -1268,7 +1275,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
                 description: reversalDescription
               });
               if (!isLedgerPostOk(reversal)) {
-                console.error('Reverse repo interest accrual reversal post failed:', dealNumber, reversal && reversal.error);
+                console.error('Repo interest accrual reversal post failed:', dealNumber, reversal && reversal.error);
                 postOk = false;
               } else {
                 repoMaturityAlready.add(reversalKey);
@@ -1285,7 +1292,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
                 description
               });
               if (!isLedgerPostOk(principalLeg)) {
-                console.error('Reverse repo principal maturity post failed:', dealNumber, principalLeg && principalLeg.error);
+                console.error('Repo principal maturity post failed:', dealNumber, principalLeg && principalLeg.error);
                 postOk = false;
               }
             }
@@ -1300,7 +1307,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
                 description
               });
               if (!isLedgerPostOk(interestLeg)) {
-                console.error('Reverse repo interest maturity post failed:', dealNumber, interestLeg && interestLeg.error);
+                console.error('Repo interest maturity post failed:', dealNumber, interestLeg && interestLeg.error);
                 postOk = false;
               }
             }
