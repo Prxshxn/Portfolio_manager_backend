@@ -715,9 +715,9 @@ function expandUnpostedDeal(row, acctLabelMap) {
     ];
   }
 
-  // Repo Purchase — DR Reverse-Repo Asset, CR Bank.
-  if (row.category === 'repo') {
-    const desc = `Repo Purchase - Deal ${dealNo}`;
+  // Reverse Repo Purchase (Sherwood lends, asset side) — DR Reverse-Repo Asset, CR Bank.
+  if (row.category === 'reverse_repo') {
+    const desc = `Reverse Repo Purchase - Deal ${dealNo}`;
     return [
       {
         line_role: 'reverse_repo_asset',
@@ -738,9 +738,9 @@ function expandUnpostedDeal(row, acctLabelMap) {
     ];
   }
 
-  // Reverse Repo Borrowing — DR Bank, CR Repo Liability.
-  if (row.category === 'reverse_repo') {
-    const desc = `Reverse Repo Borrowing - Deal ${dealNo}`;
+  // Repo Borrowing (Sherwood borrows) — DR Bank, CR Repo Liability.
+  if (row.category === 'repo') {
+    const desc = `Repo Borrowing - Deal ${dealNo}`;
     return [
       {
         line_role: 'bank',
@@ -1025,6 +1025,8 @@ router.get('/settlement-preview', auth, async (req, res) => {
     const repoExcl = [
       'Repo Daily Interest Accrual%',
       'Reverse Repo Daily Interest Accrual%',
+      'Repo Borrowing (Backfill)%',
+      // Legacy description from before the Repo/Reverse Repo label swap.
       'Reverse Repo Borrowing (Backfill)%',
       'Daily lending interest EOD',
       'Daily borrowing interest EOD',

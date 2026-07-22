@@ -665,16 +665,16 @@ const repoDealController = {
               let crAccount;
               let description;
 
-              if (updatedDeal.deal_type === 'Repo') {
-                // Asset-side Repo: DR Reverse Repo asset, CR Bank
+              if (updatedDeal.deal_type === 'Reverse Repo') {
+                // Reverse Repo (Sherwood lends, asset side): DR Reverse Repo asset, CR Bank
                 drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REPO_REVERSE_REPO_ASSET);
                 crAccount = bankAccount;
-                description = `Repo Purchase - Deal ${dealNumber}`;
+                description = `Reverse Repo Purchase - Deal ${dealNumber}`;
               } else {
-                // Reverse Repo (borrowing): DR Bank, CR Repo liability
+                // Repo (Sherwood borrows): DR Bank, CR Repo liability
                 drAccount = bankAccount;
                 crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REVERSE_REPO_LIABILITY);
-                description = `Reverse Repo Borrowing - Deal ${dealNumber}`;
+                description = `Repo Borrowing - Deal ${dealNumber}`;
               }
 
               const ledgerResult = await ledgerController.postLedgerEntry({

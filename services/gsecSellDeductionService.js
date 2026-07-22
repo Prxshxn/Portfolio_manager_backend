@@ -13,8 +13,11 @@ function parseSellDealAllocations(raw) {
 /**
  * Sum sell reductions per buy deal as-of a date.
  * Multi-lot sells store the true split in sell_deal_allocations.
+ * Pass { excludeRejected: true } to skip rejected Sells (used by the
+ * available-to-sell balance in the sell modal, where a rejected Sell must
+ * not keep consuming the Buy deal's balance).
  */
-async function buildSoldByDealMap(db, dealNumbers, asAtDate) {
+async function buildSoldByDealMap(db, dealNumbers, asAtDate, { excludeRejected = false } = {}) {
   const soldByDeal = {};
   if (!dealNumbers.length) return soldByDeal;
 
@@ -33,6 +36,10 @@ async function buildSoldByDealMap(db, dealNumbers, asAtDate) {
       )
   `;
   const params = [...normalized];
+
+  if (excludeRejected) {
+    sql += " AND COALESCE(status, '') <> 'rejected'";
+  }
 
   if (asAtDate) {
     sql += ' AND DATE(value_date) <= DATE(?)';

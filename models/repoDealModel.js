@@ -750,16 +750,16 @@ const RepoDeal = {
           let crAccount;
           let description;
 
-          if (deal.deal_type === 'Repo') {
-            // Asset-side Repo: DR Reverse Repo asset, CR Bank
+          if (deal.deal_type === 'Reverse Repo') {
+            // Reverse Repo (Sherwood lends, asset side): DR Reverse Repo asset, CR Bank
             drAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REPO_REVERSE_REPO_ASSET);
             crAccount = bankAccount;
-            description = `Repo Purchase (Backfill) - Deal ${resolveRepoDealNumber(deal)}`;
-          } else if (deal.deal_type === 'Reverse Repo') {
-            // Reverse Repo borrowing: DR Bank, CR Repo liability
+            description = `Reverse Repo Purchase (Backfill) - Deal ${resolveRepoDealNumber(deal)}`;
+          } else if (deal.deal_type === 'Repo') {
+            // Repo (Sherwood borrows): DR Bank, CR Repo liability
             drAccount = bankAccount;
             crAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REVERSE_REPO_LIABILITY);
-            description = `Reverse Repo Borrowing (Backfill) - Deal ${resolveRepoDealNumber(deal)}`;
+            description = `Repo Borrowing (Backfill) - Deal ${resolveRepoDealNumber(deal)}`;
           } else {
             // Unknown type - skip
             errors.push(`Deal ${resolveRepoDealNumber(deal)}: unsupported deal_type=${deal.deal_type} for backfill`);

@@ -346,8 +346,10 @@ async function queryRepo(dateStr, settlementByCode) {
     const maturityAmount = parseFloat(row.maturity_amount || 0);
     const banks = withBankAmount(row.settlement_mode, maturityAmount, settlementByCode);
     const cp = row.counterparty_name || '';
+    // Reverse Repo = Sherwood lent, cash comes back at maturity (Add);
+    // Repo = Sherwood borrowed, cash paid out at maturity (Less).
     const isReverse = String(row.deal_type || '').toLowerCase().includes('reverse');
-    const cashFlow = isReverse ? 'Less' : 'Add';
+    const cashFlow = isReverse ? 'Add' : 'Less';
     return {
       id: row.id || `repo-${idx}`,
       deal_number: row.deal_number,

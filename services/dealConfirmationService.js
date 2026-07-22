@@ -48,6 +48,67 @@ function formatShortDate(value) {
   return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).replace(/ /g, '-');
 }
 
+/** Value date as DD.MM.YYYY for settlement instruction wording. */
+function formatDotDate(value) {
+  if (!value) return '';
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  return `${dd}.${mm}.${d.getFullYear()}`;
+}
+
+/** Principal as "105,050,000/-" (whole rupees when possible). */
+function formatRsPrincipal(value) {
+  const n = Math.abs(Number(value));
+  if (!Number.isFinite(n)) return '0/-';
+  const whole = Math.abs(n - Math.round(n)) < 0.001;
+  const formatted = whole
+    ? Math.round(n).toLocaleString('en-US')
+    : n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return `${formatted}/-`;
+}
+
+/**
+ * Client settlement wording for Repo / Reverse Repo letters.
+ * Seylan = counterparty name contains "Seylan"; otherwise DVP/RVP ("OTHER") wording.
+ * Returns value-date instruction + separate maturity-proceeds line (own heading).
+ */
+function buildRepoSettlementProcess({ isReverse, counterpartyName, principalAmount, valueDate }) {
+  const isSeylan = String(counterpartyName || '').toLowerCase().includes('seylan');
+  const amount = formatRsPrincipal(principalAmount);
+  const dateStr = formatDotDate(valueDate);
+  const accountSeylan =
+    'Sherwood Capital (Pvt) Ltd account at Seylan Bank Millennium branch A/C No. 0860-13374197-001';
+  const accountOther =
+    'Sherwood Capital (Pvt) Ltd account at Seylan Bank Millennium branch a/c no.0860-13374197-001';
+
+  // Reverse Repo: Sherwood lends → debit Sherwood on value date, credit at maturity.
+  // Repo: Sherwood borrows → credit Sherwood on value date, debit at maturity.
+  if (isReverse && isSeylan) {
+    return {
+      settlementProcess: `Please debit Rs. ${amount} to ${accountSeylan}, value ${dateStr}.`,
+      maturityProceeds: 'At maturity, please credit the same Account.'
+    };
+  }
+  if (isReverse && !isSeylan) {
+    return {
+      settlementProcess: `Please debit Rs. ${amount} to ${accountOther} on DVP/RVP basis, value ${dateStr}.`,
+      maturityProceeds: 'At maturity, please credit the same Account.'
+    };
+  }
+  if (!isReverse && isSeylan) {
+    return {
+      settlementProcess: `Please credit Rs. ${amount} to ${accountSeylan}, value ${dateStr}.`,
+      maturityProceeds: 'At maturity, please debit the same Account.'
+    };
+  }
+  return {
+    settlementProcess: `Please credit Rs. ${amount} to ${accountOther} on DVP/RVP basis, value ${dateStr}.`,
+    maturityProceeds: 'At the maturity, please debit the same Account.'
+  };
+}
+
 // Same prefix-based counterparty resolution pattern as gsecLetterController.js,
 // extended to also return address/telephone/contact fields for the
 // confirmation's Buyer/Seller block.
@@ -162,8 +223,9 @@ async function buildRepoContent({ refNumber, dealType, counterpartyId, tradeDate
   const counterparty = await fetchCounterpartyDetails(counterpartyId);
   const counterpartyBlock = counterparty || { name: `ID:${counterpartyId}`, addressLines: [], telephone: '', contactPerson: '' };
 
-  // Repo: Sherwood is the Borrower (pledges securities, receives cash).
-  // Reverse Repo: Sherwood is the Lender (provides cash, receives securities).
+  // Confirmation roles (from Sherwood's book):
+  //   Reverse Repo = Sherwood lends cash  → Lender = Sherwood, Borrower = counterparty
+  //   Repo         = Sherwood borrows cash → Borrower = Sherwood, Lender = counterparty
   const isReverse = String(dealType || '').toLowerCase().includes('reverse');
   const borrower = isReverse ? counterpartyBlock : COMPANY;
   const lender = isReverse ? COMPANY : counterpartyBlock;
@@ -184,12 +246,12 @@ async function buildRepoContent({ refNumber, dealType, counterpartyId, tradeDate
       ['Basis', basis != null ? String(basis) : 'Act/365']
     ],
     underlyingSecurities: underlyingSecurities || [],
-    settlementProcess: isReverse
-      ? `${COMPANY.name} will transfer the principal amount to the Borrower's settlement account on the value date above, ` +
-        `against delivery of the underlying securities listed below, and will receive back the maturity proceeds and the ` +
-        `securities on the maturity date.`
-      : `${COMPANY.name} will deliver the underlying securities listed below as collateral and receive the principal amount ` +
-        `on the value date above, repurchasing the securities for the maturity proceeds on the maturity date.`
+    ...buildRepoSettlementProcess({
+      isReverse,
+      counterpartyName: counterpartyBlock.name,
+      principalAmount,
+      valueDate
+    })
   };
 }
 
@@ -275,19 +337,21 @@ function drawLetterhead(doc) {
   const pageH = doc.page.height;
   const { navy, orange, text } = LETTERHEAD.colors;
 
-  // Vertical company name flush to the far left page edge (client: "shift to left").
+  // Vertical company name at top-left with a small left margin (upright, reads upward).
+  // Company + reg no are drawn on one baseline (single line).
   doc.save();
-  doc.font('Helvetica-Bold').fontSize(12);
+  doc.font('Helvetica-Bold').fontSize(14);
   const nameW = doc.widthOfString(LETTERHEAD.company);
-  doc.font('Helvetica').fontSize(7);
+  doc.font('Helvetica').fontSize(8);
   const regW = doc.widthOfString(`  ${LETTERHEAD.regNo}`);
-  doc.translate(3, 56 + nameW + regW);
+  // ~8mm from left page edge.
+  doc.translate(22, 48 + nameW + regW);
   doc.rotate(-90);
   doc.fillColor(navy);
-  doc.font('Helvetica-Bold').fontSize(12);
+  doc.font('Helvetica-Bold').fontSize(14);
   doc.text(LETTERHEAD.company, 0, 0, { lineBreak: false });
-  doc.font('Helvetica').fontSize(7);
-  doc.text(`  ${LETTERHEAD.regNo}`, nameW, 2, { lineBreak: false });
+  doc.font('Helvetica').fontSize(8);
+  doc.text(`  ${LETTERHEAD.regNo}`, nameW, 1, { lineBreak: false });
   doc.restore();
 
   // Address / contact left; Ambeon strip centered (matches sample letter footer).
@@ -424,7 +488,17 @@ function renderRepoPdf(doc, content) {
   const contentWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
   doc.moveDown(1);
   doc.font('Helvetica-Bold').fontSize(10).text('SETTLEMENT PROCESS', doc.page.margins.left, doc.y, { underline: true, width: contentWidth });
-  doc.font('Helvetica').fontSize(9.5).text(content.settlementProcess, doc.page.margins.left, doc.y, { align: 'center', width: contentWidth });
+  doc.font('Helvetica').fontSize(9.5).text(content.settlementProcess || '', doc.page.margins.left, doc.y, {
+    align: 'left',
+    width: contentWidth
+  });
+
+  doc.moveDown(1);
+  doc.font('Helvetica-Bold').fontSize(10).text('MATURITY PROCEEDS', doc.page.margins.left, doc.y, { underline: true, width: contentWidth });
+  doc.font('Helvetica').fontSize(9.5).text(content.maturityProceeds || '', doc.page.margins.left, doc.y, {
+    align: 'left',
+    width: contentWidth
+  });
 
   // Signature blocks lower on the page: one flush left, one flush right.
   doc.moveDown(5);
@@ -481,16 +555,19 @@ function letterheadSection(children) {
   const noBorder = { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' };
   const noBorders = { top: noBorder, bottom: noBorder, left: noBorder, right: noBorder };
 
-  // Floating narrow cell flush to the far left page edge (client: "shift to left").
+  // Vertical letterhead: one continuous line (company + reg no), with padding
+  // inside the strip so text is not flush against the border / page edge.
   const sidebarTable = new Table({
-    width: { size: 420, type: WidthType.DXA },
-    columnWidths: [420],
+    width: { size: 700, type: WidthType.DXA },
+    columnWidths: [700],
     borders: TableBorders.NONE,
     float: {
       horizontalAnchor: TableAnchorType.PAGE,
       verticalAnchor: TableAnchorType.PAGE,
-      absoluteHorizontalPosition: 0,
-      absoluteVerticalPosition: 560,
+      // Small margin from the left page edge (~5mm).
+      absoluteHorizontalPosition: 280,
+      // Align with the top of the body (Ref / title), not mid-page.
+      absoluteVerticalPosition: 200,
       overlap: OverlapType.OVERLAP,
       leftFromText: 0,
       rightFromText: 0,
@@ -499,28 +576,27 @@ function letterheadSection(children) {
     },
     rows: [
       new TableRow({
-        height: { value: 8200, rule: HeightRule.EXACT },
+        // Tall enough that company + reg stay on a single vertical line.
+        height: { value: 9200, rule: HeightRule.EXACT },
         children: [
           new TableCell({
-            width: { size: 420, type: WidthType.DXA },
+            width: { size: 700, type: WidthType.DXA },
             borders: noBorders,
+            // Padding so glyphs are not flush against the cell border.
+            margins: { top: 100, bottom: 100, left: 100, right: 100 },
             textDirection: TextDirection.BOTTOM_TO_TOP_LEFT_TO_RIGHT,
+            // TOP (not CENTER) so the strip starts at the Ref header line.
             verticalAlign: VerticalAlignTable.TOP,
             children: [
               new Paragraph({
-                spacing: { before: 0, after: 0, line: 240 },
+                spacing: { before: 0, after: 0, line: 276 },
+                wordWrap: false,
                 children: [
                   new TextRun({
-                    text: LETTERHEAD.company,
+                    text: `${LETTERHEAD.company}  ${LETTERHEAD.regNo}`,
                     bold: true,
                     color: navy,
-                    size: 22,
-                    font: 'Arial'
-                  }),
-                  new TextRun({
-                    text: `  ${LETTERHEAD.regNo}`,
-                    color: navy,
-                    size: 14,
+                    size: 24,
                     font: 'Arial'
                   })
                 ]
@@ -625,6 +701,38 @@ function partyParagraphs(heading, party) {
   ];
 }
 
+/** Two party blocks opposite each other (left | right) for Word letters. */
+function partySideBySideTable(leftHeading, leftParty, rightHeading, rightParty) {
+  const noBorders = {
+    top: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' },
+    bottom: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' },
+    left: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' },
+    right: { style: BorderStyle.NONE, size: 0, color: 'FFFFFF' }
+  };
+  return new Table({
+    width: { size: 9000, type: WidthType.DXA },
+    columnWidths: [4500, 4500],
+    rows: [
+      new TableRow({
+        children: [
+          new TableCell({
+            width: { size: 4500, type: WidthType.DXA },
+            borders: noBorders,
+            margins: { top: 0, bottom: 80, left: 0, right: 120 },
+            children: partyParagraphs(leftHeading, leftParty || {})
+          }),
+          new TableCell({
+            width: { size: 4500, type: WidthType.DXA },
+            borders: noBorders,
+            margins: { top: 0, bottom: 80, left: 120, right: 0 },
+            children: partyParagraphs(rightHeading, rightParty || {})
+          })
+        ]
+      })
+    ]
+  });
+}
+
 // Returns the plain array of Paragraph/Table nodes for one leg, rather than
 // a wrapped Document - docx's Document instances don't expose their section
 // children back out (no public .sections getter), so building a multi-leg
@@ -636,9 +744,7 @@ function buildGsecLegDocxChildren(content) {
     new Paragraph({ children: [new TextRun({ text: `Ref :- ${content.refNumber}`, bold: true })] }),
     new Paragraph({ heading: HeadingLevel.HEADING_2, alignment: AlignmentType.CENTER, children: [new TextRun({ text: content.title, underline: {} })] }),
     new Paragraph(' '),
-    ...partyParagraphs('BUYER', content.buyer),
-    new Paragraph(' '),
-    ...partyParagraphs('SELLER', content.seller),
+    partySideBySideTable('BUYER', content.buyer, 'SELLER', content.seller),
     new Paragraph(' '),
     new Paragraph({ children: [new TextRun({ text: 'DEAL DETAILS', bold: true, underline: {} })] }),
     dealDetailsTable(content.dealDetails),
@@ -689,9 +795,7 @@ function buildRepoDocx(content) {
         })]
       }),
       new Paragraph(' '),
-      ...partyParagraphs('BORROWER', content.borrower),
-      new Paragraph(' '),
-      ...partyParagraphs('LENDER', content.lender),
+      partySideBySideTable('BORROWER', content.borrower, 'LENDER', content.lender),
       new Paragraph(' '),
       new Paragraph({ children: [new TextRun({ text: 'DEAL DETAILS', bold: true, underline: {} })] }),
       dealDetailsTable(content.dealDetails),
@@ -742,7 +846,17 @@ function buildRepoDocx(content) {
       }),
       new Paragraph(' '),
       new Paragraph({ children: [new TextRun({ text: 'SETTLEMENT PROCESS', bold: true, underline: {} })] }),
-      new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun(content.settlementProcess || '')] }),
+      new Paragraph({
+        alignment: AlignmentType.LEFT,
+        spacing: { after: 200 },
+        children: [new TextRun(content.settlementProcess || '')]
+      }),
+      new Paragraph({ children: [new TextRun({ text: 'MATURITY PROCEEDS', bold: true, underline: {} })] }),
+      new Paragraph({
+        alignment: AlignmentType.LEFT,
+        spacing: { after: 200 },
+        children: [new TextRun(content.maturityProceeds || '')]
+      }),
       new Paragraph(' '),
       new Paragraph(' '),
       new Paragraph(' '),

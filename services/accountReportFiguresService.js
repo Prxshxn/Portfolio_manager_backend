@@ -275,9 +275,11 @@ async function getAccountReportFigures(asAtDate) {
     // 249-101-330-308-44 (not the Reverse Repo asset 131-101-410-206-44).
     // Credit-normal liability GLs: store As per Report as negative so
     // Difference = Combined net (−CR) − report (−CR) is zero when they match.
+    // After the Repo/Reverse Repo label swap: Repo = borrowing (payable on
+    // 780), Reverse Repo = lending (314 companion figure).
     '249-101-330-308-44': -(repo.repoPrincipal + repo.reverseRepoPrincipal),
-    '249-101-330-314-44': -repo.repoInterestPayable,
-    '249-101-330-780-44': -repo.reverseRepoInterestPayable
+    '249-101-330-314-44': -repo.reverseRepoInterestPayable,
+    '249-101-330-780-44': -repo.repoInterestPayable
   };
 
   return { asAtDate, figures };
