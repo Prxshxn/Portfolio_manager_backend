@@ -5,6 +5,7 @@ const {
   computeGsecPerDayAccrual,
   computeGsecDailyAmortization
 } = require('../services/gsecCouponPeriod');
+const { buildSoldByDealMap } = require('../services/gsecSellDeductionService');
 
 let gsecColumnEnsurePromise = null;
 
@@ -720,37 +721,17 @@ const Gsec = {
     
     const [rows] = await db.query(sql, params);
     
-    // Calculate remaining face value dynamically by subtracting sell transactions
+    // Calculate remaining face value dynamically by subtracting sell transactions.
+    // Uses the allocation-aware map (same as the GSec report): multi-lot Sells
+    // store their true per-buy-deal split in sell_deal_allocations, and summing
+    // the whole sell face_value against buy_deal_number would over-deduct the
+    // primary deal (hiding it from the sell modal) while under-deducting the
+    // other allocated deals. Excludes rejected Sells - a rejected Sell never
+    // executed, so it must not keep counting against the Buy deal's
+    // available-to-sell balance (see also Gsec.updateStatus, which restores
+    // remaining_face_value on rejection for the same reason).
     const dealNumbers = rows.map(r => r.deal_number).filter(Boolean);
-    const soldByDeal = {};
-    
-    if (dealNumbers.length) {
-      // Get total sold per buy_deal_number. Excludes rejected Sells - a
-      // rejected Sell never executed, so it must not keep counting against
-      // the Buy deal's available-to-sell balance (see also Gsec.updateStatus,
-      // which restores remaining_face_value on rejection for the same reason).
-      const placeholders = dealNumbers.map(() => '?').join(',');
-      let sellSql = `
-        SELECT buy_deal_number, COALESCE(SUM(face_value), 0) AS total_sold
-        FROM gsec
-        WHERE transaction_type = 'Sell' AND buy_deal_number IN (${placeholders})
-          AND status <> 'rejected'
-      `;
-      const sellParams = [...dealNumbers];
-      
-      // Filter sell transactions by date if provided (for historical reports)
-      if (asAtDate) {
-        sellSql += ' AND value_date <= ?';
-        sellParams.push(asAtDate);
-      }
-      
-      sellSql += ' GROUP BY buy_deal_number';
-      
-      const [sellRows] = await db.query(sellSql, sellParams);
-      sellRows.forEach(row => {
-        soldByDeal[row.buy_deal_number] = Number(row.total_sold) || 0;
-      });
-    }
+    const soldByDeal = await buildSoldByDealMap(db, dealNumbers, asAtDate, { excludeRejected: true });
     
     // Always calculate buyback deductions (approved sell/buy legs reduce available balance)
     const buybackDeductionsByDeal = {};
