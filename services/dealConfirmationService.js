@@ -232,11 +232,14 @@ async function buildRepoContent({ refNumber, dealType, counterpartyId, tradeDate
 
   return {
     refNumber,
-    title: `${dealType || 'Repo'} Agreement Confirmation`,
+    // Repo letters are titled "Repurchase Agreement Confirmation" per the client.
+    title: isReverse
+      ? `${dealType} Agreement Confirmation`
+      : 'Repurchase Agreement Confirmation',
     borrower,
     lender,
+    // No Deal Type row in repo-module letters - the title identifies the deal type.
     dealDetails: [
-      ['Deal Type', dealType || ''],
       ['Trade Date', formatShortDate(tradeDate)],
       ['Value Date', formatShortDate(valueDate)],
       ['Maturity Date', formatShortDate(maturityDate)],
@@ -266,15 +269,15 @@ async function buildRepoContent({ refNumber, dealType, counterpartyId, tradeDate
 // This helper renders one column at explicit, manually-incremented y
 // coordinates and returns the y position just past its last line, so the
 // caller can lay out a second column at the same starting y independently.
-function renderPartyColumn(doc, { label, party, x, y, width, lineHeight = 13 }) {
+function renderPartyColumn(doc, { label, party, x, y, width, lineHeight = 13, labelSize = 10, bodySize = 9.5 }) {
   let cursorY = y;
-  doc.font('Helvetica-Bold').fontSize(10).text(label, x, cursorY, { underline: true, width });
+  doc.font('Helvetica-Bold').fontSize(labelSize).text(label, x, cursorY, { underline: true, width });
   cursorY += lineHeight + 2;
 
   const lines = [party.name, ...(party.addressLines || []),
     `Telephone: ${party.telephone || ''}`,
     `Contact Person: ${party.contactPerson || ''}`];
-  doc.font('Helvetica').fontSize(9.5);
+  doc.font('Helvetica').fontSize(bodySize);
   for (const line of lines) {
     doc.text(line || '', x, cursorY, { width });
     cursorY += lineHeight;
@@ -344,8 +347,8 @@ function drawLetterhead(doc) {
   const nameW = doc.widthOfString(LETTERHEAD.company);
   doc.font('Helvetica').fontSize(8);
   const regW = doc.widthOfString(`  ${LETTERHEAD.regNo}`);
-  // ~8mm from left page edge.
-  doc.translate(22, 48 + nameW + regW);
+  // ~8mm from left page edge, starting near the top of the page.
+  doc.translate(22, 28 + nameW + regW);
   doc.rotate(-90);
   doc.fillColor(navy);
   doc.font('Helvetica-Bold').fontSize(14);
@@ -433,11 +436,16 @@ function renderGsecLegPdf(doc, content) {
 }
 
 function renderRepoPdf(doc, content) {
+  // Slightly larger fonts than the GSEC letters so the (shorter) repo
+  // confirmation fills the A4 page.
+  const bodySize = 11;
+  const headingSize = 11.5;
+
   doc.fillColor('#000000');
-  doc.font('Helvetica-Bold').fontSize(10).text(`Ref :- ${content.refNumber}`);
+  doc.font('Helvetica-Bold').fontSize(headingSize).text(`Ref :- ${content.refNumber}`);
   doc.moveDown(0.3);
   // Client: title must be black & bold (underlined).
-  doc.font('Helvetica-Bold').fontSize(13).fillColor('#000000')
+  doc.font('Helvetica-Bold').fontSize(15).fillColor('#000000')
     .text(content.title, { align: 'center', underline: true });
   doc.moveDown(1);
 
@@ -445,39 +453,42 @@ function renderRepoPdf(doc, content) {
   const startY = doc.y;
 
   const borrowerEndY = renderPartyColumn(doc, {
-    label: 'BORROWER', party: content.borrower, x: doc.page.margins.left, y: startY, width: halfWidth - 10
+    label: 'BORROWER', party: content.borrower, x: doc.page.margins.left, y: startY, width: halfWidth - 10,
+    lineHeight: 15, labelSize: headingSize, bodySize
   });
   const lenderEndY = renderPartyColumn(doc, {
-    label: 'LENDER', party: content.lender, x: doc.page.margins.left + halfWidth, y: startY, width: halfWidth - 10
+    label: 'LENDER', party: content.lender, x: doc.page.margins.left + halfWidth, y: startY, width: halfWidth - 10,
+    lineHeight: 15, labelSize: headingSize, bodySize
   });
 
   doc.y = Math.max(borrowerEndY, lenderEndY) + 16;
   doc.x = doc.page.margins.left;
 
-  doc.font('Helvetica-Bold').fontSize(10).text('DEAL DETAILS', { underline: true });
+  doc.font('Helvetica-Bold').fontSize(headingSize).text('DEAL DETAILS', { underline: true });
   doc.moveDown(0.3);
   renderGridTable(doc, content.dealDetails, {
-    x: doc.page.margins.left, colWidths: [180, 280], boldFirstCol: true
+    x: doc.page.margins.left, colWidths: [180, 280], boldFirstCol: true,
+    fontSize: bodySize, rowHeight: 21
   });
 
   doc.moveDown(1);
-  doc.font('Helvetica-Bold').fontSize(10).text('UNDERLYING SECURITIES', { underline: true });
+  doc.font('Helvetica-Bold').fontSize(headingSize).text('UNDERLYING SECURITIES', { underline: true });
   doc.moveDown(0.3);
   const secColWidths = [230, 230];
   const secX = doc.page.margins.left;
   renderGridTable(
     doc,
     securitiesAllocationRows(content.underlyingSecurities),
-    { x: secX, colWidths: secColWidths, headerRow: ['ISIN', 'Face Value'] }
+    { x: secX, colWidths: secColWidths, headerRow: ['ISIN', 'Face Value'], fontSize: bodySize, rowHeight: 21 }
   );
 
   // Total shown separately below the table (not as a table row).
   const totalAmount = formatMoney(securitiesFaceValueTotal(content.underlyingSecurities));
   const totalY = doc.y + 2;
-  doc.font('Helvetica-Bold').fontSize(9.5).fillColor('#000000');
+  doc.font('Helvetica-Bold').fontSize(bodySize).fillColor('#000000');
   doc.text('Total', secX + 6, totalY, { width: secColWidths[0] - 12 });
   doc.text(totalAmount, secX + secColWidths[0] + 6, totalY, { width: secColWidths[1] - 12 });
-  const underlineY = totalY + 12;
+  const underlineY = totalY + 14;
   const valueLeft = secX + secColWidths[0] + 6;
   const valueRight = secX + secColWidths[0] + secColWidths[1] - 6;
   doc.moveTo(valueLeft, underlineY).lineTo(valueRight, underlineY).stroke();
@@ -487,15 +498,15 @@ function renderRepoPdf(doc, content) {
 
   const contentWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
   doc.moveDown(1);
-  doc.font('Helvetica-Bold').fontSize(10).text('SETTLEMENT PROCESS', doc.page.margins.left, doc.y, { underline: true, width: contentWidth });
-  doc.font('Helvetica').fontSize(9.5).text(content.settlementProcess || '', doc.page.margins.left, doc.y, {
+  doc.font('Helvetica-Bold').fontSize(headingSize).text('SETTLEMENT PROCESS', doc.page.margins.left, doc.y, { underline: true, width: contentWidth });
+  doc.font('Helvetica').fontSize(bodySize).text(content.settlementProcess || '', doc.page.margins.left, doc.y, {
     align: 'left',
     width: contentWidth
   });
 
   doc.moveDown(1);
-  doc.font('Helvetica-Bold').fontSize(10).text('MATURITY PROCEEDS', doc.page.margins.left, doc.y, { underline: true, width: contentWidth });
-  doc.font('Helvetica').fontSize(9.5).text(content.maturityProceeds || '', doc.page.margins.left, doc.y, {
+  doc.font('Helvetica-Bold').fontSize(headingSize).text('MATURITY PROCEEDS', doc.page.margins.left, doc.y, { underline: true, width: contentWidth });
+  doc.font('Helvetica').fontSize(bodySize).text(content.maturityProceeds || '', doc.page.margins.left, doc.y, {
     align: 'left',
     width: contentWidth
   });
@@ -505,14 +516,14 @@ function renderRepoPdf(doc, content) {
   const sigY = Math.max(doc.y, doc.page.height - doc.page.margins.bottom - 70);
   const sigLine = '_______________________';
   const sigLabel = 'Authorized Signatory';
-  doc.font('Helvetica').fontSize(9.5).fillColor('#000000');
+  doc.font('Helvetica').fontSize(bodySize).fillColor('#000000');
   const lineW = doc.widthOfString(sigLine);
   const leftX = doc.page.margins.left;
   const rightX = doc.page.width - doc.page.margins.right - lineW;
   doc.text(sigLine, leftX, sigY);
-  doc.text(sigLabel, leftX, sigY + 14);
+  doc.text(sigLabel, leftX, sigY + 15);
   doc.text(sigLine, rightX, sigY);
-  doc.text(sigLabel, rightX, sigY + 14);
+  doc.text(sigLabel, rightX, sigY + 15);
 }
 
 function streamPdf(renderFn, contentOrContents) {
@@ -566,8 +577,8 @@ function letterheadSection(children) {
       verticalAnchor: TableAnchorType.PAGE,
       // Small margin from the left page edge (~5mm).
       absoluteHorizontalPosition: 280,
-      // Align with the top of the body (Ref / title), not mid-page.
-      absoluteVerticalPosition: 200,
+      // Start near the very top of the page (above the Ref line).
+      absoluteVerticalPosition: 80,
       overlap: OverlapType.OVERLAP,
       leftFromText: 0,
       rightFromText: 0,
@@ -577,7 +588,10 @@ function letterheadSection(children) {
     rows: [
       new TableRow({
         // Tall enough that company + reg stay on a single vertical line.
-        height: { value: 9200, rule: HeightRule.EXACT },
+        // The text is anchored at the cell's bottom edge (it reads upward),
+        // so this height also sets how high the strip's top reaches - keep
+        // it so the text ends ~1.2cm from the page top.
+        height: { value: 8250, rule: HeightRule.EXACT },
         children: [
           new TableCell({
             width: { size: 700, type: WidthType.DXA },
@@ -781,6 +795,12 @@ function buildRepoDocx(content) {
   const totalAmount = formatMoney(securitiesFaceValueTotal(content.underlyingSecurities));
 
   return new Document({
+    // Larger base font so the letter fills the A4 page (12pt body text).
+    styles: {
+      default: {
+        document: { run: { size: 24 } }
+      }
+    },
     sections: [letterheadSection([
       new Paragraph({ children: [new TextRun({ text: `Ref :- ${content.refNumber}`, bold: true, color: '000000' })] }),
       // Client: title black & bold (avoid Heading styles that can apply theme blue).
@@ -790,7 +810,7 @@ function buildRepoDocx(content) {
           text: content.title,
           bold: true,
           color: '000000',
-          size: 26,
+          size: 30,
           underline: { type: UnderlineType.SINGLE }
         })]
       }),
