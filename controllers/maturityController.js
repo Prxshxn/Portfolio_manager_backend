@@ -2884,17 +2884,58 @@ MaturityController.processPrematureMaturity = async (req, res) => {
       try {
         let dealUpdated = false;
         
-        // Try GSEC first
-        const [gsecResult] = await db.query(`
-          UPDATE gsec 
-          SET maturity_date = ?,
-              updated_at = CURRENT_TIMESTAMP
-          WHERE id = ? 
+        // Try GSEC first. Look the row up before updating: a buyback leg-2 Buy
+        // that has not settled yet (value_date still in the future) must be
+        // prematured by moving its SETTLEMENT dates - not by stamping
+        // maturity_date, which would leave a row that "matures" before it
+        // settles and is invisible to both the GSec report (value_date filter)
+        // and the daily maturity cashflow (GSec section excludes buyback
+        // leg-2 rows; buyback section keys off leg2_value_date).
+        const [gsecRows] = await db.query(`
+          SELECT id, deal_number, buyback_deal_id, value_date
+          FROM gsec
+          WHERE id = ?
             AND COALESCE(matured, 0) = 0
             AND status = 'final_approved'
-        `, [dateStr, dealId]);
-        
-        if (gsecResult.affectedRows > 0) {
+          LIMIT 1
+        `, [dealId]);
+
+        if (gsecRows.length > 0) {
+          const gsecDeal = gsecRows[0];
+          const valueDateStr = gsecDeal.value_date
+            ? new Date(gsecDeal.value_date).toISOString().slice(0, 10)
+            : null;
+          const isUnsettledBuybackLeg2 =
+            gsecDeal.buyback_deal_id != null && valueDateStr && valueDateStr > dateStr;
+
+          let logNote;
+          if (isUnsettledBuybackLeg2) {
+            // Early settlement of the buyback: pull the leg-2 value date (gsec +
+            // buyback rows) to the premature date. The bond's own maturity_date
+            // is left untouched so the position enters holdings normally.
+            // Settlement/accrued amounts are NOT recalculated here - use the
+            // dedicated buyback premature flow when amounts must change.
+            await db.query(`
+              UPDATE gsec
+              SET value_date = ?, updated_at = CURRENT_TIMESTAMP
+              WHERE id = ?
+            `, [dateStr, dealId]);
+            await db.query(`
+              UPDATE buyback_deals
+              SET leg2_value_date = ?, updated_at = CURRENT_TIMESTAMP
+              WHERE id = ?
+            `, [dateStr, gsecDeal.buyback_deal_id]);
+            logNote = `Premature maturity (buyback leg2 early settlement): value_date and buyback leg2_value_date updated to ${dateStr}; settlement amounts unchanged`;
+          } else {
+            await db.query(`
+              UPDATE gsec 
+              SET maturity_date = ?,
+                  updated_at = CURRENT_TIMESTAMP
+              WHERE id = ?
+            `, [dateStr, dealId]);
+            logNote = `Premature maturity: Original maturity date updated to ${dateStr}`;
+          }
+
           updatedCount++;
           dealUpdated = true;
           // Log the premature maturity action
@@ -2906,7 +2947,7 @@ MaturityController.processPrematureMaturity = async (req, res) => {
               id, deal_number, 'premature_maturity', face_value, 0, face_value,
               ?, ?, 'system', ?
             FROM gsec WHERE id = ?
-          `, [dateStr, userId, `Premature maturity: Original maturity date updated to ${dateStr}`, dealId]);
+          `, [dateStr, userId, logNote, dealId]);
         }
         
         // Try Money Market if GSEC didn't work
