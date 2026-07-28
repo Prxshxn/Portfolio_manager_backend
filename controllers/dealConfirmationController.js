@@ -46,6 +46,29 @@ async function getGsecConfirmationContent(id) {
   });
 }
 
+// The sell/buy entry screens store Sherwood's own counterparty-master record
+// on one leg (usually leg1) and the real external counterparty on the other.
+// The letter's Buyer/Seller blocks always pair COMPANY with the external
+// party, so resolve whichever leg counterparty is NOT Sherwood itself and use
+// it for both legs - otherwise the Sale page prints Sherwood as its own buyer.
+function isOwnCompany(details) {
+  if (!details || !details.name) return false;
+  const normalize = (s) => String(s).toLowerCase().replace(/[^a-z]/g, '');
+  const own = normalize(dealConfirmationService.COMPANY.name); // sherwoodcapitalpvtltd
+  const name = normalize(details.name);
+  return name === own || name.startsWith('sherwoodcapital');
+}
+
+async function resolveExternalCounterpartyId(deal) {
+  // Recent deals keep the external party on leg2; older rows on leg1.
+  const candidates = [deal.leg2_counterparty, deal.leg1_counterparty].filter(Boolean);
+  for (const candidate of candidates) {
+    const details = await dealConfirmationService.fetchCounterpartyDetails(candidate);
+    if (details && !isOwnCompany(details)) return candidate;
+  }
+  return candidates[0] || null;
+}
+
 // Buyback: 2 leg contents (Sale + Purchase) sharing one Ref, returned as an
 // array so the caller can render them as 2 sheets/pages in one document.
 async function getBuybackConfirmationContents(id) {
@@ -75,12 +98,13 @@ async function getBuybackConfirmationContents(id) {
   const maturityDateFor = (isin) => deal.maturity_date ?? isinMaster[isin]?.maturity_date;
 
   const refNumber = buildRefNumber('SellBuy', deal.deal_number);
+  const externalCounterpartyId = await resolveExternalCounterpartyId(deal);
 
   const leg1 = await dealConfirmationService.buildGsecLegContent({
     refNumber,
     isBuy: false,
     isinNumber: deal.leg1_isin,
-    counterpartyId: deal.leg1_counterparty,
+    counterpartyId: externalCounterpartyId,
     faceValue: deal.leg1_face_value,
     couponRate: couponRateFor(deal.leg1_isin),
     yieldRate: deal.leg1_yield_rate,
@@ -99,7 +123,7 @@ async function getBuybackConfirmationContents(id) {
     refNumber,
     isBuy: true,
     isinNumber: deal.leg2_isin,
-    counterpartyId: deal.leg2_counterparty,
+    counterpartyId: externalCounterpartyId,
     faceValue: deal.leg2_face_value ?? deal.leg1_face_value,
     couponRate: couponRateFor(deal.leg2_isin),
     yieldRate: deal.leg2_yield_rate,
