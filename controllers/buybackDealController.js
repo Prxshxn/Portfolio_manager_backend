@@ -856,7 +856,11 @@ const buybackDealController = {
                     tradeDate: buybackDeal.leg2_trade_date || buybackDeal.leg2_value_date,
                     userId: req.user?.id || 1,
                     current_approval_level: null,
-                    status: 'final_approved'
+                    status: 'final_approved',
+                    // Carry the buyback's fund-movement flag onto the buy row -
+                    // without it Gsec.create defaults to 'no' and the instruction
+                    // letter renders RVF (free of payment) instead of RVP.
+                    fundMovement: buybackDeal.fund_movement
                   };
 
                   const gsecResult = await Gsec.create(gsecDealData);
