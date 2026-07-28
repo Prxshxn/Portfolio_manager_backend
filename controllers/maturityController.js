@@ -3191,7 +3191,7 @@ const { solveYieldFromPrice } = require('../utils/bondPricingNVP');
                   leg2_trade_type, leg2_trade_date, leg2_currency, leg1_broker, leg1_brokerage,
                   leg2_accrued_interest, leg2_yield_rate,
                   coupon_rate, issue_date, coupon_date1, coupon_date2,
-                  deal_status, approved_at
+                  deal_status, approved_at, fund_movement
            FROM buyback_deals
            WHERE id = ?
            FOR UPDATE`,
@@ -3526,7 +3526,10 @@ const { solveYieldFromPrice } = require('../utils/bondPricingNVP');
             tradeDate: deal.leg2_trade_date || leg2ValueDate,
             userId,
             current_approval_level: null,
-            status: 'final_approved'
+            status: 'final_approved',
+            // Carry the buyback's fund-movement flag so the replacement buy row
+            // keeps the correct RVP/RVF basis on its instruction letter.
+            fundMovement: deal.fund_movement
           };
 
           const gsecResult = await Gsec.createWithConnection(gsecDealData, connection);
