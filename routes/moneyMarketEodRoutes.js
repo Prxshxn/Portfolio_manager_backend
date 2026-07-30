@@ -1256,7 +1256,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
             // is recognised in its own expense account and the daily accrual is unwound:
             //   1. Reverse accrued interest: DR Interest Payable (780) / CR daily-accrual Interest Expense (752)
             //   2. Settle principal:         DR Repo Liability (308)    / CR Bank
-            //   3. Recognise interest:       DR Interest Expense R/Repo (768) / CR Bank
+            //   3. Recognise interest:       DR Interest Expense Repo Borrowing (768) / CR Bank
             const liabilityAccount = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REVERSE_REPO_LIABILITY);
             const interestPayable = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REVERSE_REPO_INTEREST_PAYABLE);
             const accrualInterestExpense = await accountMapping.getAccountCode(accountMapping.MAPPING_KEYS.REVERSE_REPO_INTEREST_EXPENSE);

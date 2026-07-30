@@ -1,6 +1,6 @@
 /**
  * Reverse Repo maturity interest expense: map the interest leg booked at maturity
- * to its own expense account "Interest Expense R/Repo" (669-101-240-768-44),
+ * to its own expense account "Interest Expense Repo Borrowing" (669-101-240-768-44),
  * separate from the daily-accrual expense account (669-101-240-752-44).
  *
  * Run: node migrations/20260603-add-reverse-repo-maturity-interest-expense-mapping.js
@@ -19,7 +19,7 @@ async function run() {
   );
   if (!rows.length) {
     console.error(
-      `Missing chart_of_accounts row for ${CODE}. Add "Interest Expense R/Repo" to the chart, then re-run.`
+      `Missing chart_of_accounts row for ${CODE}. Add "Interest Expense Repo Borrowing" to the chart, then re-run.`
     );
     process.exit(1);
   }
@@ -32,7 +32,7 @@ async function run() {
        description = VALUES(description),
        is_active = TRUE,
        updated_at = NOW()`,
-    [KEY, CODE, 'Interest Expense R/Repo (reverse repo maturity interest expense)']
+    [KEY, CODE, 'Interest Expense Repo Borrowing (repo maturity interest expense)']
   );
 
   const [check] = await db.query(
