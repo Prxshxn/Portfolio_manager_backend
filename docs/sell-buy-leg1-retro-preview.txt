@@ -1,0 +1,533 @@
+SELL/BUY LEG1 LEDGER RETRO — PREVIEW
+Generated: 2026-06-24T05:25:23.688Z
+Posted Sell/Buy leg1 slices found: 89
+
+==========================================================================================
+BB20260506001/BB-L1/20260506/GSEC/0003
+Buyback: BB20260506001 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital -20.42
+  Correct: amort 0.00 | capital -20.42 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260506002/BB-L1/20260506/GSEC/0002
+Buyback: BB20260506002 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital 1.48
+  Correct: amort 0.00 | capital 1.48 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260506003/BB-L1/20251203/GSEC/0001
+Buyback: BB20260506003 | holdingDays: 153
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260506003/BB-L1/20251205/GSEC/0001
+Buyback: BB20260506003 | holdingDays: 151
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260507001/BB-L1/20260507/GSEC/0003
+Buyback: BB20260507001 | holdingDays: 0
+  Posted: 5 lines | amort 0.00 | capital -1.55
+  Correct: amort 0.00 | capital -1.55 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260507002/BB-L1/20260507/GSEC/0002
+Buyback: BB20260507002 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital 8.77
+  Correct: amort 0.00 | capital 8.77 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260507003/BB-L1/20250602/GSEC/0002
+Buyback: BB20260507003 | holdingDays: 339
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260511001/BB-L1/20251010/GSEC/0001
+Buyback: BB20260511001 | holdingDays: 213
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260511001/BB-L1/20251010/GSEC/0002
+Buyback: BB20260511001 | holdingDays: 213
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260511002/BB-L1/20260511/GSEC/0002
+Buyback: BB20260511002 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital 0.70
+  Correct: amort 0.00 | capital 0.70 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260512001/BB-L1/20260415/GSEC/0017
+Buyback: BB20260512001 | holdingDays: 27
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260513001/BB-L1/20260415/GSEC/0013
+Buyback: BB20260513001 | holdingDays: 28
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260513002/BB-L1/20260513/GSEC/0001
+Buyback: BB20260513002 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital 0.43
+  Correct: amort 0.00 | capital 0.43 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260514001/BB-L1/20260514/GSEC/0001
+Buyback: BB20260514001 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital 1.56
+  Correct: amort 0.00 | capital 1.56 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260515001/BB-L1/20260515/GSEC/0001
+Buyback: BB20260515001 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital 271.16
+  Correct: amort 0.00 | capital 271.16 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260515002/BB-L1/20260421/GSEC/0006
+Buyback: BB20260515002 | holdingDays: 24
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260518001/BB-L1/20260518/GSEC/0001
+Buyback: BB20260518001 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital -2.16
+  Correct: amort 0.00 | capital -2.16 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260518003/BB-L1/20260423/GSEC/0003
+Buyback: BB20260518003 | holdingDays: 25
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260520001/BB-L1/20260520/GSEC/0003
+Buyback: BB20260520001 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital 2.71
+  Correct: amort 0.00 | capital 2.71 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260520002/BB-L1/20250307/GSEC/0001
+Buyback: BB20260520002 | holdingDays: 439
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260520003/BB-L1/20250910/GSEC/0001
+Buyback: BB20260520003 | holdingDays: 252
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260521002/BB-L1/20251209/GSEC/0001
+Buyback: BB20260521002 | holdingDays: 163
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260521003/BB-L1/20260421/GSEC/0006
+Buyback: BB20260521003 | holdingDays: 30
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260525001/BB-L1/20251014/GSEC/0001
+Buyback: BB20260525001 | holdingDays: 223
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260525001/BB-L1/20260318/GSEC/0002
+Buyback: BB20260525001 | holdingDays: 68
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260525002/BB-L1/20250505/GSEC/0001
+Buyback: BB20260525002 | holdingDays: 385
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260525003/BB-L1/20250505/GSEC/0001
+Buyback: BB20260525003 | holdingDays: 385
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260525004/BB-L1/20260116/GSEC/0001
+Buyback: BB20260525004 | holdingDays: 129
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260525004/BB-L1/20260116/GSEC/0002
+Buyback: BB20260525004 | holdingDays: 129
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260525004/BB-L1/20260116/GSEC/0003
+Buyback: BB20260525004 | holdingDays: 129
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260525004/BB-L1/20260116/GSEC/0008
+Buyback: BB20260525004 | holdingDays: 129
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260525004/BB-L1/20260116/GSEC/0009
+Buyback: BB20260525004 | holdingDays: 129
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260525004/BB-L1/20260525/GSEC/0003
+Buyback: BB20260525004 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital 202,718.88
+  Correct: amort 0.00 | capital 202,718.88 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260527001/BB-L1/20250411/GSEC/0001
+Buyback: BB20260527001 | holdingDays: 410
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260527001/BB-L1/20250505/GSEC/0001
+Buyback: BB20260527001 | holdingDays: 386
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260527001/BB-L1/20250930/GSEC/0001
+Buyback: BB20260527001 | holdingDays: 238
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260527001/BB-L1/20251008/GSEC/0001
+Buyback: BB20260527001 | holdingDays: 230
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260527001/BB-L1/20260318/GSEC/0002
+Buyback: BB20260527001 | holdingDays: 69
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260527001/BB-L1/20260331/GSEC/0001
+Buyback: BB20260527001 | holdingDays: 56
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260527001/BB-L1/20260408/GSEC/0001
+Buyback: BB20260527001 | holdingDays: 48
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260527001/BB-L1/20260526/GSEC/0001
+Buyback: BB20260527001 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital -203,420.02
+  Correct: amort 0.00 | capital -203,420.02 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260527002/BB-L1/20260527/GSEC/0002
+Buyback: BB20260527002 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital -4.21
+  Correct: amort 0.00 | capital -4.21 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260527003/BB-L1/20260527/GSEC/0003
+Buyback: BB20260527003 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital -13.26
+  Correct: amort 0.00 | capital -13.26 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260527004/BB-L1/20250930/GSEC/0001
+Buyback: BB20260527004 | holdingDays: 239
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260529001/BB-L1/20260529/GSEC/0002
+Buyback: BB20260529001 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital -13.36
+  Correct: amort 0.00 | capital -13.36 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260529002/BB-L1/20260318/GSEC/0001
+Buyback: BB20260529002 | holdingDays: 72
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260529003/BB-L1/20260304/GSEC/0002
+Buyback: BB20260529003 | holdingDays: 86
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260601001/BB-L1/20260601/GSEC/0001
+Buyback: BB20260601001 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital -0.05
+  Correct: amort 0.00 | capital -0.05 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260602001/BB-L1/20260602/GSEC/0001
+Buyback: BB20260602001 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital 230.82
+  Correct: amort 0.00 | capital 230.82 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260602002/BB-L1/20260601/GSEC/0007
+Buyback: BB20260602002 | holdingDays: 1
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260603001/BB-L1/20260601/GSEC/0006
+Buyback: BB20260603001 | holdingDays: 2
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260603002/BB-L1/20260603/GSEC/0001
+Buyback: BB20260603002 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital 23.47
+  Correct: amort 0.00 | capital 23.47 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260608002/BB-L1/20260608/GSEC/0005
+Buyback: BB20260608002 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital 27.46
+  Correct: amort 0.00 | capital 27.46 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260608003/BB-L1/20260608/GSEC/0004
+Buyback: BB20260608003 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital 6.39
+  Correct: amort 0.00 | capital 6.39 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260608004/BB-L1/20260608/GSEC/0003
+Buyback: BB20260608004 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital -2.39
+  Correct: amort 0.00 | capital -2.39 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260609001/BB-L1/20260608/GSEC/0007
+Buyback: BB20260609001 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital -0.35
+  Correct: amort 0.00 | capital -0.35 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260609002/BB-L1/20250908/GSEC/0001
+Buyback: BB20260609002 | holdingDays: 274
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260609003/BB-L1/20260608/GSEC/0007
+Buyback: BB20260609003 | holdingDays: 1
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260609003/BB-L1/20260609/GSEC/0002
+Buyback: BB20260609003 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital 41.21
+  Correct: amort 0.00 | capital 41.21 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260610001/BB-L1/20260601/GSEC/0002
+Buyback: BB20260610001 | holdingDays: 9
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260610001/BB-L1/20260601/GSEC/0003
+Buyback: BB20260610001 | holdingDays: 9
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260610001/BB-L1/20260601/GSEC/0004
+Buyback: BB20260610001 | holdingDays: 9
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260610002/BB-L1/20260601/GSEC/0002
+Buyback: BB20260610002 | holdingDays: 9
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260610002/BB-L1/20260601/GSEC/0011
+Buyback: BB20260610002 | holdingDays: 9
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260612001/BB-L1/20260601/GSEC/0010
+Buyback: BB20260612001 | holdingDays: 11
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260615001/BB-L1/20260615/GSEC/0004
+Buyback: BB20260615001 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital 19.19
+  Correct: amort 0.00 | capital 19.19 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260615002/BB-L1/20260615/GSEC/0003
+Buyback: BB20260615002 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital 127.98
+  Correct: amort 0.00 | capital 127.98 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260615003/BB-L1/20260615/GSEC/0002
+Buyback: BB20260615003 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital 93.46
+  Correct: amort 0.00 | capital 93.46 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260615004/BB-L1/20260615/GSEC/0002
+Buyback: BB20260615004 | holdingDays: 0
+  Posted: 5 lines | amort 0.00 | capital 0.43
+  Correct: amort 0.00 | capital 0.43 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260615007/BB-L1/20260615/GSEC/0005
+Buyback: BB20260615007 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital 1.48
+  Correct: amort 0.00 | capital 1.48 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260615008/BB-L1/20260615/GSEC/0010
+Buyback: BB20260615008 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital 0.24
+  Correct: amort 0.00 | capital 0.24 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260615009/BB-L1/20260615/GSEC/0001
+Buyback: BB20260615009 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital 0.62
+  Correct: amort 0.00 | capital 0.62 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260616002/BB-L1/20260616/GSEC/0001
+Buyback: BB20260616002 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital 19.46
+  Correct: amort 0.00 | capital 19.46 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260617001/BB-L1/20260617/GSEC/0001
+Buyback: BB20260617001 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital -15.90
+  Correct: amort 0.00 | capital -15.90 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260617002/BB-L1/20260304/GSEC/0001
+Buyback: BB20260617002 | holdingDays: 105
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260618001/BB-L1/20260616/GSEC/0001
+Buyback: BB20260618001 | holdingDays: 2
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260618002/BB-L1/20260611/GSEC/0001
+Buyback: BB20260618002 | holdingDays: 8
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260619001/BB-L1/20260608/GSEC/0007
+Buyback: BB20260619001 | holdingDays: 11
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260622001/BB-L1/20260622/GSEC/0006
+Buyback: BB20260622001 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital 0.42
+  Correct: amort 0.00 | capital 0.42 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260622002/BB-L1/20260622/GSEC/0003
+Buyback: BB20260622002 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital 8.02
+  Correct: amort 0.00 | capital 8.02 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260622003/BB-L1/20260622/GSEC/0005
+Buyback: BB20260622003 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital 0.17
+  Correct: amort 0.00 | capital 0.17 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260622004/BB-L1/20260622/GSEC/0001
+Buyback: BB20260622004 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital 17.45
+  Correct: amort 0.00 | capital 17.45 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260623001/BB-L1/20260623/GSEC/0005
+Buyback: BB20260623001 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital 0.08
+  Correct: amort 0.00 | capital 0.08 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260623002/BB-L1/20260616/GSEC/0003
+Buyback: BB20260623002 | holdingDays: 7
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260623003/BB-L1/20260623/GSEC/0004
+Buyback: BB20260623003 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital -33.90
+  Correct: amort 0.00 | capital -33.90 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260623004/BB-L1/20260608/GSEC/0007
+Buyback: BB20260623004 | holdingDays: 15
+  >> SKIP (not same-day; holdingDays > 0 — different amort rules apply)
+
+==========================================================================================
+BB20260623004/BB-L1/20260623/GSEC/0001
+Buyback: BB20260623004 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital 5,505.49
+  Correct: amort 0.00 | capital 5,505.49 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260623004/BB-L1/20260623/GSEC/0002
+Buyback: BB20260623004 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital -714.43
+  Correct: amort 0.00 | capital -714.43 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+BB20260623004/BB-L1/20260623/GSEC/0003
+Buyback: BB20260623004 | holdingDays: 0
+  Posted: 4 lines | amort 0.00 | capital -1,451.48
+  Correct: amort 0.00 | capital -1,451.48 | match=true
+  >> OK (already matches current logic)
+
+==========================================================================================
+SUMMARY: {"ok":41,"corrected":0,"skipped_multiday":48,"failed":0,"preview_fix":0}

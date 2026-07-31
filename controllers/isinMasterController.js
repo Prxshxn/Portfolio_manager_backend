@@ -157,6 +157,21 @@ module.exports = {
 
   createIsin: async (req, res) => {
     try {
+      // Reject duplicates: a second isin_master row for the same ISIN makes
+      // every report that joins isin_master (e.g. the GSEC report) show each
+      // deal on that ISIN twice, and duplicates the coupon schedule below.
+      const isinNumber = String(req.body.isin_number || '').trim();
+      if (!isinNumber) {
+        return res.status(400).json({ success: false, error: 'isin_number is required' });
+      }
+      const existing = await IsinMaster.getByIsinNumber(isinNumber);
+      if (existing) {
+        return res.status(409).json({
+          success: false,
+          error: `ISIN ${isinNumber} already exists in the ISIN master (id ${existing.id}). Edit the existing record instead of creating a duplicate.`
+        });
+      }
+
       // Insert ISIN record
       const result = await IsinMaster.create(req.body);
       // Coupon schedule logic (non-blocking for main ISIN creation)
