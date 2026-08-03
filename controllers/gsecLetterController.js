@@ -313,9 +313,19 @@ function renderLetterHtml(ctx) {
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>GSEC Letter - ${escapeHtml(deal.deal_number)}</title>
+<title></title>
 <style>
-  @page { size: A4; margin: 18mm 16mm 28mm 12mm; }
+  @page {
+    size: A4;
+    margin: 12mm 10mm 8mm 8mm;
+    /* Firefox: suppress browser URL / page-number chrome */
+    @top-left { content: none; }
+    @top-center { content: none; }
+    @top-right { content: none; }
+    @bottom-left { content: none; }
+    @bottom-center { content: none; }
+    @bottom-right { content: none; }
+  }
   * { box-sizing: border-box; }
   html, body {
     margin: 0;
@@ -329,15 +339,25 @@ function renderLetterHtml(ctx) {
     line-height: 1.55;
   }
 
-  /* Flow layout (not position:fixed) so Chrome print cannot collapse the
-     vertical letterhead onto the letter body. Left gutter owns the brand;
-     main column owns the letter. */
+  /* One A4 content area; company footer pinned to the bottom edge so it
+     occupies the space Chrome would otherwise fill with URL / 1/1 when
+     Headers and footers are left on (those are browser chrome — turn them
+     off in the print dialog). */
   .sheet {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    min-height: 277mm;
+    height: 277mm;
+    padding: 2mm 2mm 30mm 0;
+  }
+  .sheet-body {
     display: flex;
     align-items: stretch;
     gap: 6mm;
-    min-height: 240mm;
-    padding: 8mm 4mm 36mm 0;
+    flex: 1 1 auto;
+    min-height: 0;
   }
   .letterhead-sidebar {
     flex: 0 0 22mm;
@@ -357,29 +377,40 @@ function renderLetterHtml(ctx) {
     max-width: 170mm;
   }
 
-  .letterhead-footer {
-    position: fixed;
-    left: 28mm;
-    right: 16mm;
-    bottom: 14mm;
+  .sheet-footer {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 0 2mm 1mm 28mm;
     font-family: Arial, Helvetica, sans-serif;
+  }
+  .letterhead-footer {
     font-size: 9px;
     color: #222;
     line-height: 1.5;
     text-align: left;
   }
   .letterhead-ambeon {
-    position: fixed;
-    left: 0;
-    right: 0;
-    bottom: 4mm;
-    text-align: center;
-    font-family: Arial, Helvetica, sans-serif;
+    flex: 0 0 auto;
+    white-space: nowrap;
     font-size: 9px;
     letter-spacing: 0.5px;
     color: #222;
+    padding-bottom: 2px;
   }
-  .letterhead-ambeon .dot { color: #f5821f; }
+  .letterhead-ambeon .dot {
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    margin-right: 6px;
+    background: #f5821f;
+    vertical-align: middle;
+  }
   .letterhead-ambeon .brand {
     color: #1c3f7c;
     font-weight: bold;
@@ -430,6 +461,8 @@ function renderLetterHtml(ctx) {
     border-bottom: 1px solid #eee;
     margin-bottom: 12px;
     display: flex;
+    flex-wrap: wrap;
+    align-items: center;
     gap: 8px;
     z-index: 2;
   }
@@ -446,10 +479,21 @@ function renderLetterHtml(ctx) {
     color: #fff;
     border-color: #1a73e8;
   }
+  .actions .print-hint {
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 11px;
+    color: #666;
+  }
   @media print {
     .actions { display: none !important; }
-    .sheet { padding-top: 0; padding-bottom: 32mm; }
-    .letterhead-sidebar, .letterhead-footer, .letterhead-ambeon {
+    html, body { height: auto; }
+    .sheet {
+      min-height: 277mm;
+      height: 277mm;
+      page-break-after: avoid;
+      page-break-inside: avoid;
+    }
+    .letterhead-sidebar, .letterhead-footer, .letterhead-ambeon, .letterhead-ambeon .dot {
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
     }
@@ -460,77 +504,81 @@ function renderLetterHtml(ctx) {
   <div class="actions">
     <button class="primary" onclick="window.print()">Print</button>
     <button onclick="window.close()">Close</button>
+    <span class="print-hint">In the print dialog, uncheck <b>Headers and footers</b> to hide the page URL and 1/1.</span>
   </div>
 
   <div class="sheet">
-    <!-- SVG vertical text: Chrome print collapses CSS writing-mode+transform
-         letterheads onto the body; SVG rotate stays in the left gutter. -->
-    <aside class="letterhead-sidebar" aria-hidden="true">
-      <svg viewBox="0 0 44 760" width="44" height="760" xmlns="http://www.w3.org/2000/svg">
-        <g transform="translate(28,740) rotate(-90)">
-          <text y="0" fill="#1c3f7c" font-family="Arial, Helvetica, sans-serif" letter-spacing="1.2">
-            <tspan font-size="22" font-weight="700">SHERWOOD CAPITAL (PRIVATE) LIMITED</tspan>
-            <tspan font-size="11" font-weight="400" dx="14">Reg No. PV00241251</tspan>
-          </text>
-        </g>
-      </svg>
-    </aside>
+    <div class="sheet-body">
+      <!-- SVG vertical text: Chrome print collapses CSS writing-mode+transform
+           letterheads onto the body; SVG rotate stays in the left gutter. -->
+      <aside class="letterhead-sidebar" aria-hidden="true">
+        <svg viewBox="0 0 44 760" width="44" height="760" xmlns="http://www.w3.org/2000/svg">
+          <g transform="translate(28,740) rotate(-90)">
+            <text y="0" fill="#1c3f7c" font-family="Arial, Helvetica, sans-serif" letter-spacing="1.2">
+              <tspan font-size="22" font-weight="700">SHERWOOD CAPITAL (PRIVATE) LIMITED</tspan>
+              <tspan font-size="11" font-weight="400" dx="14">Reg No. PV00241251</tspan>
+            </text>
+          </g>
+        </svg>
+      </aside>
 
-    <div class="letter">
-    <div class="header-right">
-      <div class="date">${escapeHtml(letterDateLong)}</div>
-      <div class="ref">${escapeHtml(referenceNumber)}</div>
+      <div class="letter">
+      <div class="header-right">
+        <div class="date">${escapeHtml(letterDateLong)}</div>
+        <div class="ref">${escapeHtml(referenceNumber)}</div>
+      </div>
+
+      <div class="recipient">
+        ${recipientHtml}
+      </div>
+
+      <p>Dear Sir,</p>
+
+      <h2 class="subject">${subjectLine}</h2>
+
+      <p>${requestVerbLine}</p>
+
+      <p>${counterpartySentence}</p>
+
+      <table class="securities">
+        <thead>
+          <tr>
+            <th>ISIN Code</th>
+            <th>Face Value (Rs.)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>${escapeHtml(deal.isin_number || '')}</td>
+            <td>${formatMoney(deal.face_value)}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      ${fundsBlock}
+
+      <p class="value-date">${escapeHtml(valueDateLine)}</p>
+
+      <p>Yours faithfully,</p>
+      <p>For ${escapeHtml(company.name)}</p>
+
+      <div class="signatures">
+        <div class="slot">Authorized Signatory</div>
+        <div class="slot">Authorized Signatory</div>
+      </div>
+      </div>
     </div>
 
-    <div class="recipient">
-      ${recipientHtml}
-    </div>
-
-    <p>Dear Sir,</p>
-
-    <h2 class="subject">${subjectLine}</h2>
-
-    <p>${requestVerbLine}</p>
-
-    <p>${counterpartySentence}</p>
-
-    <table class="securities">
-      <thead>
-        <tr>
-          <th>ISIN Code</th>
-          <th>Face Value (Rs.)</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>${escapeHtml(deal.isin_number || '')}</td>
-          <td>${formatMoney(deal.face_value)}</td>
-        </tr>
-      </tbody>
-    </table>
-
-    ${fundsBlock}
-
-    <p class="value-date">${escapeHtml(valueDateLine)}</p>
-
-    <p>Yours faithfully,</p>
-    <p>For ${escapeHtml(company.name)}</p>
-
-    <div class="signatures">
-      <div class="slot">Authorized Signatory</div>
-      <div class="slot">Authorized Signatory</div>
-    </div>
+    <div class="sheet-footer">
+      <div class="letterhead-footer">
+        <div>No; 100/1, 2<sup>nd</sup> floor, Elvitigala Mawatha, Colombo 08. Sri Lanka</div>
+        <div>T : 0115328133 | F : 0112680225</div>
+        <div>E: treasury@sherwood.lk</div>
+        <div>W: www.ambeongroup.com</div>
+      </div>
+      <div class="letterhead-ambeon"><span class="dot"></span>AN <span class="brand">AMBEON</span> COMPANY</div>
     </div>
   </div>
-
-  <div class="letterhead-footer">
-    <div>No; 100/1, 2<sup>nd</sup> floor, Elvitigala Mawatha, Colombo 08. Sri Lanka</div>
-    <div>T : 0115328133 | F : 0112680225</div>
-    <div>E: treasury@sherwood.lk</div>
-    <div>W: www.ambeongroup.com</div>
-  </div>
-
-  <div class="letterhead-ambeon"><span class="dot">&#9679;</span> AN <span class="brand">AMBEON</span> COMPANY</div>
 </body>
 </html>`;
 }
