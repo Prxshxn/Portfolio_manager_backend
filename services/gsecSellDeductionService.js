@@ -16,6 +16,10 @@ function parseSellDealAllocations(raw) {
  * Pass { excludeRejected: true } to skip rejected Sells (used by the
  * available-to-sell balance in the sell modal, where a rejected Sell must
  * not keep consuming the Buy deal's balance).
+ *
+ * Sells linked via buyback_deal_id are excluded: Sell/Buy buybacks already
+ * reduce inventory through remaining_face_value + buyback_deals deduction
+ * logic; counting those letter-only Sell rows here would double-deduct.
  */
 async function buildSoldByDealMap(db, dealNumbers, asAtDate, { excludeRejected = false } = {}) {
   const soldByDeal = {};
@@ -24,6 +28,20 @@ async function buildSoldByDealMap(db, dealNumbers, asAtDate, { excludeRejected =
   const dealSet = new Set(dealNumbers.map((d) => String(d || '').trim()).filter(Boolean));
   const normalized = [...dealSet];
   if (!normalized.length) return soldByDeal;
+
+  let hasBuybackDealIdCol = false;
+  try {
+    const [cols] = await db.query(`
+      SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = 'gsec'
+        AND COLUMN_NAME = 'buyback_deal_id'
+      LIMIT 1
+    `);
+    hasBuybackDealIdCol = Array.isArray(cols) && cols.length > 0;
+  } catch (_) {
+    /* leave false */
+  }
 
   const placeholders = normalized.map(() => '?').join(',');
   let sql = `
@@ -36,6 +54,10 @@ async function buildSoldByDealMap(db, dealNumbers, asAtDate, { excludeRejected =
       )
   `;
   const params = [...normalized];
+
+  if (hasBuybackDealIdCol) {
+    sql += ' AND buyback_deal_id IS NULL';
+  }
 
   if (excludeRejected) {
     sql += " AND COALESCE(status, '') <> 'rejected'";
@@ -77,6 +99,21 @@ async function buildNaiveSoldByDealMap(db, dealNumbers, asAtDate) {
 
   const normalized = [...new Set(dealNumbers.map((d) => String(d || '').trim()).filter(Boolean))];
   const placeholders = normalized.map(() => '?').join(',');
+
+  let hasBuybackDealIdCol = false;
+  try {
+    const [cols] = await db.query(`
+      SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = 'gsec'
+        AND COLUMN_NAME = 'buyback_deal_id'
+      LIMIT 1
+    `);
+    hasBuybackDealIdCol = Array.isArray(cols) && cols.length > 0;
+  } catch (_) {
+    /* leave false */
+  }
+
   let sql = `
     SELECT TRIM(buy_deal_number) AS buy_deal_number, COALESCE(SUM(face_value), 0) AS total_sold
     FROM gsec
@@ -85,6 +122,9 @@ async function buildNaiveSoldByDealMap(db, dealNumbers, asAtDate) {
       AND TRIM(buy_deal_number) IN (${placeholders})
   `;
   const params = [...normalized];
+  if (hasBuybackDealIdCol) {
+    sql += ' AND buyback_deal_id IS NULL';
+  }
   if (asAtDate) {
     sql += ' AND DATE(value_date) <= DATE(?)';
     params.push(asAtDate);

@@ -15,6 +15,14 @@ const {
   getCouponPeriodEOverride
 } = require('../services/gsecCouponPeriod');
 const { postBuySellBuybackLedger } = require('../services/buybackBuySellLedgerService');
+const {
+  createBuybackLeg1SellGsec,
+  getLeg1EffectiveFace,
+  mapSellAllocations
+} = require('../services/buybackLeg1SellGsecService');
+const {
+  createBuybackBuySellLetterGsecs
+} = require('../services/buybackBuySellLetterGsecService');
 
 // Helper function to convert empty strings to null for numeric fields
 const sanitizeNumeric = (value) => {
@@ -97,31 +105,10 @@ const validateSellLegAllocations = (leg1, sellDeals) => {
   return null;
 };
 
-/** Effective leg1 sell face (adjusted face when set, else face). */
-const getLeg1EffectiveFace = (leg1OrBuybackRow) => {
-  const adj = parseFloat(
-    leg1OrBuybackRow?.adjustedFaceValue ?? leg1OrBuybackRow?.leg1_adjusted_face_value
-  );
-  const face = parseFloat(leg1OrBuybackRow?.faceValue ?? leg1OrBuybackRow?.leg1_face_value);
-  if (Number.isFinite(adj) && adj > 0) return adj;
-  if (Number.isFinite(face) && face > 0) return face;
-  return 0;
-};
-
 /** Sum of sell-modal allocation amounts (authoritative face for Sell buybacks). */
 const sumSellAllocations = (allocations) => {
   if (!Array.isArray(allocations) || !allocations.length) return 0;
   return allocations.reduce((s, a) => s + (Number(a.amountToSell) || 0), 0);
-};
-
-const mapSellAllocations = (allocations) => {
-  if (!Array.isArray(allocations)) return [];
-  return allocations
-    .map((a) => ({
-      deal_number: a.deal_number || a.buy_deal_number,
-      amountToSell: Number(a.amountToSell) || 0
-    }))
-    .filter((a) => a.deal_number && a.amountToSell > 0);
 };
 
 /**
@@ -627,49 +614,50 @@ const buybackDealController = {
         });
       }
 
-      // When a buyback is rejected, cancel the auto-created GSec leg 2 deal
+      // When a buyback is rejected, cancel auto-created / letter GSec rows linked to it
       if (status === 'Rejected') {
         try {
           const [buybackDeals] = await db.query('SELECT * FROM buyback_deals WHERE id = ?', [id]);
           if (buybackDeals && buybackDeals.length > 0) {
             const bb = buybackDeals[0];
-            const bbLeg2EffectiveFace = parseFloat(
-              bb.leg2_adjusted_face_value !== null && bb.leg2_adjusted_face_value !== undefined
-                ? bb.leg2_adjusted_face_value
-                : bb.leg2_face_value
-            );
-            if (bb.leg2_transaction_type === 'Buy' && bb.leg2_isin && bbLeg2EffectiveFace > 0) {
-              const [gsecRows] = hasBuybackDealId
-                ? await db.query(
-                    `SELECT id, deal_number FROM gsec
-                     WHERE transaction_type = 'Buy'
-                       AND buyback_deal_id = ?
-                       AND status = 'final_approved'
-                     ORDER BY created_at DESC
-                     LIMIT 1`,
-                    [buybackIdNum]
-                  )
-                : await db.query(
-                    `SELECT id, deal_number FROM gsec
-                     WHERE transaction_type = 'Buy'
-                       AND isin_number = ?
-                       AND face_value = ?
-                       AND value_date = ?
-                       AND portfolio = ?
-                       AND status = 'final_approved'
-                     ORDER BY created_at DESC
-                     LIMIT 1`,
-                    [bb.leg2_isin, bbLeg2EffectiveFace, bb.leg2_value_date, bb.leg2_portfolio]
-                  );
-              if (gsecRows && gsecRows.length > 0) {
-                const gsecId = gsecRows[0].id;
-                const gsecDealNumber = gsecRows[0].deal_number;
+            if (hasBuybackDealId) {
+              const [linked] = await db.query(
+                `SELECT id, deal_number, transaction_type FROM gsec
+                 WHERE buyback_deal_id = ?
+                   AND status = 'final_approved'`,
+                [buybackIdNum]
+              );
+              for (const row of linked || []) {
                 await db.query(
                   "UPDATE gsec SET status = 'cancelled', per_day_accrual = 0 WHERE id = ?",
-                  [gsecId]
+                  [row.id]
                 );
                 console.log(
-                  `Cancelled auto-created GSec deal ${gsecDealNumber} (id=${gsecId}) for rejected buyback ${bb.deal_number}`
+                  `Cancelled auto-created GSEC ${row.transaction_type} ${row.deal_number} (id=${row.id}) for rejected buyback ${bb.deal_number}`
+                );
+              }
+            } else if (bb.leg2_transaction_type === 'Buy' && bb.leg2_isin) {
+              const bbLeg2EffectiveFace = parseFloat(
+                bb.leg2_adjusted_face_value !== null && bb.leg2_adjusted_face_value !== undefined
+                  ? bb.leg2_adjusted_face_value
+                  : bb.leg2_face_value
+              );
+              const [gsecRows] = await db.query(
+                `SELECT id, deal_number FROM gsec
+                 WHERE transaction_type = 'Buy'
+                   AND isin_number = ?
+                   AND face_value = ?
+                   AND value_date = ?
+                   AND portfolio = ?
+                   AND status = 'final_approved'
+                 ORDER BY created_at DESC
+                 LIMIT 1`,
+                [bb.leg2_isin, bbLeg2EffectiveFace, bb.leg2_value_date, bb.leg2_portfolio]
+              );
+              if (gsecRows && gsecRows.length > 0) {
+                await db.query(
+                  "UPDATE gsec SET status = 'cancelled', per_day_accrual = 0 WHERE id = ?",
+                  [gsecRows[0].id]
                 );
               }
             }
@@ -1000,6 +988,26 @@ const buybackDealController = {
                 );
               }
 
+              // Letter-printable GSEC Sell (mirror of leg2 Buy). Inventory deduction
+              // and BB-L1 ledger still run below — this row must not double-count.
+              try {
+                await createBuybackLeg1SellGsec({
+                  buybackDeal,
+                  buybackIdNum,
+                  hasBuybackDealId,
+                  allocations,
+                  connection,
+                  userId
+                });
+              } catch (sellGsecErr) {
+                console.error(
+                  `Failed to create GSEC Sell for buyback ${buybackDeal.deal_number}:`,
+                  sellGsecErr
+                );
+                // Do not abort approval side effects — holdings deduction + ledger
+                // must still run; letter row can be backfilled later.
+              }
+
               if (allocations && Array.isArray(allocations) && allocations.length > 0) {
                 // --- New path: deduct exact allocated amount from each individual buy deal ---
                 console.log(`Using stored allocations for deduction (${allocations.length} deal(s)):`, allocations);
@@ -1168,13 +1176,26 @@ const buybackDealController = {
               }
             }
 
-            // --- Buy/Sell buyback (leg1 = Buy, leg2 = Sell): ledger-only entries ---
-            // Complements the Sell/Buy logic above. Mutually exclusive per leg, so a
-            // standard Sell/Buy buyback never reaches this branch.
+            // --- Buy/Sell buyback (leg1 = Buy, leg2 = Sell): ledger + letter GSEC rows ---
+            // Complements the Sell/Buy logic above. Mutually exclusive per product.
             if (
-              buybackDeal.leg1_transaction_type === 'Buy' ||
+              buybackDeal.leg1_transaction_type === 'Buy' &&
               buybackDeal.leg2_transaction_type === 'Sell'
             ) {
+              try {
+                await createBuybackBuySellLetterGsecs({
+                  buybackDeal,
+                  buybackIdNum,
+                  hasBuybackDealId,
+                  connection,
+                  userId
+                });
+              } catch (letterErr) {
+                console.error(
+                  `Failed to create Buy/Sell letter GSECs for ${buybackDeal.deal_number}:`,
+                  letterErr
+                );
+              }
               try {
                 const buySell = await postBuySellBuybackLedger(buybackDeal);
                 buySell.actions.forEach((a) => {
@@ -1547,36 +1568,29 @@ const buybackDealController = {
         }
       }
 
-      // Remove/cancel auto-created leg2 GSec created for this buyback so it won't remain orphaned.
-      if (buyback.leg2_transaction_type === 'Buy') {
+      // Remove auto-created / letter GSec rows linked to this buyback
+      if (hasBuybackDealId) {
+        await db.query(`DELETE FROM gsec WHERE buyback_deal_id = ?`, [buybackIdNum]);
+      } else if (buyback.leg2_transaction_type === 'Buy') {
         const leg2EffectiveFace = parseFloat(
           buyback.leg2_adjusted_face_value !== null && buyback.leg2_adjusted_face_value !== undefined
             ? buyback.leg2_adjusted_face_value
             : buyback.leg2_face_value
         ) || 0;
-        if (hasBuybackDealId) {
-          await db.query(
-            `DELETE FROM gsec
-             WHERE transaction_type = 'Buy'
-               AND buyback_deal_id = ?`,
-            [buybackIdNum]
-          );
-        } else {
-          await db.query(
-            `DELETE FROM gsec
-             WHERE transaction_type = 'Buy'
-               AND isin_number = ?
-               AND face_value = ?
-               AND value_date = ?
-               AND portfolio = ?`,
-            [
-              buyback.leg2_isin,
-              leg2EffectiveFace,
-              buyback.leg2_value_date,
-              buyback.leg2_portfolio
-            ]
-          );
-        }
+        await db.query(
+          `DELETE FROM gsec
+           WHERE transaction_type = 'Buy'
+             AND isin_number = ?
+             AND face_value = ?
+             AND value_date = ?
+             AND portfolio = ?`,
+          [
+            buyback.leg2_isin,
+            leg2EffectiveFace,
+            buyback.leg2_value_date,
+            buyback.leg2_portfolio
+          ]
+        );
       }
 
       const result = await BuybackDeal.delete(id);

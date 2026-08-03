@@ -24,6 +24,20 @@ const buildBuybackDealSelectSql = async (whereClause = '', whereParams = []) => 
   const hasVerifiedBy = cols.has('verified_by');
   const hasApprovedBy = cols.has('approved_by');
 
+  let hasGsecBuybackDealId = false;
+  try {
+    const [gsecCols] = await db.query(
+      `SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE()
+         AND TABLE_NAME = 'gsec'
+         AND COLUMN_NAME = 'buyback_deal_id'
+       LIMIT 1`
+    );
+    hasGsecBuybackDealId = Array.isArray(gsecCols) && gsecCols.length > 0;
+  } catch (_) {
+    /* leave false */
+  }
+
   const selectParts = [
     'bd.*',
     'creator.username as created_by_name',
@@ -32,7 +46,22 @@ const buildBuybackDealSelectSql = async (whereClause = '', whereParams = []) => 
     // Resolved counterparty display names for both legs - blotters show Seller/Buyer
     // from the Sell/Buy legs rather than a single (often Sherwood) Counterparty.
     `COALESCE(corp1.short_name, ind1.short_name, joint1.short_name, bd.leg1_counterparty, '') AS leg1_counterparty_name`,
-    `COALESCE(corp2.short_name, ind2.short_name, joint2.short_name, bd.leg2_counterparty, '') AS leg2_counterparty_name`
+    `COALESCE(corp2.short_name, ind2.short_name, joint2.short_name, bd.leg2_counterparty, '') AS leg2_counterparty_name`,
+    // Letter GSEC ids for Buy/Sell blotter Leg 1 / Leg 2 Letter buttons
+    hasGsecBuybackDealId
+      ? `(SELECT g.id FROM gsec g
+          WHERE g.buyback_deal_id = bd.id
+            AND g.transaction_type = 'Buy'
+            AND COALESCE(g.status, '') NOT IN ('cancelled', 'rejected')
+          ORDER BY g.id ASC LIMIT 1) AS leg1_letter_gsec_id`
+      : 'NULL AS leg1_letter_gsec_id',
+    hasGsecBuybackDealId
+      ? `(SELECT g.id FROM gsec g
+          WHERE g.buyback_deal_id = bd.id
+            AND g.transaction_type = 'Sell'
+            AND COALESCE(g.status, '') NOT IN ('cancelled', 'rejected')
+          ORDER BY g.id ASC LIMIT 1) AS leg2_letter_gsec_id`
+      : 'NULL AS leg2_letter_gsec_id'
   ];
 
   const joinParts = [

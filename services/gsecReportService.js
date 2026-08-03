@@ -109,7 +109,16 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       LEFT JOIN counterparty_master_individual ind ON (g.counterparty_id LIKE 'i%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = ind.id) OR (g.counterparty_id = ind.id)
       LEFT JOIN counterparty_master_joint joint ON (g.counterparty_id LIKE 'j%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = joint.id) OR (g.counterparty_id = joint.id)
       WHERE g.transaction_type = 'Buy'
-        AND COALESCE(g.status, '') <> 'cancelled'`;
+        AND COALESCE(g.status, '') <> 'cancelled'
+        AND NOT (
+          g.buyback_deal_id IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM buyback_deals bd_letter
+            WHERE bd_letter.id = g.buyback_deal_id
+              AND bd_letter.leg1_transaction_type = 'Buy'
+              AND bd_letter.leg2_transaction_type = 'Sell'
+          )
+        )`;
     const params = [];
     
     // Add GSEC filters
@@ -731,7 +740,7 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
   let totalPortfolioBalance = null;
   if (portfolio) {
     // Calculate total balance using remaining face value (stored on row, or sell/buyback-derived)
-    const balanceSql = `SELECT g.deal_number, g.face_value, g.remaining_face_value, g.isin_number AS isin FROM gsec g WHERE g.transaction_type = 'Buy' AND COALESCE(g.status, '') <> 'cancelled' AND COALESCE(g.matured, 0) = 0` +
+    const balanceSql = `SELECT g.deal_number, g.face_value, g.remaining_face_value, g.isin_number AS isin FROM gsec g WHERE g.transaction_type = 'Buy' AND COALESCE(g.status, '') <> 'cancelled' AND COALESCE(g.matured, 0) = 0 AND NOT (g.buyback_deal_id IS NOT NULL AND EXISTS (SELECT 1 FROM buyback_deals bd_letter WHERE bd_letter.id = g.buyback_deal_id AND bd_letter.leg1_transaction_type = 'Buy' AND bd_letter.leg2_transaction_type = 'Sell'))` +
       (portfolio ? ' AND g.portfolio = ?' : '') +
       (isin ? ' AND g.isin_number = ?' : '') +
       (valueDate ? ' AND g.value_date = ?' : '') +
