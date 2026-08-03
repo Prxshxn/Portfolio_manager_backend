@@ -315,44 +315,52 @@ function renderLetterHtml(ctx) {
 <meta charset="UTF-8" />
 <title>GSEC Letter - ${escapeHtml(deal.deal_number)}</title>
 <style>
-  @page { size: A4; margin: 25mm 20mm 32mm 40mm; }
+  @page { size: A4; margin: 18mm 16mm 28mm 12mm; }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #fff;
+    color: #000;
+  }
   body {
     font-family: 'Times New Roman', Times, serif;
     font-size: 13px;
-    color: #000;
     line-height: 1.55;
-    margin: 0;
-    padding: 24px 24px 24px 0;
-    background: #fff;
   }
-  .letter { max-width: 720px; margin: 0 auto; }
 
-  /* Sherwood Capital letterhead: vertical company name down the left margin,
-     plus a fixed footer with address/contact details and the Ambeon branding. */
+  /* Flow layout (not position:fixed) so Chrome print cannot collapse the
+     vertical letterhead onto the letter body. Left gutter owns the brand;
+     main column owns the letter. */
+  .sheet {
+    display: flex;
+    align-items: stretch;
+    gap: 6mm;
+    min-height: 240mm;
+    padding: 8mm 4mm 36mm 0;
+  }
   .letterhead-sidebar {
-    position: fixed;
-    left: 6mm;
-    top: 20mm;
-    width: 12mm;
-    writing-mode: vertical-rl;
-    transform: rotate(180deg);
-    color: #1c3f7c;
-    font-family: Arial, Helvetica, sans-serif;
-    font-weight: bold;
-    font-size: 13px;
-    letter-spacing: 1.5px;
-    white-space: nowrap;
+    flex: 0 0 22mm;
+    width: 22mm;
+    max-width: 22mm;
+    position: relative;
+    overflow: visible;
   }
-  .letterhead-sidebar .reg-no {
-    font-weight: normal;
-    font-size: 7px;
-    letter-spacing: 0.5px;
-    margin-left: 4px;
+  .letterhead-sidebar svg {
+    display: block;
+    width: 22mm;
+    height: 200mm;
   }
+  .letter {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: 170mm;
+  }
+
   .letterhead-footer {
     position: fixed;
-    left: 20mm;
-    right: 20mm;
+    left: 28mm;
+    right: 16mm;
     bottom: 14mm;
     font-family: Arial, Helvetica, sans-serif;
     font-size: 9px;
@@ -360,8 +368,6 @@ function renderLetterHtml(ctx) {
     line-height: 1.5;
     text-align: left;
   }
-  /* Pinned independently to the true page bottom, centered across the full
-     page width, so its position never depends on the address block's height. */
   .letterhead-ambeon {
     position: fixed;
     left: 0;
@@ -378,9 +384,7 @@ function renderLetterHtml(ctx) {
     color: #1c3f7c;
     font-weight: bold;
   }
-  @media print {
-    .letterhead-sidebar, .letterhead-footer, .letterhead-ambeon { display: block; }
-  }
+
   .header-right { text-align: left; }
   .header-right .date,
   .header-right .ref {
@@ -422,11 +426,12 @@ function renderLetterHtml(ctx) {
     position: sticky;
     top: 0;
     background: #fff;
-    padding: 8px 0 12px;
+    padding: 8px 12px 12px;
     border-bottom: 1px solid #eee;
     margin-bottom: 12px;
     display: flex;
     gap: 8px;
+    z-index: 2;
   }
   .actions button {
     padding: 6px 14px;
@@ -442,8 +447,12 @@ function renderLetterHtml(ctx) {
     border-color: #1a73e8;
   }
   @media print {
-    .actions { display: none; }
-    body { padding: 0; }
+    .actions { display: none !important; }
+    .sheet { padding-top: 0; padding-bottom: 32mm; }
+    .letterhead-sidebar, .letterhead-footer, .letterhead-ambeon {
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
   }
 </style>
 </head>
@@ -453,20 +462,21 @@ function renderLetterHtml(ctx) {
     <button onclick="window.close()">Close</button>
   </div>
 
-  <div class="letterhead-sidebar">
-    SHERWOOD CAPITAL (PRIVATE) LIMITED<span class="reg-no">Reg No. PV00241251</span>
-  </div>
+  <div class="sheet">
+    <!-- SVG vertical text: Chrome print collapses CSS writing-mode+transform
+         letterheads onto the body; SVG rotate stays in the left gutter. -->
+    <aside class="letterhead-sidebar" aria-hidden="true">
+      <svg viewBox="0 0 44 760" width="44" height="760" xmlns="http://www.w3.org/2000/svg">
+        <g transform="translate(28,740) rotate(-90)">
+          <text y="0" fill="#1c3f7c" font-family="Arial, Helvetica, sans-serif" letter-spacing="1.2">
+            <tspan font-size="22" font-weight="700">SHERWOOD CAPITAL (PRIVATE) LIMITED</tspan>
+            <tspan font-size="11" font-weight="400" dx="14">Reg No. PV00241251</tspan>
+          </text>
+        </g>
+      </svg>
+    </aside>
 
-  <div class="letterhead-footer">
-    <div>No; 100/1, 2<sup>nd</sup> floor, Elvitigala Mawatha, Colombo 08. Sri Lanka</div>
-    <div>T : 0115328133 | F : 0112680225</div>
-    <div>E: treasury@sherwood.lk</div>
-    <div>W: www.ambeongroup.com</div>
-  </div>
-
-  <div class="letterhead-ambeon"><span class="dot">&#9679;</span> AN <span class="brand">AMBEON</span> COMPANY</div>
-
-  <div class="letter">
+    <div class="letter">
     <div class="header-right">
       <div class="date">${escapeHtml(letterDateLong)}</div>
       <div class="ref">${escapeHtml(referenceNumber)}</div>
@@ -510,7 +520,17 @@ function renderLetterHtml(ctx) {
       <div class="slot">Authorized Signatory</div>
       <div class="slot">Authorized Signatory</div>
     </div>
+    </div>
   </div>
+
+  <div class="letterhead-footer">
+    <div>No; 100/1, 2<sup>nd</sup> floor, Elvitigala Mawatha, Colombo 08. Sri Lanka</div>
+    <div>T : 0115328133 | F : 0112680225</div>
+    <div>E: treasury@sherwood.lk</div>
+    <div>W: www.ambeongroup.com</div>
+  </div>
+
+  <div class="letterhead-ambeon"><span class="dot">&#9679;</span> AN <span class="brand">AMBEON</span> COMPANY</div>
 </body>
 </html>`;
 }
