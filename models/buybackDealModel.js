@@ -29,11 +29,10 @@ const buildBuybackDealSelectSql = async (whereClause = '', whereParams = []) => 
     'creator.username as created_by_name',
     hasVerifiedBy ? 'verifier.username as verified_by_name' : 'NULL as verified_by_name',
     hasApprovedBy ? 'approver.username as approved_by_name' : 'NULL as approved_by_name',
-    // Resolved leg1 counterparty display name - same prefix-based join pattern
-    // used by buybackReportService.js, so every blotter/list using this shared
-    // SELECT (getById/getByStatus/getAll) gets a real name instead of a raw
-    // 'c123'/'i45'/'j7' counterparty id.
-    `COALESCE(corp1.short_name, ind1.short_name, joint1.short_name, bd.leg1_counterparty, '') AS leg1_counterparty_name`
+    // Resolved counterparty display names for both legs - blotters show Seller/Buyer
+    // from the Sell/Buy legs rather than a single (often Sherwood) Counterparty.
+    `COALESCE(corp1.short_name, ind1.short_name, joint1.short_name, bd.leg1_counterparty, '') AS leg1_counterparty_name`,
+    `COALESCE(corp2.short_name, ind2.short_name, joint2.short_name, bd.leg2_counterparty, '') AS leg2_counterparty_name`
   ];
 
   const joinParts = [
@@ -48,7 +47,16 @@ const buildBuybackDealSelectSql = async (whereClause = '', whereParams = []) => 
        OR (bd.leg1_counterparty = ind1.id)`,
     `LEFT JOIN counterparty_master_joint joint1
        ON (bd.leg1_counterparty LIKE 'j%' AND CAST(SUBSTRING(bd.leg1_counterparty, 2) AS UNSIGNED) = joint1.id)
-       OR (bd.leg1_counterparty = joint1.id)`
+       OR (bd.leg1_counterparty = joint1.id)`,
+    `LEFT JOIN counterparty_master_corporate corp2
+       ON (bd.leg2_counterparty LIKE 'c%' AND CAST(SUBSTRING(bd.leg2_counterparty, 2) AS UNSIGNED) = corp2.id)
+       OR (bd.leg2_counterparty = corp2.id)`,
+    `LEFT JOIN counterparty_master_individual ind2
+       ON (bd.leg2_counterparty LIKE 'i%' AND CAST(SUBSTRING(bd.leg2_counterparty, 2) AS UNSIGNED) = ind2.id)
+       OR (bd.leg2_counterparty = ind2.id)`,
+    `LEFT JOIN counterparty_master_joint joint2
+       ON (bd.leg2_counterparty LIKE 'j%' AND CAST(SUBSTRING(bd.leg2_counterparty, 2) AS UNSIGNED) = joint2.id)
+       OR (bd.leg2_counterparty = joint2.id)`
   ].filter(Boolean);
 
   const sql = `SELECT
