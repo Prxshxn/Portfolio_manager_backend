@@ -378,7 +378,16 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
            AND g.value_date IS NOT NULL
            AND DATE(g.value_date) <= DATE(?)
            AND (g.coupon_interest IS NOT NULL AND g.coupon_interest > 0
-                OR im.coupon_rate IS NOT NULL AND im.coupon_rate > 0)`,
+                OR im.coupon_rate IS NOT NULL AND im.coupon_rate > 0)
+           AND NOT (
+             g.buyback_deal_id IS NOT NULL
+             AND EXISTS (
+               SELECT 1 FROM buyback_deals bd_letter
+               WHERE bd_letter.id = g.buyback_deal_id
+                 AND bd_letter.leg1_transaction_type = 'Buy'
+                 AND bd_letter.leg2_transaction_type = 'Sell'
+             )
+           )`,
         [systemDay, systemDay, systemDay]
       ),
       db.query(
@@ -400,7 +409,16 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
            AND DATE(g.maturity_date) > DATE(?)
            AND g.value_date IS NOT NULL
            AND DATE(g.value_date) <= DATE(?)
-           AND COALESCE(g.remaining_face_value, g.face_value, 0) > 0`,
+           AND COALESCE(g.remaining_face_value, g.face_value, 0) > 0
+           AND NOT (
+             g.buyback_deal_id IS NOT NULL
+             AND EXISTS (
+               SELECT 1 FROM buyback_deals bd_letter
+               WHERE bd_letter.id = g.buyback_deal_id
+                 AND bd_letter.leg1_transaction_type = 'Buy'
+                 AND bd_letter.leg2_transaction_type = 'Sell'
+             )
+           )`,
         [systemDay, systemDay, systemDay]
       ),
       db.query(
@@ -843,6 +861,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
          WHERE g.transaction_type = 'Buy'
            AND g.status = 'final_approved'
            AND g.buyback_deal_id IS NOT NULL
+           AND bd.leg2_transaction_type = 'Buy'
            AND g.value_date IS NOT NULL
            AND DATE(g.value_date) <= DATE(?)
            AND NOT EXISTS (

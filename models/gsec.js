@@ -231,22 +231,84 @@ const Gsec = {
         // created_at has DEFAULT CURRENT_TIMESTAMP, so we don't need to include it
       ];
       try {
-        // Backend-side validation: prevent overselling from a Buy deal
-        if (data.transactionType === 'Sell' && data.buyDealNumber) {
-          // Find the referenced Buy deal
-          const [buyRows] = await db.query('SELECT * FROM gsec WHERE deal_number = ? AND transaction_type = "Buy"', [data.buyDealNumber]);
-          if (!buyRows.length) {
-            throw { status: 400, message: 'Referenced Buy deal not found for Sell transaction.' };
-          }
-          const buyDeal = buyRows[0];
-          // Sum all previous sells for this buy_deal_number
-          const [sellAgg] = await db.query('SELECT SUM(face_value) AS total_sold FROM gsec WHERE transaction_type = "Sell" AND buy_deal_number = ?', [data.buyDealNumber]);
-          const totalSold = parseFloat(sellAgg[0].total_sold || 0);
-          const originalFace = parseFloat(buyDeal.face_value || 0);
-          const remaining = Math.max(0, originalFace - totalSold);
-          const sellAmount = parseFloat(data.faceValue || 0);
-          if (sellAmount > remaining) {
-            throw { status: 400, message: `Sell amount (${sellAmount}) exceeds remaining face value (${remaining}) for Buy deal ${data.buyDealNumber}.` };
+        // Backend-side validation: prevent overselling from a Buy deal.
+        // Multi-lot sells validate each allocation against its own buy deal
+        // (summing the whole sell face against buy_deal_number alone would
+        // wrongly reject valid multi-lot sells). Includes buyback-linked Sells
+        // so Sell/Buy inventory reductions still constrain subsequent sells.
+        if (data.transactionType === 'Sell') {
+          const allocList = Array.isArray(data.sellDealAllocations)
+            ? data.sellDealAllocations
+            : null;
+          const checks =
+            allocList && allocList.length > 0
+              ? allocList
+                  .map((a) => ({
+                    buyDealNumber: a.deal_number || a.buy_deal_number,
+                    sellAmount: parseFloat(a.amountToSell || a.faceValue || 0)
+                  }))
+                  .filter((c) => c.buyDealNumber && c.sellAmount > 0)
+              : data.buyDealNumber
+                ? [{ buyDealNumber: data.buyDealNumber, sellAmount: parseFloat(data.faceValue || 0) }]
+                : [];
+
+          for (const { buyDealNumber, sellAmount } of checks) {
+            const [buyRows] = await db.query(
+              'SELECT * FROM gsec WHERE deal_number = ? AND transaction_type = "Buy"',
+              [buyDealNumber]
+            );
+            if (!buyRows.length) {
+              throw {
+                status: 400,
+                message: `Referenced Buy deal not found for Sell transaction (${buyDealNumber}).`
+              };
+            }
+            const buyDeal = buyRows[0];
+            const buyKey = String(buyDealNumber).trim();
+            const [priorSells] = await db.query(
+              `SELECT face_value, buy_deal_number, sell_deal_allocations
+               FROM gsec
+               WHERE transaction_type = 'Sell'
+                 AND COALESCE(status, '') NOT IN ('rejected', 'cancelled')
+                 AND (
+                   TRIM(buy_deal_number) = ?
+                   OR sell_deal_allocations IS NOT NULL
+                 )`,
+              [buyKey]
+            );
+            let totalSold = 0;
+            for (const row of priorSells || []) {
+              let parsed = null;
+              if (row.sell_deal_allocations) {
+                try {
+                  parsed =
+                    typeof row.sell_deal_allocations === 'string'
+                      ? JSON.parse(row.sell_deal_allocations)
+                      : row.sell_deal_allocations;
+                  if (!Array.isArray(parsed) || !parsed.length) parsed = null;
+                } catch {
+                  parsed = null;
+                }
+              }
+              if (parsed) {
+                for (const a of parsed) {
+                  const dn = String(a.deal_number || a.buy_deal_number || '').trim();
+                  if (dn === buyKey) {
+                    totalSold += Number(a.amountToSell || a.faceValue) || 0;
+                  }
+                }
+              } else if (String(row.buy_deal_number || '').trim() === buyKey) {
+                totalSold += Number(row.face_value) || 0;
+              }
+            }
+            const originalFace = parseFloat(buyDeal.face_value || 0);
+            const remaining = Math.max(0, originalFace - totalSold);
+            if (sellAmount > remaining) {
+              throw {
+                status: 400,
+                message: `Sell amount (${sellAmount}) exceeds remaining face value (${remaining}) for Buy deal ${buyDealNumber}.`
+              };
+            }
           }
         }
         // Skip limit checking for now to improve performance
@@ -256,8 +318,8 @@ const Gsec = {
         if (connection) {
           const [result] = await connection.query(sql, values);
           
-          // Capture coupon cashflow for Buy transactions
-          if (data.transactionType === 'Buy') {
+          // Capture coupon cashflow for Buy transactions (skip letter-only rows)
+          if (data.transactionType === 'Buy' && !data.skipCashflowCapture) {
             try {
               await Gsec.captureCouponCashflow(
                 result.insertId,
@@ -277,28 +339,30 @@ const Gsec = {
           const [result] = await db.query(sql, values);
           
           // Capture cashflow for the new GSEC transaction
-          try {
-            await CashflowCaptureService.captureGsecCashflow(
-              result.insertId,
-              data.transactionType,
-              data.settlementAmount,
-              data.valueDate,
-              data.counterparty
-            );
-            
-            // Capture coupon cashflow for Buy transactions
-            if (data.transactionType === 'Buy') {
-              await Gsec.captureCouponCashflow(
+          if (!data.skipCashflowCapture) {
+            try {
+              await CashflowCaptureService.captureGsecCashflow(
                 result.insertId,
-                data.isin,
-                data.faceValue,
-                data.maturityDate,
+                data.transactionType,
+                data.settlementAmount,
+                data.valueDate,
                 data.counterparty
               );
+              
+              // Capture coupon cashflow for Buy transactions
+              if (data.transactionType === 'Buy') {
+                await Gsec.captureCouponCashflow(
+                  result.insertId,
+                  data.isin,
+                  data.faceValue,
+                  data.maturityDate,
+                  data.counterparty
+                );
+              }
+            } catch (cashflowError) {
+              console.error('Error capturing cashflow for GSEC transaction:', cashflowError);
+              // Don't fail the main process if cashflow capture fails
             }
-          } catch (cashflowError) {
-            console.error('Error capturing cashflow for GSEC transaction:', cashflowError);
-            // Don't fail the main process if cashflow capture fails
           }
           
           return result;
