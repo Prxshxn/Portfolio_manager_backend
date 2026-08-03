@@ -50,6 +50,7 @@ const EXPORT_COLUMNS = [
 // ISIN-wise summary columns (GSec summary section)
 const GSEC_SUMMARY_COLUMNS = [
   { key: 'isin', label: 'ISIN' },
+  { key: 'maturity_date', label: 'Maturity Date' },
   { key: 'total_face_value', label: 'Total Face Value' },
   { key: 'weighted_avg_price', label: 'Weighted Average Price' },
   { key: 'weighted_yield', label: 'Weighted Yield' },
@@ -736,11 +737,12 @@ exports.exportGsecSummary = async (format, summary) => {
     doc.moveDown(1);
 
     const columns = [
-      { key: 'isin', label: 'ISIN', width: 150, align: 'left' },
-      { key: 'total_face_value', label: 'Total Face Value', width: 150, align: 'right' },
-      { key: 'weighted_avg_price', label: 'Weighted Average Price', width: 160, align: 'right' },
-      { key: 'weighted_yield', label: 'Weighted Yield', width: 130, align: 'right' },
-      { key: 'deal_count', label: 'Deals', width: 70, align: 'right' }
+      { key: 'isin', label: 'ISIN', width: 130, align: 'left' },
+      { key: 'maturity_date', label: 'Maturity Date', width: 110, align: 'center' },
+      { key: 'total_face_value', label: 'Total Face Value', width: 130, align: 'right' },
+      { key: 'weighted_avg_price', label: 'Weighted Average Price', width: 140, align: 'right' },
+      { key: 'weighted_yield', label: 'Weighted Yield', width: 110, align: 'right' },
+      { key: 'deal_count', label: 'Deals', width: 60, align: 'right' }
     ];
 
     const rowHeight = 24;
