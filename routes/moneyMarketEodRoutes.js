@@ -1006,7 +1006,8 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
          FROM repo_deals rd
          WHERE rd.approval_status = 'final_approved'
            AND NOT EXISTS (
-             SELECT 1 FROM ledger_entries le WHERE le.deal_number = rd.deal_number
+             SELECT 1 FROM ledger_entries le
+             WHERE le.deal_number COLLATE utf8mb4_unicode_ci = rd.deal_number COLLATE utf8mb4_unicode_ci
            )`
       );
       console.log('Repo deals to backfill:', repoBackfillDeals.length);

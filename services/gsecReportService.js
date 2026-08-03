@@ -698,19 +698,29 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     const clean = Number(row.clean_price) || 0;
     const yld = Number(row.yield) || 0;
     if (!summaryByIsin[key]) {
-      summaryByIsin[key] = { isin: key, totalFace: 0, sumClean: 0, sumYield: 0, dealCount: 0 };
+      summaryByIsin[key] = {
+        isin: key,
+        totalFace: 0,
+        sumClean: 0,
+        sumYield: 0,
+        dealCount: 0,
+        // Bond maturity is ISIN-level; take the first deal's maturity_date.
+        maturity_date: clampToYmd(row.maturity_date)
+      };
     }
     const s = summaryByIsin[key];
     s.totalFace += face;
     s.sumClean += clean;
     s.sumYield += yld;
     s.dealCount += 1;
+    if (!s.maturity_date) s.maturity_date = clampToYmd(row.maturity_date);
   });
 
   const summary = Object.values(summaryByIsin)
     .sort((a, b) => String(a.isin).localeCompare(String(b.isin)))
     .map(s => ({
       isin: s.isin,
+      maturity_date: s.maturity_date || '',
       deal_count: s.dealCount,
       total_face_value: formatCurrency(s.totalFace, 2),
       weighted_avg_price: formatPrice(s.dealCount ? s.sumClean / s.dealCount : 0, 4),
