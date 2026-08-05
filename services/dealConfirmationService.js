@@ -173,6 +173,26 @@ async function fetchCounterpartyDetails(counterpartyId) {
   return null;
 }
 
+/** Resolve brokers.broker_name from gsec.broker / buyback leg1_broker (code or id). */
+async function resolveBrokerName(brokerRef) {
+  if (brokerRef === null || brokerRef === undefined || brokerRef === '') return null;
+  const key = String(brokerRef).trim();
+  if (!key) return null;
+  try {
+    const [rows] = await db.query(
+      `SELECT broker_name FROM brokers
+       WHERE broker_code = ? OR CAST(id AS CHAR) = ?
+       LIMIT 1`,
+      [key, key]
+    );
+    const name = rows[0]?.broker_name;
+    return name != null && String(name).trim() ? String(name).trim() : null;
+  } catch (err) {
+    console.warn('[Deal Confirmation] Broker lookup failed:', err.message);
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // GSEC Buy/Sell + Buyback leg confirmation content (matches the client's
 // "SellBuy.../TBond..." sample PDFs: Buyer/Seller blocks, Deal Details,
@@ -180,12 +200,15 @@ async function fetchCounterpartyDetails(counterpartyId) {
 // ---------------------------------------------------------------------------
 async function buildGsecLegContent({ refNumber, isBuy, isinNumber, counterpartyId, faceValue,
   couponRate, yieldRate, cleanPrice, accruedInterest, pricePer100, settlementValue,
-  dealDate, valueDate, maturityDate, basis = 'Act/Act', rate, settlementInstruction }) {
+  dealDate, valueDate, maturityDate, basis = 'Act/Act', rate, settlementInstruction,
+  brokerName }) {
   const counterparty = await fetchCounterpartyDetails(counterpartyId);
   const counterpartyBlock = counterparty || { name: `ID:${counterpartyId}`, addressLines: [], telephone: '', contactPerson: '' };
 
   const buyer = isBuy ? COMPANY : counterpartyBlock;
   const seller = isBuy ? counterpartyBlock : COMPANY;
+
+  const brokerLabel = brokerName != null ? String(brokerName).trim() : '';
 
   return {
     refNumber,
@@ -206,7 +229,8 @@ async function buildGsecLegContent({ refNumber, isBuy, isinNumber, counterpartyI
       ['Value Date', formatShortDate(valueDate)],
       ['Maturity Date', formatShortDate(maturityDate)],
       ['Basis', basis],
-      ...(rate != null ? [['Rate', `${Number(rate).toFixed(2)}%`]] : [])
+      ...(rate != null ? [['Rate', `${Number(rate).toFixed(2)}%`]] : []),
+      ...(brokerLabel ? [['Broker', brokerLabel]] : [])
     ],
     settlementInstruction: settlementInstruction || ''
   };
@@ -914,6 +938,7 @@ function buildRepoDocx(content) {
 module.exports = {
   COMPANY,
   fetchCounterpartyDetails,
+  resolveBrokerName,
   buildGsecLegContent,
   buildRepoContent,
   renderGsecLegPdf,
