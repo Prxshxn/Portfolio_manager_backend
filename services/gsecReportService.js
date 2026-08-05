@@ -174,6 +174,8 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
   // Fallback: allocate "unlinked" sells (missing/invalid buy_deal_number) using FIFO per ISIN/portfolio.
   // This makes the report resilient when sell rows do not correctly reference a buy deal_number.
   // Primary linkage remains buy_deal_number; fallback is only for sells not linked to any buy in `rows`.
+  // Skip buyback-linked letter Sells (Buy/Sell blotter letters) — they have null buy_deal_number
+  // but must not reduce holdings (same rule as buildSoldByDealMap).
   if (rows.length) {
     const uniqueIsinsForAllocation = [...new Set(rows.map(r => r.isin).filter(Boolean))];
     if (uniqueIsinsForAllocation.length) {
@@ -182,6 +184,7 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
         SELECT id, portfolio, isin_number AS isin, face_value, TRIM(buy_deal_number) AS buy_deal_number, value_date
         FROM gsec
         WHERE transaction_type = 'Sell' AND isin_number IN (${ph})
+          AND buyback_deal_id IS NULL
       `;
       const sellAllocParams = [...uniqueIsinsForAllocation];
       if (portfolio) {
@@ -442,9 +445,10 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       isinWapMap[r.isin_number] = { sumFV: Number(r.total_fv) || 0, sumFVCP: Number(r.sum_fvcp) || 0 };
     });
 
-    // Sell totals per ISIN
+    // Sell totals per ISIN (exclude buyback letter Sells — not real inventory)
     let sellSql = `SELECT isin_number, COALESCE(SUM(face_value), 0) AS sold
-      FROM gsec WHERE isin_number IN (${ph}) AND transaction_type = 'Sell'`;
+      FROM gsec WHERE isin_number IN (${ph}) AND transaction_type = 'Sell'
+        AND buyback_deal_id IS NULL`;
     const sellParams = [...uniqueIsins];
     if (portfolio) { sellSql += ' AND portfolio = ?'; sellParams.push(portfolio); }
     if (valueDate) { sellSql += ' AND value_date = ?'; sellParams.push(valueDate); }
@@ -765,6 +769,7 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
 
     // Same fallback as main table: allocate unlinked sells FIFO per ISIN/portfolio
     // so total balance matches deal-level rows even when sell rows are not linked correctly.
+    // Skip buyback letter Sells (null buy_deal_number but not real inventory).
     if (balanceRows.length) {
       const [isinRows] = await db.query(
         `SELECT DISTINCT isin_number FROM gsec WHERE transaction_type = 'Buy' AND COALESCE(status, '') <> 'cancelled'` +
@@ -782,6 +787,7 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
           SELECT id, portfolio, isin_number AS isin, face_value, TRIM(buy_deal_number) AS buy_deal_number, value_date
           FROM gsec
           WHERE transaction_type = 'Sell' AND isin_number IN (${ph})
+            AND buyback_deal_id IS NULL
         `;
         const sellAllocParams = [...uniqueIsinsForAllocation];
         if (portfolio) { sellAllocSql += ' AND portfolio = ?'; sellAllocParams.push(portfolio); }
