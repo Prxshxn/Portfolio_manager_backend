@@ -24,6 +24,7 @@ async function getGsecConfirmationContent(id) {
   const isBuy = String(deal.transaction_type).toLowerCase() === 'buy';
   const couponRate = deal.coupon_rate ?? deal.isin_coupon_rate;
   const dirtyPrice = deal.dirty_price != null ? Number(deal.dirty_price) : null;
+  const brokerName = await dealConfirmationService.resolveBrokerName(deal.broker);
 
   return dealConfirmationService.buildGsecLegContent({
     refNumber: buildRefNumber(isBuy ? 'TBond' : 'SellBuy', deal.deal_number),
@@ -40,6 +41,7 @@ async function getGsecConfirmationContent(id) {
     dealDate: deal.trade_date,
     valueDate: deal.value_date,
     maturityDate: deal.maturity_date,
+    brokerName,
     settlementInstruction: isBuy
       ? `We will transfer Rs. ${Number(deal.settlement_amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} to your settlement account, value ${deal.value_date ? new Date(deal.value_date).toISOString().slice(0, 10) : ''}.`
       : `Please credit our settlement account for Rs. ${Number(deal.settlement_amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}, value ${deal.value_date ? new Date(deal.value_date).toISOString().slice(0, 10) : ''}.`
@@ -99,6 +101,7 @@ async function getBuybackConfirmationContents(id) {
 
   const refNumber = buildRefNumber('SellBuy', deal.deal_number);
   const externalCounterpartyId = await resolveExternalCounterpartyId(deal);
+  const brokerName = await dealConfirmationService.resolveBrokerName(deal.leg1_broker);
 
   const leg1 = await dealConfirmationService.buildGsecLegContent({
     refNumber,
@@ -116,6 +119,7 @@ async function getBuybackConfirmationContents(id) {
     valueDate: deal.leg1_value_date,
     maturityDate: maturityDateFor(deal.leg1_isin),
     rate: deal.leg1_interest_rate,
+    brokerName,
     settlementInstruction: `Please credit our Central Bank RTGS A/c for Rs. ${Number(deal.leg1_settlement_amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} on ${deal.leg1_value_date ? new Date(deal.leg1_value_date).toISOString().slice(0, 10) : ''}.`
   });
 
@@ -135,6 +139,7 @@ async function getBuybackConfirmationContents(id) {
     valueDate: deal.leg2_value_date,
     maturityDate: maturityDateFor(deal.leg2_isin),
     rate: deal.leg1_interest_rate,
+    brokerName,
     settlementInstruction: `We will send you a settlement instruction for Rs. ${Number(deal.leg2_settlement_amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}, value ${deal.leg2_value_date ? new Date(deal.leg2_value_date).toISOString().slice(0, 10) : ''}.`
   });
 
