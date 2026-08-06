@@ -460,94 +460,101 @@ function renderGsecLegPdf(doc, content) {
 }
 
 function renderRepoPdf(doc, content) {
-  // Slightly larger fonts than the GSEC letters so the (shorter) repo
-  // confirmation fills the A4 page.
+  // Match Word (buildRepoDocx): ~12pt body, equal content width, 39/61 deal
+  // columns, 50/50 securities, Total + double-underline under Face Value text,
+  // signatures in-flow (left | right) rather than pinned to the page bottom.
   const bodySize = 11;
   const headingSize = 11.5;
+  const leftX = doc.page.margins.left;
+  const contentWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  // Word dealDetailsTable: 3500 / 5500 DXA of 9000.
+  const dealLabelW = Math.round(contentWidth * (3500 / 9000));
+  const dealValueW = contentWidth - dealLabelW;
+  // Word securities / signature tables: 4500 / 4500 DXA.
+  const halfCol = contentWidth / 2;
 
   doc.fillColor('#000000');
-  doc.font('Helvetica-Bold').fontSize(headingSize).text(`Ref :- ${content.refNumber}`);
+  doc.font('Helvetica-Bold').fontSize(headingSize)
+    .text(`Ref :- ${content.refNumber}`, leftX, doc.y, { width: contentWidth, align: 'left' });
   doc.moveDown(0.3);
-  // Client: title must be black & bold (underlined).
   doc.font('Helvetica-Bold').fontSize(15).fillColor('#000000')
-    .text(content.title, { align: 'center', underline: true });
+    .text(content.title, leftX, doc.y, { align: 'center', underline: true, width: contentWidth });
   doc.moveDown(1);
 
-  const halfWidth = (doc.page.width - doc.page.margins.left - doc.page.margins.right) / 2;
   const startY = doc.y;
-
   const borrowerEndY = renderPartyColumn(doc, {
-    label: 'BORROWER', party: content.borrower, x: doc.page.margins.left, y: startY, width: halfWidth - 10,
+    label: 'BORROWER', party: content.borrower, x: leftX, y: startY, width: halfCol - 10,
     lineHeight: 15, labelSize: headingSize, bodySize
   });
   const lenderEndY = renderPartyColumn(doc, {
-    label: 'LENDER', party: content.lender, x: doc.page.margins.left + halfWidth, y: startY, width: halfWidth - 10,
+    label: 'LENDER', party: content.lender, x: leftX + halfCol, y: startY, width: halfCol - 10,
     lineHeight: 15, labelSize: headingSize, bodySize
   });
 
   doc.y = Math.max(borrowerEndY, lenderEndY) + 16;
-  doc.x = doc.page.margins.left;
+  doc.x = leftX;
 
-  doc.font('Helvetica-Bold').fontSize(headingSize).text('DEAL DETAILS', { underline: true });
+  doc.font('Helvetica-Bold').fontSize(headingSize)
+    .text('DEAL DETAILS', leftX, doc.y, { underline: true, width: contentWidth, align: 'left' });
   doc.moveDown(0.3);
   renderGridTable(doc, content.dealDetails, {
-    x: doc.page.margins.left, colWidths: [180, 280], boldFirstCol: true,
+    x: leftX, colWidths: [dealLabelW, dealValueW], boldFirstCol: true,
     fontSize: bodySize, rowHeight: 21
   });
 
-  doc.moveDown(1);
-  doc.font('Helvetica-Bold').fontSize(headingSize).text('UNDERLYING SECURITIES', { underline: true });
+  doc.moveDown(0.6);
+  doc.font('Helvetica-Bold').fontSize(headingSize)
+    .text('UNDERLYING SECURITIES', leftX, doc.y, { underline: true, width: contentWidth, align: 'left' });
   doc.moveDown(0.3);
-  const secColWidths = [230, 230];
-  const secX = doc.page.margins.left;
+  const secColWidths = [halfCol, halfCol];
   renderGridTable(
     doc,
     securitiesAllocationRows(content.underlyingSecurities),
-    { x: secX, colWidths: secColWidths, headerRow: ['ISIN', 'Face Value'], fontSize: bodySize, rowHeight: 21 }
+    { x: leftX, colWidths: secColWidths, headerRow: ['ISIN', 'Face Value'], fontSize: bodySize, rowHeight: 21 }
   );
 
-  // Total shown separately below the table (not as a table row).
+  // Total outside the table (Word: borderless 50/50 row; amount double-underlined).
   const totalAmount = formatMoney(securitiesFaceValueTotal(content.underlyingSecurities));
   const totalY = doc.y + 2;
   doc.font('Helvetica-Bold').fontSize(bodySize).fillColor('#000000');
-  doc.text('Total', secX + 6, totalY, { width: secColWidths[0] - 12 });
-  doc.text(totalAmount, secX + secColWidths[0] + 6, totalY, { width: secColWidths[1] - 12 });
-  const underlineY = totalY + 14;
-  const valueLeft = secX + secColWidths[0] + 6;
-  const valueRight = secX + secColWidths[0] + secColWidths[1] - 6;
-  doc.moveTo(valueLeft, underlineY).lineTo(valueRight, underlineY).stroke();
-  doc.moveTo(valueLeft, underlineY + 2.5).lineTo(valueRight, underlineY + 2.5).stroke();
-  doc.y = underlineY + 14;
-  doc.x = secX;
+  doc.text('Total', leftX + 6, totalY, { width: secColWidths[0] - 12, align: 'left', lineBreak: false });
+  const amountX = leftX + secColWidths[0] + 6;
+  doc.text(totalAmount, amountX, totalY, { width: secColWidths[1] - 12, align: 'left', lineBreak: false });
+  const amountW = doc.widthOfString(totalAmount);
+  const underlineY = totalY + bodySize + 2;
+  doc.moveTo(amountX, underlineY).lineTo(amountX + amountW, underlineY).stroke();
+  doc.moveTo(amountX, underlineY + 2.5).lineTo(amountX + amountW, underlineY + 2.5).stroke();
+  doc.y = underlineY + 16;
+  doc.x = leftX;
 
-  const contentWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-  doc.moveDown(1);
-  doc.font('Helvetica-Bold').fontSize(headingSize).text('SETTLEMENT PROCESS', doc.page.margins.left, doc.y, { underline: true, width: contentWidth });
-  doc.font('Helvetica').fontSize(bodySize).text(content.settlementProcess || '', doc.page.margins.left, doc.y, {
-    align: 'left',
-    width: contentWidth
-  });
+  doc.moveDown(0.6);
+  doc.font('Helvetica-Bold').fontSize(headingSize)
+    .text('SETTLEMENT PROCESS', leftX, doc.y, { underline: true, width: contentWidth, align: 'left' });
+  doc.font('Helvetica').fontSize(bodySize)
+    .text(content.settlementProcess || '', leftX, doc.y, { align: 'left', width: contentWidth });
 
-  doc.moveDown(1);
-  doc.font('Helvetica-Bold').fontSize(headingSize).text('MATURITY PROCEEDS', doc.page.margins.left, doc.y, { underline: true, width: contentWidth });
-  doc.font('Helvetica').fontSize(bodySize).text(content.maturityProceeds || '', doc.page.margins.left, doc.y, {
-    align: 'left',
-    width: contentWidth
-  });
+  doc.moveDown(0.8);
+  doc.font('Helvetica-Bold').fontSize(headingSize)
+    .text('MATURITY PROCEEDS', leftX, doc.y, { underline: true, width: contentWidth, align: 'left' });
+  doc.font('Helvetica').fontSize(bodySize)
+    .text(content.maturityProceeds || '', leftX, doc.y, { align: 'left', width: contentWidth });
 
-  // Signature blocks lower on the page: one flush left, one flush right.
-  doc.moveDown(5);
-  const sigY = Math.max(doc.y, doc.page.height - doc.page.margins.bottom - 70);
+  // Word: a few blank paragraphs, then a 50/50 table (left LEFT, right RIGHT).
+  doc.moveDown(3);
+  const sigY = doc.y;
   const sigLine = '_______________________';
   const sigLabel = 'Authorized Signatory';
   doc.font('Helvetica').fontSize(bodySize).fillColor('#000000');
   const lineW = doc.widthOfString(sigLine);
-  const leftX = doc.page.margins.left;
-  const rightX = doc.page.width - doc.page.margins.right - lineW;
-  doc.text(sigLine, leftX, sigY);
-  doc.text(sigLabel, leftX, sigY + 15);
-  doc.text(sigLine, rightX, sigY);
-  doc.text(sigLabel, rightX, sigY + 15);
+  const labelW = doc.widthOfString(sigLabel);
+  const rightEdge = leftX + contentWidth;
+
+  doc.text(sigLine, leftX, sigY, { lineBreak: false });
+  doc.text(sigLabel, leftX, sigY + 15, { lineBreak: false });
+  doc.text(sigLine, rightEdge - lineW, sigY, { lineBreak: false });
+  doc.text(sigLabel, rightEdge - labelW, sigY + 15, { lineBreak: false });
+  doc.y = sigY + 40;
+  doc.x = leftX;
 }
 
 function streamPdf(renderFn, contentOrContents) {
