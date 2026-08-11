@@ -57,6 +57,28 @@ const GSEC_SUMMARY_COLUMNS = [
   { key: 'deal_count', label: 'Deals' }
 ];
 
+/** Append a Total row summing total_face_value for ISIN-wise summary exports. */
+function withGsecSummaryFaceTotal(summary) {
+  const rows = Array.isArray(summary) ? [...summary] : [];
+  if (!rows.length) return rows;
+  const faceTotal = rows.reduce((sum, row) => {
+    const n = Number(String(row.total_face_value ?? '').replace(/,/g, ''));
+    return sum + (Number.isFinite(n) ? n : 0);
+  }, 0);
+  rows.push({
+    isin: 'Total',
+    maturity_date: '',
+    total_face_value: faceTotal.toLocaleString('en-US', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    }),
+    weighted_avg_price: '',
+    weighted_yield: '',
+    deal_count: ''
+  });
+  return rows;
+}
+
 // GSec PDF download only — compact layout with ISIN-wise face-value subtotals
 const GSEC_PDF_COLUMNS = [
   { key: 'isin', label: 'ISIN', width: 175, align: 'left' },
@@ -150,6 +172,7 @@ const TBILL_EXPORT_COLUMNS = [
 
 // Daily Maturity Handling screen — matches on-screen table columns
 const MATURITY_CASHFLOW_EXPORT_COLUMNS = [
+  { key: 'event_type', label: 'Event' },
   { key: 'cash_flow', label: 'Cash Flow' },
   { key: 'instrument', label: 'Instrument' },
   { key: 'description', label: 'Description' },
@@ -295,13 +318,19 @@ function preprocessExportData(data) {
   });
 }
 
-/** Build PDF-only rows: ISIN-sorted detail lines plus per-ISIN and grand face-value subtotals. */
+/** Build PDF-only rows: deals sorted lowest→highest yield, then ISIN and grand face-value subtotals. */
 function buildGsecPdfTableRows(rawData, processedData) {
   const paired = (rawData || []).map((raw, i) => ({
     raw,
     row: processedData[i] || {}
   }));
   paired.sort((a, b) => {
+    const ay = parseLocaleNumber(a.raw && a.raw.yield);
+    const by = parseLocaleNumber(b.raw && b.raw.yield);
+    const aMissing = !Number.isFinite(ay);
+    const bMissing = !Number.isFinite(by);
+    if (aMissing !== bMissing) return aMissing ? 1 : -1;
+    if (!aMissing && ay !== by) return ay - by;
     const ai = String(a.row.isin || '');
     const bi = String(b.row.isin || '');
     if (ai !== bi) return ai.localeCompare(bi);
@@ -309,8 +338,7 @@ function buildGsecPdfTableRows(rawData, processedData) {
   });
 
   const result = [];
-  let currentIsin = null;
-  let groupSum = 0;
+  const isinSums = {};
 
   const pushSubtotal = (isin, sum, isGrand = false) => {
     result.push({
@@ -325,26 +353,20 @@ function buildGsecPdfTableRows(rawData, processedData) {
     });
   };
 
+  let grandTotal = 0;
   for (const { raw, row } of paired) {
     const isin = row.isin || '';
-    if (currentIsin !== null && isin !== currentIsin) {
-      pushSubtotal(currentIsin, groupSum);
-      groupSum = 0;
-    }
-    currentIsin = isin;
     const fv = parseLocaleNumber(raw.face_value);
-    groupSum += Number.isFinite(fv) ? fv : (Number(raw.face_value) || 0);
+    const amount = Number.isFinite(fv) ? fv : (Number(raw.face_value) || 0);
+    if (isin) isinSums[isin] = (isinSums[isin] || 0) + amount;
+    grandTotal += amount;
     result.push({ ...row, _isSubtotal: false, _isGrandTotal: false });
   }
 
-  if (currentIsin !== null) {
-    pushSubtotal(currentIsin, groupSum);
-  }
+  Object.keys(isinSums)
+    .sort((a, b) => a.localeCompare(b))
+    .forEach((isin) => pushSubtotal(isin, isinSums[isin]));
 
-  const grandTotal = (rawData || []).reduce((sum, raw) => {
-    const fv = parseLocaleNumber(raw.face_value);
-    return sum + (Number.isFinite(fv) ? fv : (Number(raw.face_value) || 0));
-  }, 0);
   pushSubtotal('', grandTotal, true);
 
   return result;
@@ -463,7 +485,7 @@ function preprocessRepoExportData(data) {
 exports.export = async (format, data, summary = []) => {
   // Always format dates for export
   const processedData = preprocessExportData(data);
-  const summaryRows = Array.isArray(summary) ? summary : [];
+  const summaryRows = withGsecSummaryFaceTotal(summary);
 
   if (format === 'csv') {
     const parser = new Parser({ fields: EXPORT_COLUMNS.map(col => ({ label: col.label, value: col.key })) });
@@ -546,6 +568,10 @@ exports.export = async (format, data, summary = []) => {
         return next;
       });
       summarySheet.addRows(summaryExcelRows);
+      if (summaryExcelRows.length > 0) {
+        const totalRow = summarySheet.getRow(summaryExcelRows.length + 1);
+        totalRow.font = { bold: true };
+      }
       for (const k of summaryNumeric2dp) {
         const col = summarySheet.getColumn(k);
         if (col) col.numFmt = '#,##0.00';
@@ -680,7 +706,7 @@ exports.export = async (format, data, summary = []) => {
 
 // GSec ISIN-wise summary report export (Excel/CSV/PDF) – summary only
 exports.exportGsecSummary = async (format, summary) => {
-  const summaryRows = Array.isArray(summary) ? summary : [];
+  const summaryRows = withGsecSummaryFaceTotal(summary);
 
   if (format === 'csv') {
     const parser = new Parser({
@@ -722,6 +748,12 @@ exports.exportGsecSummary = async (format, summary) => {
     for (const k of intKeys) {
       const col = sheet.getColumn(k);
       if (col) col.numFmt = '0';
+    }
+
+    // Bold the Total row
+    if (excelRows.length > 0) {
+      const totalRow = sheet.getRow(excelRows.length + 1); // +1 for header
+      totalRow.font = { bold: true };
     }
 
     return workbook.xlsx.writeBuffer();
@@ -768,15 +800,17 @@ exports.exportGsecSummary = async (format, summary) => {
         y = drawHeader(doc.page.margins.top);
       }
       const w = columns.reduce((a, c) => a + c.width, 0);
-      if (index % 2 === 1) doc.rect(startX, y, w, rowHeight).fill('#f8f8f8');
-      doc.font('Helvetica').fontSize(9).fillColor('#000000');
+      const isTotal = row.isin === 'Total';
+      if (isTotal) doc.rect(startX, y, w, rowHeight).fill('#eef2f7');
+      else if (index % 2 === 1) doc.rect(startX, y, w, rowHeight).fill('#f8f8f8');
+      doc.font(isTotal ? 'Helvetica-Bold' : 'Helvetica').fontSize(9).fillColor('#000000');
       let x = startX;
       columns.forEach(col => {
         const text = row[col.key] !== undefined && row[col.key] !== null ? String(row[col.key]) : '';
         doc.text(text, x + cellPadding, y + 7, { width: col.width - 2 * cellPadding, align: col.align });
         x += col.width;
       });
-      doc.rect(startX, y, w, rowHeight).stroke('#cccccc');
+      doc.rect(startX, y, w, rowHeight).stroke(isTotal ? '#2c5282' : '#cccccc');
       y += rowHeight;
     });
 
@@ -1671,6 +1705,7 @@ exports.exportDailyMaturityCashflow = async (format, rows, totals = {}) => {
           ? -Math.abs(Number(row.maturity_amount) || 0)
           : Math.abs(Number(row.maturity_amount) || 0);
     return {
+      event_type: row.event_type === 'settlement' ? 'New Deal' : 'Maturity',
       cash_flow: row.cash_flow || '',
       instrument: row.instrument || '',
       description: row.description || '',
@@ -1689,6 +1724,7 @@ exports.exportDailyMaturityCashflow = async (format, rows, totals = {}) => {
 
   const balanceAmount = toExcelNumber(totals.net_cashflow ?? 0);
   const balanceRow = {
+    event_type: '',
     cash_flow: '',
     instrument: '',
     description: '',
