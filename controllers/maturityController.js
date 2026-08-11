@@ -667,9 +667,18 @@ MaturityController.getMaturityHandling = async (req, res) => {
     }
 
     const { getDailyMaturityCashflow } = require('../services/dailyMaturityCashflowService');
-    const { rows, totals } = await getDailyMaturityCashflow(date, { type, status });
+    const { rows, totals, view_mode, system_date, include_settlements, date: resolvedDate } =
+      await getDailyMaturityCashflow(date, { type, status });
 
-    return res.json({ success: true, data: rows, totals });
+    return res.json({
+      success: true,
+      data: rows,
+      totals,
+      view_mode,
+      system_date,
+      include_settlements,
+      date: resolvedDate
+    });
   } catch (error) {
     console.error('Error fetching maturity handling data:', error);
     return res.status(500).json({ success: false, error: error.message });
