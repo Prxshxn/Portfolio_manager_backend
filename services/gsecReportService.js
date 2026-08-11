@@ -146,8 +146,8 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
       params.push(asAtDate);
     }
     
-    // Add ordering
-    sql += ` ORDER BY g.isin_number, g.maturity_date, g.id`;
+    // Deals: lowest yield first, then ISIN / id as stable tiebreakers.
+    sql += ` ORDER BY (g.yield IS NULL) ASC, g.yield ASC, g.isin_number, g.id`;
 
     console.log(`[GSEC Report] SQL Query: ${sql}`);
     console.log(`[GSEC Report] Params:`, params);
@@ -730,7 +730,15 @@ exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
   });
 
   const summary = Object.values(summaryByIsin)
-    .sort((a, b) => String(a.isin).localeCompare(String(b.isin)))
+    // Shorter maturity first, then ISIN as tiebreaker.
+    .sort((a, b) => {
+      const da = String(a.maturity_date || '');
+      const db_ = String(b.maturity_date || '');
+      if (da && db_ && da !== db_) return da.localeCompare(db_);
+      if (da && !db_) return -1;
+      if (!da && db_) return 1;
+      return String(a.isin).localeCompare(String(b.isin));
+    })
     .map(s => ({
       isin: s.isin,
       maturity_date: s.maturity_date || '',
