@@ -2887,89 +2887,89 @@ MaturityController.processPrematureMaturity = async (req, res) => {
     
     let updatedCount = 0;
     const errors = [];
-    
-    // Process each deal - try to determine product type from database if not provided
+    const product = String(productType || '').toLowerCase();
+    const allowedProducts = new Set(['gsec', 'money_market', 'repo', 'buyback']);
+    if (!allowedProducts.has(product)) {
+      return res.status(400).json({
+        success: false,
+        error: `Unsupported productType "${productType}". Use gsec, money_market, repo, or buyback.`
+      });
+    }
+
+    // Route strictly by productType. IDs are not unique across product tables
+    // (gsec.id=142 and repo_deals.id=142 are different deals), so falling through
+    // GSEC → MM → Repo caused false "success" on the wrong product.
     for (const dealId of dealIds) {
       try {
         let dealUpdated = false;
-        
-        // Try GSEC first. Look the row up before updating: a buyback leg-2 Buy
-        // that has not settled yet (value_date still in the future) must be
-        // prematured by moving its SETTLEMENT dates - not by stamping
-        // maturity_date, which would leave a row that "matures" before it
-        // settles and is invisible to both the GSec report (value_date filter)
-        // and the daily maturity cashflow (GSec section excludes buyback
-        // leg-2 rows; buyback section keys off leg2_value_date).
-        const [gsecRows] = await db.query(`
-          SELECT id, deal_number, buyback_deal_id, value_date
-          FROM gsec
-          WHERE id = ?
-            AND COALESCE(matured, 0) = 0
-            AND status = 'final_approved'
-          LIMIT 1
-        `, [dealId]);
 
-        if (gsecRows.length > 0) {
-          const gsecDeal = gsecRows[0];
-          const valueDateStr = gsecDeal.value_date
-            ? new Date(gsecDeal.value_date).toISOString().slice(0, 10)
-            : null;
-          const isUnsettledBuybackLeg2 =
-            gsecDeal.buyback_deal_id != null && valueDateStr && valueDateStr > dateStr;
+        if (product === 'gsec') {
+          // Buyback leg-2 Buy that has not settled yet (value_date still in the
+          // future) must be prematured by moving SETTLEMENT dates — not by
+          // stamping maturity_date (that leaves a row that "matures" before it
+          // settles and drops out of the GSec report / daily maturity cashflow).
+          const [gsecRows] = await db.query(`
+            SELECT id, deal_number, buyback_deal_id, value_date
+            FROM gsec
+            WHERE id = ?
+              AND COALESCE(matured, 0) = 0
+              AND status = 'final_approved'
+            LIMIT 1
+          `, [dealId]);
 
-          let logNote;
-          if (isUnsettledBuybackLeg2) {
-            // Early settlement of the buyback: pull the leg-2 value date (gsec +
-            // buyback rows) to the premature date. The bond's own maturity_date
-            // is left untouched so the position enters holdings normally.
-            // Settlement/accrued amounts are NOT recalculated here - use the
-            // dedicated buyback premature flow when amounts must change.
+          if (gsecRows.length > 0) {
+            const gsecDeal = gsecRows[0];
+            const valueDateStr = gsecDeal.value_date
+              ? new Date(gsecDeal.value_date).toISOString().slice(0, 10)
+              : null;
+            const isUnsettledBuybackLeg2 =
+              gsecDeal.buyback_deal_id != null && valueDateStr && valueDateStr > dateStr;
+
+            let logNote;
+            if (isUnsettledBuybackLeg2) {
+              await db.query(`
+                UPDATE gsec
+                SET value_date = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+              `, [dateStr, dealId]);
+              await db.query(`
+                UPDATE buyback_deals
+                SET leg2_value_date = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+              `, [dateStr, gsecDeal.buyback_deal_id]);
+              logNote = `Premature maturity (buyback leg2 early settlement): value_date and buyback leg2_value_date updated to ${dateStr}; settlement amounts unchanged`;
+            } else {
+              await db.query(`
+                UPDATE gsec
+                SET maturity_date = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+              `, [dateStr, dealId]);
+              logNote = `Premature maturity: Original maturity date updated to ${dateStr}`;
+            }
+
+            updatedCount++;
+            dealUpdated = true;
             await db.query(`
-              UPDATE gsec
-              SET value_date = ?, updated_at = CURRENT_TIMESTAMP
-              WHERE id = ?
-            `, [dateStr, dealId]);
-            await db.query(`
-              UPDATE buyback_deals
-              SET leg2_value_date = ?, updated_at = CURRENT_TIMESTAMP
-              WHERE id = ?
-            `, [dateStr, gsecDeal.buyback_deal_id]);
-            logNote = `Premature maturity (buyback leg2 early settlement): value_date and buyback leg2_value_date updated to ${dateStr}; settlement amounts unchanged`;
-          } else {
-            await db.query(`
-              UPDATE gsec 
-              SET maturity_date = ?,
-                  updated_at = CURRENT_TIMESTAMP
-              WHERE id = ?
-            `, [dateStr, dealId]);
-            logNote = `Premature maturity: Original maturity date updated to ${dateStr}`;
+              INSERT INTO maturity_processing_log
+              (deal_id, deal_number, maturity_action, principal_amount, interest_amount, total_amount,
+               processed_date, processed_by, authorization_level, notes)
+              SELECT
+                id, deal_number, 'premature_maturity', face_value, 0, face_value,
+                ?, ?, 'system', ?
+              FROM gsec WHERE id = ?
+            `, [dateStr, userId, logNote, dealId]);
           }
-
-          updatedCount++;
-          dealUpdated = true;
-          // Log the premature maturity action
-          await db.query(`
-            INSERT INTO maturity_processing_log
-            (deal_id, deal_number, maturity_action, principal_amount, interest_amount, total_amount,
-             processed_date, processed_by, authorization_level, notes)
-            SELECT 
-              id, deal_number, 'premature_maturity', face_value, 0, face_value,
-              ?, ?, 'system', ?
-            FROM gsec WHERE id = ?
-          `, [dateStr, userId, logNote, dealId]);
-        }
-        
-        // Try Money Market if GSEC didn't work
-        if (!dealUpdated) {
+        } else if (product === 'money_market') {
           const [mmResult] = await db.query(`
-            UPDATE money_market_deals 
+            UPDATE money_market_deals
             SET maturity_date = ?,
                 updated_at = CURRENT_TIMESTAMP
-            WHERE id = ? 
+            WHERE id = ?
               AND COALESCE(matured, 0) = 0
               AND status = 'Approved'
           `, [dateStr, dealId]);
-          
+
           if (mmResult.affectedRows > 0) {
             updatedCount++;
             dealUpdated = true;
@@ -2977,25 +2977,22 @@ MaturityController.processPrematureMaturity = async (req, res) => {
               INSERT INTO maturity_processing_log
               (deal_id, deal_number, maturity_action, principal_amount, interest_amount, total_amount,
                processed_date, processed_by, authorization_level, notes)
-              SELECT 
+              SELECT
                 id, deal_number, 'premature_maturity', principal_amount, 0, principal_amount,
                 ?, ?, 'system', ?
               FROM money_market_deals WHERE id = ?
             `, [dateStr, userId, `Premature maturity: Original maturity date updated to ${dateStr}`, dealId]);
           }
-        }
-        
-        // Try Repo if neither GSEC nor Money Market worked
-        if (!dealUpdated) {
+        } else if (product === 'repo') {
           const [repoResult] = await db.query(`
-            UPDATE repo_deals 
+            UPDATE repo_deals
             SET maturity_date = ?,
                 updated_at = CURRENT_TIMESTAMP
-            WHERE id = ? 
+            WHERE id = ?
               AND COALESCE(matured, 0) = 0
               AND approval_status = 'final_approved'
           `, [dateStr, dealId]);
-          
+
           if (repoResult.affectedRows > 0) {
             updatedCount++;
             dealUpdated = true;
@@ -3003,16 +3000,13 @@ MaturityController.processPrematureMaturity = async (req, res) => {
               INSERT INTO maturity_processing_log
               (deal_id, deal_number, maturity_action, principal_amount, interest_amount, total_amount,
                processed_date, processed_by, authorization_level, notes)
-              SELECT 
+              SELECT
                 id, deal_number, 'premature_maturity', principal_amount, interest_amount, maturity_amount,
                 ?, ?, 'system', ?
               FROM repo_deals WHERE id = ?
             `, [dateStr, userId, `Premature maturity: Original maturity date updated to ${dateStr}`, dealId]);
           }
-        }
-
-        // Try Buyback if none of the above worked
-        if (!dealUpdated) {
+        } else if (product === 'buyback') {
           const [bbResult] = await db.query(`
             UPDATE buyback_deals
             SET leg2_value_date = ?,
@@ -3043,7 +3037,7 @@ MaturityController.processPrematureMaturity = async (req, res) => {
         }
 
         if (!dealUpdated) {
-          errors.push(`Deal ID ${dealId}: Deal not found or already matured or incorrect status`);
+          errors.push(`Deal ID ${dealId}: Deal not found or already matured or incorrect status for productType=${product}`);
         }
       } catch (err) {
         errors.push(`Deal ID ${dealId}: ${err.message}`);
@@ -3061,8 +3055,9 @@ MaturityController.processPrematureMaturity = async (req, res) => {
     
     res.json({
       success: true,
-      message: `Successfully updated maturity date for ${updatedCount} deal(s) to ${dateStr}`,
+      message: `Successfully updated maturity date for ${updatedCount} ${product} deal(s) to ${dateStr}`,
       updatedCount,
+      productType: product,
       errors: errors.length > 0 ? errors : undefined
     });
   } catch (error) {
