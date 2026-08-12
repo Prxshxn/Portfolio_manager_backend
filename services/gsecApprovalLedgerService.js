@@ -550,15 +550,21 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
     }
   }
 
+  // ledger_entries persists DECIMAL(15,2). Balance at cents rather than full
+  // precision, otherwise the per-line rounding applied on insert can leave the
+  // posted journal a cent out even though it balanced before rounding.
+  const roundToCents = (lines) =>
+    (lines || []).map((l) => ({ ...l, amount: Math.round((Number(l.amount) || 0) * 100) / 100 }));
+
   // Remove any empty/0/NaN lines before balancing and posting.
-  const mainDrClean = filterValidLines(mainDr);
-  const mainCrClean = filterValidLines(mainCr);
+  const mainDrClean = filterValidLines(roundToCents(mainDr));
+  const mainCrClean = filterValidLines(roundToCents(mainCr));
 
   const sumLines = (arr) => arr.reduce((s, l) => s + (Number(l.amount) || 0), 0);
   const totalDr = sumLines(mainDrClean);
   const totalCr = sumLines(mainCrClean);
-  const residual = truncate8(totalDr - totalCr);
-  if (Number.isFinite(residual) && Math.abs(residual) > 0.00000001) {
+  const residual = Math.round((totalDr - totalCr) * 100) / 100;
+  if (Number.isFinite(residual) && Math.abs(residual) >= 0.01) {
     const roundingLine = {
       account_code: capitalGainLossAccount,
       amount: Math.abs(residual),
