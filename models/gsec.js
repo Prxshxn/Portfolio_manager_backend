@@ -823,9 +823,9 @@ const Gsec = {
         FROM buyback_deals
         WHERE leg1_transaction_type = 'Sell'
         AND deal_status = 'Approved'
-        AND approved_at IS NOT NULL AND DATE(approved_at) <= DATE(?)
+        AND approved_at IS NOT NULL AND DATE(leg1_value_date) <= DATE(?)
         AND (source_buy_deal_number IN (${placeholders}) OR (source_buy_deal_number IS NULL AND leg1_isin IN (${isinPh})))
-        ORDER BY approved_at ASC
+        ORDER BY DATE(leg1_value_date) ASC, id ASC
       `;
       const buybackParams = [effectiveCutoff, ...dealNumbers, ...modalIsins];
       
