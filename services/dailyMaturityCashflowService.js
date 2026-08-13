@@ -1,13 +1,14 @@
 /**
  * Daily Maturity Cashflow — products maturing / settling on a selected date.
  *
- * Date modes (selected date vs system business date):
- *   - past    : maturities on D + all approved deals with value_date = D
- *   - current : maturities only (live processing day)
- *   - future  : maturities only (forecast)
+ * For every selected date D (past, current, or future):
+ *   - maturities on D
+ *   - all non-cancelled deals with value_date = D ("New Deal" settlement lines),
+ *     including GSEC buyback-letter blotter deals
  *
- * Buyback maturity uses leg2_value_date. Past-day settlements also include
- * buyback leg1 when leg1_value_date = D.
+ * Buyback maturity uses leg2_value_date. Buyback leg1 is only added as a New Deal
+ * when there is no GSEC letter already covering that value date (avoids double count).
+ * Settlement lines are view-only for processing.
  */
 const db = require('../config/database');
 const Gsec = require('../models/gsec');
@@ -524,7 +525,7 @@ async function queryMoneyMarketSettlements(dateStr, settlementByCode) {
     LEFT JOIN counterparty_master_individual ind ON mmd.counterparty_id = ind.id
     LEFT JOIN counterparty_master_joint joint ON mmd.counterparty_id = joint.id
     WHERE DATE(mmd.value_date) = ?
-      AND mmd.status = 'Approved'
+      AND LOWER(COALESCE(mmd.status, '')) NOT IN ('cancelled', 'rejected')
     ORDER BY mmd.deal_number
     `,
     [dateStr]
@@ -579,6 +580,7 @@ async function queryGsecSettlements(dateStr, settlementByCode) {
       g.value_date,
       g.transaction_type,
       g.buy_deal_number,
+      g.buyback_deal_id,
       g.status AS deal_status,
       COALESCE(corp.short_name, ind.short_name, joint.short_name, g.counterparty_id) AS counterparty_name
     FROM gsec g
@@ -592,8 +594,7 @@ async function queryGsecSettlements(dateStr, settlementByCode) {
       (g.counterparty_id LIKE 'j%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = joint.id)
       OR (g.counterparty_id = joint.id)
     WHERE DATE(g.value_date) = ?
-      AND g.status = 'final_approved'
-      AND g.buyback_deal_id IS NULL
+      AND LOWER(COALESCE(g.status, '')) NOT IN ('cancelled', 'rejected')
     ORDER BY g.deal_number
     `,
     [dateStr]
@@ -655,7 +656,7 @@ async function queryRepoSettlements(dateStr, settlementByCode) {
     LEFT JOIN counterparty_master_individual ind ON rd.counterparty_id = ind.id
     LEFT JOIN counterparty_master_joint joint ON rd.counterparty_id = joint.id
     WHERE DATE(rd.value_date) = ?
-      AND rd.approval_status = 'final_approved'
+      AND LOWER(COALESCE(rd.approval_status, rd.status, '')) NOT IN ('rejected', 'cancelled')
     ORDER BY rd.deal_number
     `,
     [dateStr]
@@ -701,7 +702,7 @@ async function queryRepoSettlements(dateStr, settlementByCode) {
 
 async function queryBuybackLeg1Settlements(dateStr, settlementByCode) {
   // Leg2 on this date is already covered by the maturity (leg2) query.
-  // Past mode only adds leg1 cash when leg1_value_date = D.
+  // Add leg1 cash when leg1_value_date = D, unless a GSEC letter already represents it.
   const [rows] = await db.query(
     `
     SELECT
@@ -730,8 +731,13 @@ async function queryBuybackLeg1Settlements(dateStr, settlementByCode) {
       (bb.leg1_counterparty LIKE 'j%' AND CAST(SUBSTRING(bb.leg1_counterparty, 2) AS UNSIGNED) = joint.id)
       OR (bb.leg1_counterparty = joint.id)
     WHERE DATE(bb.leg1_value_date) = ?
-      AND bb.deal_status = 'Approved'
-      AND bb.approved_at IS NOT NULL
+      AND LOWER(COALESCE(bb.deal_status, '')) NOT IN ('rejected', 'cancelled')
+      AND NOT EXISTS (
+        SELECT 1 FROM gsec g
+        WHERE g.buyback_deal_id = bb.id
+          AND DATE(g.value_date) = DATE(bb.leg1_value_date)
+          AND LOWER(COALESCE(g.status, '')) NOT IN ('cancelled', 'rejected')
+      )
     ORDER BY bb.deal_number
     `,
     [dateStr]
@@ -789,7 +795,8 @@ async function getDailyMaturityCashflow(dateStr, options = {}) {
   const systemRow = await getSystemDay();
   const systemYmd = toYmd(systemRow && (systemRow.system_date || systemRow.systemDay));
   const viewMode = resolveViewMode(selectedYmd, systemYmd);
-  const includeSettlements = viewMode === 'past';
+  // Always include value-dated new deals for the selected date (alongside maturities).
+  const includeSettlements = true;
 
   const settlementByCode = await loadSettlementAccounts();
 
@@ -798,22 +805,20 @@ async function getDailyMaturityCashflow(dateStr, options = {}) {
   const wantRepo = !type || type === 'all' || type === 'repo';
   const wantBuyback = !type || type === 'all' || type === 'buyback';
 
-  const maturityChunks = await Promise.all([
-    wantMM ? queryMoneyMarket(selectedYmd, settlementByCode) : [],
-    wantGsec ? queryGsec(selectedYmd, settlementByCode) : [],
-    wantRepo ? queryRepo(selectedYmd, settlementByCode) : [],
-    wantBuyback ? queryBuyback(selectedYmd, settlementByCode) : []
-  ]);
-
-  let settlementChunks = [[], [], [], []];
-  if (includeSettlements) {
-    settlementChunks = await Promise.all([
+  const [maturityChunks, settlementChunks] = await Promise.all([
+    Promise.all([
+      wantMM ? queryMoneyMarket(selectedYmd, settlementByCode) : [],
+      wantGsec ? queryGsec(selectedYmd, settlementByCode) : [],
+      wantRepo ? queryRepo(selectedYmd, settlementByCode) : [],
+      wantBuyback ? queryBuyback(selectedYmd, settlementByCode) : []
+    ]),
+    Promise.all([
       wantMM ? queryMoneyMarketSettlements(selectedYmd, settlementByCode) : [],
       wantGsec ? queryGsecSettlements(selectedYmd, settlementByCode) : [],
       wantRepo ? queryRepoSettlements(selectedYmd, settlementByCode) : [],
       wantBuyback ? queryBuybackLeg1Settlements(selectedYmd, settlementByCode) : []
-    ]);
-  }
+    ])
+  ]);
 
   let rows = [...maturityChunks.flat(), ...settlementChunks.flat()].map(withSettlementValue);
 
