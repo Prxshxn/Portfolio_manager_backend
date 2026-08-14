@@ -364,6 +364,17 @@ function computeGsecDailyAmortization(deal, _settlementDate) {
 /**
  * Remaining face for EOD accrual/amortization: derive from linked sells and buybacks
  * when available so stale gsec.remaining_face_value cannot keep posting after exit.
+ *
+ * `linked_sold_face_value` / `linked_buyback_face_value` must only carry reductions
+ * whose value date has already been reached.
+ *
+ * Both outright sells and buybacks write down gsec.remaining_face_value the moment
+ * they are approved, even when their value date is still ahead. On such a day the
+ * position is genuinely still held, so `pending_sold_face_value` and
+ * `pending_buyback_face_value` carry those not-yet-effective reductions and are added
+ * back when falling through to the stored balance. Without this a deal sold forward
+ * stops accruing early — or, if the write-down took it to exactly zero, is skipped
+ * outright as "no remaining face".
  */
 function resolveGsecRemainingForDailyPosting(deal, options = {}) {
   const faceVal = parseNumberLike(deal.face_value) || 0;
@@ -371,9 +382,20 @@ function resolveGsecRemainingForDailyPosting(deal, options = {}) {
   const buybackRaw = parseNumberLike(
     options.linked_buyback_face_value ?? deal.linked_buyback_face_value
   );
+  const pendingBuybackRaw = parseNumberLike(
+    options.pending_buyback_face_value ?? deal.pending_buyback_face_value
+  );
+  const pendingSoldRaw = parseNumberLike(
+    options.pending_sold_face_value ?? deal.pending_sold_face_value
+  );
   const sold = Number.isFinite(soldRaw) ? soldRaw : 0;
   const buyback = Number.isFinite(buybackRaw) ? buybackRaw : 0;
+  const pending =
+    (Number.isFinite(pendingBuybackRaw) && pendingBuybackRaw > 0 ? pendingBuybackRaw : 0) +
+    (Number.isFinite(pendingSoldRaw) && pendingSoldRaw > 0 ? pendingSoldRaw : 0);
   if (sold > 0 || buyback > 0) {
+    // Derived from value-dated reductions only, so a future-dated buyback is
+    // already excluded here and needs no add-back.
     return Math.max(0, faceVal - sold - buyback);
   }
   let remaining = deal.remaining_face_value;
@@ -381,7 +403,10 @@ function resolveGsecRemainingForDailyPosting(deal, options = {}) {
     return faceVal;
   }
   remaining = parseNumberLike(remaining);
-  return Number.isFinite(remaining) ? Math.max(0, remaining) : faceVal;
+  if (!Number.isFinite(remaining)) {
+    return faceVal;
+  }
+  return Math.min(faceVal > 0 ? faceVal : Infinity, Math.max(0, remaining + pending));
 }
 
 module.exports = {
