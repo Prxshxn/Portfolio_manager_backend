@@ -409,7 +409,35 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
            AND DATE(g.maturity_date) > DATE(?)
            AND g.value_date IS NOT NULL
            AND DATE(g.value_date) <= DATE(?)
-           AND COALESCE(g.remaining_face_value, g.face_value, 0) > 0
+           AND (
+             COALESCE(g.remaining_face_value, g.face_value, 0) > 0
+             -- A sell or buyback that is approved but not yet value-dated has already
+             -- written remaining_face_value down. The holding is still owned today, so
+             -- the deal must stay a candidate; the loop re-derives the true balance and
+             -- skips it if genuinely flat.
+             OR EXISTS (
+               SELECT 1 FROM buyback_deals bd_pending
+               WHERE bd_pending.deal_status = 'Approved'
+                 AND bd_pending.leg1_transaction_type = 'Sell'
+                 AND bd_pending.leg1_value_date IS NOT NULL
+                 AND DATE(bd_pending.leg1_value_date) > DATE(?)
+                 AND (
+                   TRIM(COALESCE(bd_pending.source_buy_deal_number, '')) = TRIM(g.deal_number)
+                   OR bd_pending.sell_deal_allocations LIKE CONCAT('%', TRIM(g.deal_number), '%')
+                 )
+             )
+             OR EXISTS (
+               SELECT 1 FROM gsec s_pending
+               WHERE s_pending.transaction_type = 'Sell'
+                 AND s_pending.buyback_deal_id IS NULL
+                 AND s_pending.value_date IS NOT NULL
+                 AND DATE(s_pending.value_date) > DATE(?)
+                 AND (
+                   TRIM(COALESCE(s_pending.buy_deal_number, '')) = TRIM(g.deal_number)
+                   OR s_pending.sell_deal_allocations LIKE CONCAT('%', TRIM(g.deal_number), '%')
+                 )
+             )
+           )
            AND NOT (
              g.buyback_deal_id IS NOT NULL
              AND EXISTS (
@@ -419,7 +447,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
                  AND bd_letter.leg2_transaction_type = 'Sell'
              )
            )`,
-        [systemDay, systemDay, systemDay]
+        [systemDay, systemDay, systemDay, systemDay, systemDay]
       ),
       db.query(
         `SELECT DISTINCT deal_number
@@ -465,6 +493,27 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
       deal.linked_sold_face_value = Number(soldByDealForAmort[dn] || 0);
     }
 
+    // Sells already approved but value-dated after the system day. They have written
+    // gsec.remaining_face_value down ahead of settlement, so the amount has to be added
+    // back to keep the lot accruing until its value date actually arrives.
+    const pendingSoldByDeal = {};
+    try {
+      const allSoldDealNumbers = [...new Set([...accrualDealNumbers, ...amortDealNumbers])];
+      if (allSoldDealNumbers.length) {
+        const soldToDate = await buildSoldByDealMap(db, allSoldDealNumbers, systemDay);
+        const soldEver = await buildSoldByDealMap(db, allSoldDealNumbers, null);
+        for (const dn of allSoldDealNumbers) {
+          const diff = Number(soldEver[dn] || 0) - Number(soldToDate[dn] || 0);
+          if (diff > 0) pendingSoldByDeal[dn] = diff;
+        }
+      }
+    } catch (pendingSoldErr) {
+      console.warn(
+        'Failed to aggregate forward-dated sells for GSec daily posting (continuing without add-back):',
+        pendingSoldErr.message
+      );
+    }
+
     const hasPerDayAmortizationColumn = Array.isArray(colRows) && colRows.length > 0;
 
     // ── Aggregate per-Buy-deal buyback deductions so daily accrual is computed on the
@@ -481,11 +530,19 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
     // independently double-counts every buyback that has both populated (which is
     // every single-allocation buyback), zeroing out the effective remaining face and
     // suppressing that day's accrual for the underlying buy deal.
+    // Reductions whose leg1 value date has been reached (apply today) and those still
+    // ahead of it (already written into gsec.remaining_face_value at approval time, so
+    // they must be added back rather than suppressing today's posting).
     const buybackByDealForAccrual = {};
+    const pendingBuybackByDeal = {};
     try {
-      const buyDealNumbersForBB = (gsecDeals || [])
-        .map((d) => String(d.deal_number || '').trim())
-        .filter(Boolean);
+      const buyDealNumbersForBB = [
+        ...new Set(
+          [...(gsecDeals || []), ...(gsecAmortDeals || [])]
+            .map((d) => String(d.deal_number || '').trim())
+            .filter(Boolean)
+        )
+      ];
 
       let hasSellDealAllocationsCol = false;
       let hasBBPortfolioCol = false;
@@ -503,19 +560,33 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
       } catch (_) { /* leave defaults */ }
 
       if (buyDealNumbersForBB.length) {
+        // A buyback removes the holding on its leg1 VALUE date, not on the day it was
+        // approved. Bucketing on approved_at drops the position a day (or more) early
+        // and understates — or entirely suppresses — that day's accrual/amortization.
         let bbSql = `
           SELECT deal_number, TRIM(source_buy_deal_number) AS source_buy_deal_number,
-                 leg1_face_value${hasSellDealAllocationsCol ? ', sell_deal_allocations' : ''}
+                 leg1_face_value,
+                 DATE(COALESCE(leg1_value_date, approved_at)) AS leg1_effective_date
+                 ${hasSellDealAllocationsCol ? ', sell_deal_allocations' : ''}
           FROM buyback_deals
           WHERE deal_status = 'Approved'
-            AND approved_at IS NOT NULL
-            AND DATE(approved_at) <= DATE(?)`;
-        const bbParams = [systemDay];
+            AND COALESCE(leg1_value_date, approved_at) IS NOT NULL`;
+        const bbParams = [];
         if (hasBBTransactionTypeCol) bbSql += ` AND leg1_transaction_type = 'Sell'`;
         const [bbRows] = await db.query(bbSql, bbParams);
 
         const buyDealSet = new Set(buyDealNumbersForBB);
+        const systemDayMs = Date.UTC(
+          new Date(systemDay).getFullYear(),
+          new Date(systemDay).getMonth(),
+          new Date(systemDay).getDate()
+        );
         for (const r of bbRows || []) {
+          const eff = r.leg1_effective_date ? new Date(r.leg1_effective_date) : null;
+          if (!eff || Number.isNaN(eff.getTime())) continue;
+          const effMs = Date.UTC(eff.getFullYear(), eff.getMonth(), eff.getDate());
+          const target = effMs <= systemDayMs ? buybackByDealForAccrual : pendingBuybackByDeal;
+
           let allocs = hasSellDealAllocationsCol ? r.sell_deal_allocations : null;
           if (typeof allocs === 'string') {
             try { allocs = JSON.parse(allocs); } catch { allocs = null; }
@@ -527,7 +598,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
               const dn = String((a && a.deal_number) || '').trim();
               const amt = Number(a && a.amountToSell) || 0;
               if (dn && amt > 0 && buyDealSet.has(dn)) {
-                buybackByDealForAccrual[dn] = (buybackByDealForAccrual[dn] || 0) + amt;
+                target[dn] = (target[dn] || 0) + amt;
               }
             }
           } else if (r.source_buy_deal_number) {
@@ -535,7 +606,7 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
             const dn = r.source_buy_deal_number;
             const amt = Number(r.leg1_face_value) || 0;
             if (dn && amt > 0 && buyDealSet.has(dn)) {
-              buybackByDealForAccrual[dn] = (buybackByDealForAccrual[dn] || 0) + amt;
+              target[dn] = (target[dn] || 0) + amt;
             }
           }
         }
@@ -600,8 +671,12 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
           }
           const dnForBB = String(deal.deal_number || '').trim();
           const linkedBuybackForDeal = Number(buybackByDealForAccrual[dnForBB] || 0);
+          const pendingBuybackForDeal = Number(pendingBuybackByDeal[dnForBB] || 0);
+          const pendingSoldForDeal = Number(pendingSoldByDeal[dnForBB] || 0);
           const effectiveRemaining = resolveGsecRemainingForDailyPosting(deal, {
-            linked_buyback_face_value: linkedBuybackForDeal
+            linked_buyback_face_value: linkedBuybackForDeal,
+            pending_buyback_face_value: pendingBuybackForDeal,
+            pending_sold_face_value: pendingSoldForDeal
           });
           const dealForAccrual = Object.assign({}, deal, {
             remaining_face_value: effectiveRemaining,
@@ -680,8 +755,12 @@ router.post('/eod', checkAuth, checkAdmin, async (req, res) => {
           }
           const dnForAmort = String(deal.deal_number || '').trim();
           const linkedBuybackForAmort = Number(buybackByDealForAccrual[dnForAmort] || 0);
+          const pendingBuybackForAmort = Number(pendingBuybackByDeal[dnForAmort] || 0);
+          const pendingSoldForAmort = Number(pendingSoldByDeal[dnForAmort] || 0);
           const effectiveRemainingAmort = resolveGsecRemainingForDailyPosting(deal, {
-            linked_buyback_face_value: linkedBuybackForAmort
+            linked_buyback_face_value: linkedBuybackForAmort,
+            pending_buyback_face_value: pendingBuybackForAmort,
+            pending_sold_face_value: pendingSoldForAmort
           });
           if (effectiveRemainingAmort <= 0) {
             if (hasPerDayAmortizationColumn) {
