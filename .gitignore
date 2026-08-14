@@ -4,3 +4,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .env
+
+# Row snapshots written by the scripts/ data-fix tools before they mutate data
+backups/
+scripts/backups/
