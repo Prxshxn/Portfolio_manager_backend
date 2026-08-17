@@ -647,7 +647,7 @@ router.post('/premature/buyback', MaturityController.processBuybackPrematureMatu
  *         name: dateRange
  *         schema:
  *           type: string
- *         description: Date range filter (format: startDate,endDate)
+ *         description: "Date range filter (format: startDate,endDate)"
  *       - in: query
  *         name: counterparty
  *         schema:
@@ -757,7 +757,7 @@ router.put('/pre-approval/:productType/:dealId/reject', MaturityController.rejec
  *         name: dateRange
  *         schema:
  *           type: string
- *         description: Date range filter (format: startDate,endDate)
+ *         description: "Date range filter (format: startDate,endDate)"
  *       - in: query
  *         name: counterparty
  *         schema:
