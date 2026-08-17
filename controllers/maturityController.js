@@ -2788,15 +2788,18 @@ MaturityController.getPrematureMaturityDeals = async (req, res) => {
           bb.leg1_settlement_amount as leg1_settlement_amount,
           bb.leg1_interest_rate as leg1_interest_rate,
           bb.leg2_accrued_interest as leg2_accrued_interest,
-          bb.coupon_rate as coupon_rate,
-          bb.issue_date as issue_date,
-          bb.coupon_date1 as coupon_date1,
-          bb.coupon_date2 as coupon_date2,
+          COALESCE(bb.coupon_rate, im.coupon_rate) as coupon_rate,
+          COALESCE(bb.issue_date, im.issue_date) as issue_date,
+          COALESCE(bb.coupon_date1, im.coupon_date_1) as coupon_date1,
+          COALESCE(bb.coupon_date2, im.coupon_date_2) as coupon_date2,
+          COALESCE(im.day_basis, 364) as day_basis,
           bb.leg2_value_date as maturity_date,
           bb.deal_status as status,
           DATEDIFF(bb.leg2_value_date, ?) as days_to_maturity,
           'buyback' as product_type
         FROM buyback_deals bb
+        LEFT JOIN isin_master im
+          ON TRIM(bb.leg1_isin) COLLATE utf8mb4_unicode_ci = TRIM(im.isin_number) COLLATE utf8mb4_unicode_ci
         LEFT JOIN counterparty_master_corporate corp ON
           (bb.leg1_counterparty LIKE 'c%' AND CAST(SUBSTRING(bb.leg1_counterparty, 2) AS UNSIGNED) = corp.id)
           OR (bb.leg1_counterparty = corp.id)
@@ -3178,7 +3181,8 @@ const { solveYieldFromPrice } = require('../utils/bondPricingNVP');
         continue;
       }
 
-      const basis = parseInt(dayCountBasis) || 365;
+      // Default 364 to match buyback / GOSL ISIN convention (isin_master.day_basis).
+      const basis = parseInt(dayCountBasis, 10) || 364;
       if (basis !== 365 && basis !== 364) {
         errors.push(`Deal ID ${dealId}: dayCountBasis must be 365 or 364`);
         continue;
