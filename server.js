@@ -16,38 +16,70 @@ const app = express();
 const swaggerJsdoc = require('swagger-jsdoc');
 const swaggerUi = require('swagger-ui-express');
 
+const swaggerCatalog = require('./swagger/catalog');
+
 const swaggerDefinition = {
   openapi: '3.0.0',
   info: {
     title: 'Portfolio Manager API',
     version: '1.0.0',
-    description: 'Professional OpenAPI documentation for the Portfolio Manager backend. All endpoints are documented to facilitate integration, testing, and onboarding.'
+    description:
+      'OpenAPI documentation for the ITMS / Portfolio Manager backend. ' +
+      'Every mounted HTTP route is listed. Authorize with a JWT from POST /api/auth/login.'
   },
   servers: [
     {
-      url: 'http://localhost:3001/api',
-      description: 'Development server',
-    },
+      url: 'http://localhost:3001',
+      description: 'Local backend (paths include /api)'
+    }
   ],
+  tags: swaggerCatalog.tags,
   components: {
     securitySchemes: {
       bearerAuth: {
         type: 'http',
         scheme: 'bearer',
-        bearerFormat: 'JWT',
-      },
-    },
+        bearerFormat: 'JWT'
+      }
+    }
   },
-  security: [{ bearerAuth: [] }],
+  security: [{ bearerAuth: [] }]
 };
 
 const swaggerOptions = {
   swaggerDefinition,
-  apis: ['./routes/*.js', './models/*.js'], // Scan all route/model files
+  apis: ['./routes/*.js', './models/*.js']
 };
 
+function withApiPrefix(pathKey) {
+  if (pathKey === '/' || pathKey.startsWith('/api') || pathKey.startsWith('/isin-master')) {
+    return pathKey;
+  }
+  return `/api${pathKey.startsWith('/') ? pathKey : `/${pathKey}`}`;
+}
+
+function mergeSwaggerPaths(jsdocPaths, catalogPaths) {
+  const merged = {};
+  for (const [rawPath, ops] of Object.entries(jsdocPaths || {})) {
+    const pathKey = withApiPrefix(rawPath);
+    merged[pathKey] = { ...(merged[pathKey] || {}), ...ops };
+  }
+  // Catalog is the complete route inventory and wins on conflicts.
+  for (const [pathKey, ops] of Object.entries(catalogPaths || {})) {
+    merged[pathKey] = { ...(merged[pathKey] || {}), ...ops };
+  }
+  return merged;
+}
+
 const swaggerSpec = swaggerJsdoc(swaggerOptions);
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+swaggerSpec.tags = swaggerCatalog.tags;
+swaggerSpec.paths = mergeSwaggerPaths(swaggerSpec.paths, swaggerCatalog.paths);
+
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
+  explorer: true,
+  customSiteTitle: 'Portfolio Manager API'
+}));
+app.get('/api-docs.json', (req, res) => res.json(swaggerSpec));
 // --- End Swagger Setup ---
 
 // Enable CORS for all routes
