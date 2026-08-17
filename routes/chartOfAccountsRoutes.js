@@ -59,7 +59,7 @@ const upload = multer({
  *       - in: formData
  *         name: updateExisting
  *         type: boolean
- *         description: Update existing accounts (default: true)
+ *         description: "Update existing accounts (default: true)"
  *     responses:
  *       200:
  *         description: Import completed successfully
