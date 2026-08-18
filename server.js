@@ -16,38 +16,161 @@ const app = express();
 const swaggerJsdoc = require('swagger-jsdoc');
 const swaggerUi = require('swagger-ui-express');
 
+const swaggerCatalog = require('./swagger/catalog');
+
 const swaggerDefinition = {
   openapi: '3.0.0',
   info: {
     title: 'Portfolio Manager API',
     version: '1.0.0',
-    description: 'Professional OpenAPI documentation for the Portfolio Manager backend. All endpoints are documented to facilitate integration, testing, and onboarding.'
+    description:
+      'OpenAPI documentation for the ITMS / Portfolio Manager backend. ' +
+      'Every mounted HTTP route is listed. Authorize with a JWT from POST /api/auth/login.'
   },
   servers: [
     {
-      url: 'http://localhost:3001/api',
-      description: 'Development server',
-    },
+      url: 'http://localhost:3001',
+      description: 'Local backend (paths include /api)'
+    }
   ],
+  tags: swaggerCatalog.tags,
   components: {
     securitySchemes: {
       bearerAuth: {
         type: 'http',
         scheme: 'bearer',
-        bearerFormat: 'JWT',
-      },
-    },
+        bearerFormat: 'JWT'
+      }
+    }
   },
-  security: [{ bearerAuth: [] }],
+  security: [{ bearerAuth: [] }]
 };
 
 const swaggerOptions = {
   swaggerDefinition,
-  apis: ['./routes/*.js', './models/*.js'], // Scan all route/model files
+  apis: ['./routes/*.js', './models/*.js']
 };
 
+function withApiPrefix(pathKey) {
+  if (pathKey === '/' || pathKey.startsWith('/api') || pathKey.startsWith('/isin-master')) {
+    return pathKey;
+  }
+  return `/api${pathKey.startsWith('/') ? pathKey : `/${pathKey}`}`;
+}
+
+function mergeSwaggerPaths(jsdocPaths, catalogPaths) {
+  const merged = {};
+  for (const [rawPath, ops] of Object.entries(jsdocPaths || {})) {
+    const pathKey = withApiPrefix(rawPath);
+    merged[pathKey] = { ...(merged[pathKey] || {}), ...ops };
+  }
+  // Catalog is the complete route inventory and wins on conflicts.
+  for (const [pathKey, ops] of Object.entries(catalogPaths || {})) {
+    merged[pathKey] = { ...(merged[pathKey] || {}), ...ops };
+  }
+  return merged;
+}
+
 const swaggerSpec = swaggerJsdoc(swaggerOptions);
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+swaggerSpec.tags = swaggerCatalog.tags;
+swaggerSpec.paths = mergeSwaggerPaths(swaggerSpec.paths, swaggerCatalog.paths);
+
+app.set('trust proxy', true);
+
+function isBehindApiProxy(req) {
+  return /\/api\/api-docs/.test(String(req.originalUrl || req.url || ''));
+}
+
+function stripApiPrefixFromPaths(paths) {
+  const out = {};
+  for (const [pathKey, ops] of Object.entries(paths || {})) {
+    const stripped =
+      pathKey === '/api' ? '/' : pathKey.startsWith('/api/') ? pathKey.slice(4) : pathKey;
+    out[stripped] = { ...(out[stripped] || {}), ...ops };
+  }
+  return out;
+}
+
+function swaggerPublicBase(req) {
+  const envBase = String(process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
+  if (envBase) return envBase;
+  const proto = String(req.get('x-forwarded-proto') || req.protocol || 'http')
+    .split(',')[0]
+    .trim();
+  const host = String(req.get('x-forwarded-host') || req.get('host') || 'localhost:3001')
+    .split(',')[0]
+    .trim();
+  const forwardedPrefix = String(req.get('x-forwarded-prefix') || process.env.PUBLIC_PATH_PREFIX || '')
+    .replace(/\/$/, '');
+  const original = String(req.originalUrl || '').split('?')[0];
+
+  // Live1 nginx: /live1-api/* -> backend /api/*. originalUrl is /api/api-docs.
+  if (isBehindApiProxy(req)) {
+    return `${proto}://${host}${forwardedPrefix || '/live1-api'}`;
+  }
+
+  let prefix = forwardedPrefix;
+  if (!prefix) {
+    const match = original.match(/^(.*)\/api-docs\/?$/);
+    if (match && match[1] && match[1] !== '/api') prefix = match[1];
+  }
+  return `${proto}://${host}${prefix}`;
+}
+
+function specForRequest(req) {
+  const behindApiProxy = isBehindApiProxy(req);
+  return {
+    ...swaggerSpec,
+    paths: behindApiProxy ? stripApiPrefixFromPaths(swaggerSpec.paths) : swaggerSpec.paths,
+    servers: [
+      { url: swaggerPublicBase(req), description: 'This host' },
+      ...(behindApiProxy ? [] : [{ url: 'http://localhost:3001', description: 'Local development' }])
+    ]
+  };
+}
+
+function attachSwaggerDoc(req, res, next) {
+  req.swaggerDoc = specForRequest(req);
+  next();
+}
+
+// Without a trailing slash, Swagger's relative CSS/JS resolve one directory up
+// and the page looks blank. Use a relative Location so nginx prefixes such as
+// /live1-api are kept (an absolute /api/api-docs/ redirect would drop them).
+function ensureSwaggerTrailingSlash(req, res, next) {
+  const pathOnly = String(req.originalUrl || req.url).split('?')[0];
+  if (!/\/api-docs$/.test(pathOnly)) return next();
+  const query = String(req.originalUrl || req.url).includes('?')
+    ? String(req.originalUrl).slice(String(req.originalUrl).indexOf('?'))
+    : '';
+  return res.redirect(301, `api-docs/${query}`);
+}
+
+const swaggerUiSetup = swaggerUi.setup(swaggerSpec, {
+  explorer: true,
+  customSiteTitle: 'Portfolio Manager API',
+  swaggerOptions: { persistAuthorization: true }
+});
+
+// /api/api-docs is required on Live1: nginx maps /live1-api/X -> /api/X, so
+// /live1-api/api-docs reaches Express as /api/api-docs (not /api-docs).
+const swaggerMounts = ['/api-docs', '/api/api-docs', '/live1/api-docs', '/live1-api/api-docs'];
+for (const mount of swaggerMounts) {
+  app.use(
+    mount,
+    ensureSwaggerTrailingSlash,
+    attachSwaggerDoc,
+    swaggerUi.serveFiles(swaggerSpec),
+    swaggerUiSetup
+  );
+}
+
+app.get(
+  ['/api-docs.json', '/api/api-docs.json', '/live1/api-docs.json', '/live1-api/api-docs.json'],
+  (req, res) => {
+    res.json(specForRequest(req));
+  }
+);
 // --- End Swagger Setup ---
 
 // Enable CORS for all routes
