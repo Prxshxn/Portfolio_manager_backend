@@ -174,6 +174,15 @@ module.exports = {
 
       // Insert ISIN record
       const result = await IsinMaster.create(req.body);
+      try {
+        const markToMarketService = require('../services/markToMarketService');
+        await markToMarketService.syncUnquotedFromMaster({
+          excelSource: 'interpolated-from-existing-curve',
+          quotedIsins: new Set()
+        });
+      } catch (mtmErr) {
+        console.error('[ISIN] Mark-to-market sync after create failed:', mtmErr.message);
+      }
       // Coupon schedule logic (non-blocking for main ISIN creation)
       try {
         const data = req.body;
@@ -267,6 +276,15 @@ module.exports = {
       const result = await IsinMaster.update(id, req.body);
       if (result.affectedRows === 0) {
         return res.status(404).json({ success: false, error: 'ISIN not found' });
+      }
+      try {
+        const markToMarketService = require('../services/markToMarketService');
+        await markToMarketService.syncUnquotedFromMaster({
+          excelSource: 'interpolated-from-existing-curve',
+          quotedIsins: new Set()
+        });
+      } catch (mtmErr) {
+        console.error('[ISIN] Mark-to-market sync after update failed:', mtmErr.message);
       }
       res.json({ success: true, message: 'ISIN updated successfully' });
     } catch (err) {
