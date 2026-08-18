@@ -26,19 +26,20 @@ class MarkToMarketController {
       // Pass the full path including uploads directory
       const filePath = `uploads/${filename}`;
       const extractedData = await excelProcessingService.processExcelFile(filePath);
-      
-      if (!extractedData || extractedData.length === 0) {
+      const bonds = Array.isArray(extractedData) ? extractedData : (extractedData.bonds || []);
+      const bills = Array.isArray(extractedData) ? [] : (extractedData.bills || []);
+
+      if ((!bonds || bonds.length === 0) && (!bills || bills.length === 0)) {
         return res.status(400).json({
           success: false,
-          message: 'No treasury bond data found in Excel file'
+          message: 'No treasury bond or T-bill data found in Excel file'
         });
       }
 
-      console.log(`📊 Extracted ${extractedData.length} records from Excel`);
+      console.log(`Extracted ${bonds.length} T-bond and ${bills.length} T-bill records from Excel`);
 
-      // Update mark-to-market data using markToMarketService
       const updateResults = await markToMarketService.updateMarkToMarketData(
-        extractedData, 
+        { bonds, bills },
         originalname
       );
 
@@ -47,7 +48,9 @@ class MarkToMarketController {
         message: 'Excel file processed successfully',
         data: {
           filename: originalname,
-          recordsProcessed: extractedData.length,
+          recordsProcessed: bonds.length + bills.length,
+          bondRecords: bonds.length,
+          billRecords: bills.length,
           updateResults
         }
       });
