@@ -1409,14 +1409,19 @@ exports.exportTbill = async (format, data) => {
 const MARK_TO_MARKET_EXPORT_COLUMNS = [
   { key: 'series', label: 'Series' },
   { key: 'isin', label: 'ISIN' },
+  { key: 'instrument_type', label: 'Instrument' },
+  { key: 'quote_source', label: 'Quote Source' },
   { key: 'isin_issuer', label: 'ISIN Issuer' },
   { key: 'maturity_date', label: 'Maturity Date' },
   { key: 'buying_price', label: 'Buying Price' },
   { key: 'selling_price', label: 'Selling Price' },
   { key: 'average_price', label: 'Average Price' },
+  { key: 'dirty_price', label: 'Dirty Price' },
   { key: 'buying_yield', label: 'Buying Yield (%)' },
   { key: 'selling_yield', label: 'Selling Yield (%)' },
   { key: 'average_yield', label: 'Average Yield (%)' },
+  { key: 'balance', label: 'Balance' },
+  { key: 'wap', label: 'WAP' },
   { key: 'unrealized_gain', label: 'Unrealized Gain' },
   { key: 'last_updated', label: 'Last Updated' },
   { key: 'excel_source', label: 'Source' }
@@ -1447,8 +1452,8 @@ exports.exportMarkToMarket = async (format, data) => {
   }
 
   if (format === 'excel') {
-    const numeric4dpKeys = new Set(['buying_price', 'selling_price', 'average_price', 'unrealized_gain']);
-    const numeric2dpKeys = new Set(['buying_yield', 'selling_yield', 'average_yield']);
+    const numeric4dpKeys = new Set(['buying_price', 'selling_price', 'average_price', 'dirty_price', 'wap', 'unrealized_gain']);
+    const numeric2dpKeys = new Set(['buying_yield', 'selling_yield', 'average_yield', 'balance']);
 
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('Mark to Market Report');
@@ -1487,7 +1492,7 @@ exports.exportMarkToMarket = async (format, data) => {
       key: col.key,
       label: col.label,
       width: 70,
-      align: ['buying_price', 'selling_price', 'average_price', 'buying_yield', 'selling_yield', 'average_yield', 'unrealized_gain'].includes(col.key) ? 'right' : 'left'
+      align: ['buying_price', 'selling_price', 'average_price', 'dirty_price', 'buying_yield', 'selling_yield', 'average_yield', 'balance', 'wap', 'unrealized_gain'].includes(col.key) ? 'right' : 'left'
     }));
 
     const maxWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;

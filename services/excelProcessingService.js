@@ -4,98 +4,113 @@ const fs = require('fs');
 class ExcelProcessingService {
   
   /**
-   * Process Excel file and extract treasury bond data
-   * @param {string} filePath - Path to the uploaded Excel file
-   * @returns {Array} Array of extracted treasury bond records
+   * Process Excel file and extract T-bond and T-bill quote rows.
+   * @returns {{ bonds: Array, bills: Array }}
    */
   async processExcelFile(filePath) {
     try {
       console.log('🔍 Processing Excel file:', filePath);
-      
-      // Read Excel file
+
       const workbook = XLSX.readFile(filePath);
-      
-      // Get all sheet names
       const sheetNames = workbook.SheetNames;
       console.log('📋 Found sheets:', sheetNames);
-      
-      // Get the first sheet (or search for treasury bonds sheet)
-      let worksheet = workbook.Sheets[sheetNames[0]];
-      let sheetName = sheetNames[0];
-      
-      // Try to find a sheet with treasury bond data
+
+      let bondSheetName = null;
+      let billSheetName = null;
+      const sheetRows = {};
+
       for (const name of sheetNames) {
-        const sheet = workbook.Sheets[name];
-        const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1 });
-        
-        if (jsonData.length > 0 && this.isTreasuryBondsSheet(jsonData[0])) {
-          worksheet = sheet;
-          sheetName = name;
-          console.log('🎯 Found treasury bonds sheet:', name);
-          break;
+        const jsonData = XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1 });
+        sheetRows[name] = jsonData;
+        if (!jsonData.length) continue;
+        const probe = [];
+        for (let i = 0; i < Math.min(8, jsonData.length); i += 1) {
+          probe.push(...(jsonData[i] || []));
+        }
+        if (!billSheetName && this.isTreasuryBillsSheet(probe, name)) {
+          billSheetName = name;
+        } else if (!bondSheetName && this.isTreasuryBondsSheet(probe, name)) {
+          bondSheetName = name;
         }
       }
-      
-      // Convert to JSON with headers
-      const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-      
-      if (jsonData.length < 2) {
-        throw new Error('Excel file must have at least header and data rows');
+
+      if (!bondSheetName && sheetNames[0] && !billSheetName) {
+        bondSheetName = sheetNames[0];
       }
-      
-      console.log(`📊 Processing ${jsonData.length} rows from sheet: ${sheetName}`);
-      
-      // Find the actual header row
-      const headerRowIndex = this.findHeaderRow(jsonData);
-      console.log(`📋 Using header row at index: ${headerRowIndex}`);
-      
-      // Parse the data starting from the header row
-      const extractedData = this.parseTreasuryBondData(jsonData, headerRowIndex);
-      
-      console.log(`✅ Successfully extracted ${extractedData.length} treasury bond records`);
-      return extractedData;
-      
+
+      let bonds = [];
+      if (bondSheetName) {
+        const jsonData = sheetRows[bondSheetName] || [];
+        if (jsonData.length >= 2) {
+          const headerRowIndex = this.findHeaderRow(jsonData, 'bond');
+          bonds = this.parseTreasuryBondData(jsonData, headerRowIndex);
+          console.log(`✅ Extracted ${bonds.length} treasury bond records from ${bondSheetName}`);
+        }
+      }
+
+      let bills = [];
+      if (billSheetName) {
+        const jsonData = sheetRows[billSheetName] || [];
+        if (jsonData.length >= 2) {
+          const headerRowIndex = this.findHeaderRow(jsonData, 'bill');
+          bills = this.parseTreasuryBillData(jsonData, headerRowIndex);
+          console.log(`✅ Extracted ${bills.length} treasury bill records from ${billSheetName}`);
+        }
+      }
+
+      return { bonds, bills };
     } catch (error) {
       console.error('❌ Error processing Excel file:', error);
       throw error;
     }
   }
 
-  /**
-   * Check if a sheet contains treasury bond data
-   */
-  isTreasuryBondsSheet(headers) {
-    if (!headers || headers.length === 0) return false;
-    
-    const headerText = headers.map(h => h ? h.toString().toLowerCase() : '').join(' ');
-    
-    const treasuryKeywords = [
-      'series', 'treasury', 'bond', 'maturity', 'yield', 
-      'buying', 'selling', 'price', 'spread'
-    ];
-    
-    const matchCount = treasuryKeywords.filter(keyword => 
-      headerText.includes(keyword)
-    ).length;
-    
-    return matchCount >= 3; // At least 3 keywords must match
+  headerText(headers) {
+    if (!headers || headers.length === 0) return '';
+    return headers.map((h) => (h ? h.toString().toLowerCase() : '')).join(' ');
   }
 
-  /**
-   * Find the header row in Excel data
-   */
-  findHeaderRow(rows) {
+  isTreasuryBillsSheet(headers, sheetName = '') {
+    const headerText = `${this.headerText(headers)} ${String(sheetName).toLowerCase()}`;
+    const hasBill = headerText.includes('bill') || headerText.includes('tbill') || headerText.includes('t-bill');
+    if (!hasBill) return false;
+    return (
+      headerText.includes('treasury') ||
+      headerText.includes('yield') ||
+      headerText.includes('isin') ||
+      headerText.includes('price')
+    );
+  }
+
+  isTreasuryBondsSheet(headers, sheetName = '') {
+    if (this.isTreasuryBillsSheet(headers, sheetName)) return false;
+    const headerText = `${this.headerText(headers)} ${String(sheetName).toLowerCase()}`;
+    const treasuryKeywords = [
+      'series', 'treasury', 'bond', 'maturity', 'yield',
+      'buying', 'selling', 'price', 'spread'
+    ];
+    const matchCount = treasuryKeywords.filter((keyword) => headerText.includes(keyword)).length;
+    return matchCount >= 3;
+  }
+
+  findHeaderRow(rows, kind = 'bond') {
     for (let i = 0; i < Math.min(20, rows.length); i++) {
       const row = rows[i];
-      if (row && row.length > 0) {
-        const headerText = row.map(h => h ? h.toString().toLowerCase() : '').join(' ');
-        if (headerText.includes('treasury') && headerText.includes('series')) {
-          console.log(`🎯 Found header row at index ${i}:`, row);
+      if (!row || !row.length) continue;
+      const headerText = this.headerText(row);
+      if (kind === 'bill') {
+        if (
+          (headerText.includes('bill') && (headerText.includes('treasury') || headerText.includes('yield'))) ||
+          (headerText.includes('isin') && headerText.includes('yield')) ||
+          (headerText.includes('series') && headerText.includes('bill'))
+        ) {
           return i;
         }
+      } else if (headerText.includes('treasury') && headerText.includes('series')) {
+        return i;
       }
     }
-    return 0; // Default to first row
+    return 0;
   }
 
   /**
@@ -103,88 +118,154 @@ class ExcelProcessingService {
    */
   isDataRow(row) {
     if (!row || row.length === 0) return false;
-    
-    // Check if row has at least 3 non-empty cells
-    const nonEmptyCells = row.filter(cell => cell && cell.toString().trim() !== '');
+    const nonEmptyCells = row.filter((cell) => cell && cell.toString().trim() !== '');
     if (nonEmptyCells.length < 3) return false;
-    
-    // Check if the series cell (index 2) looks like a series name (contains %)
     const seriesCell = row[2];
     if (seriesCell && typeof seriesCell === 'string' && seriesCell.includes('%')) {
       return true;
     }
-    
+    const joined = row.map((c) => (c ? c.toString() : '')).join(' ').toUpperCase();
+    if (joined.includes('LKB') || joined.includes('LKA')) return true;
     return false;
   }
 
-  /**
-   * Parse treasury bond data from Excel rows
-   */
-  parseTreasuryBondData(rows, headerRowIndex = 0) {
-    const headers = rows[headerRowIndex].map(h => h ? h.toString().toLowerCase().trim() : '');
-    const dataRows = rows.slice(headerRowIndex + 1);
-    
-    console.log('📋 Excel headers found:', headers);
-    
-    // Map column indices based on your specific Excel file structure
-    // Based on the debug output, the columns are at specific indices
-    const columnMap = {
-      series: 2,        // "Treasury Bond By Series" - contains series like "22.50%2025A"
-      maturityPeriod: 3, // "Maturity Period (Years)" - contains years like 3, 8
-      maturityDate: 4,   // "Maturity Date (DD/MM/YY)" - contains Excel date numbers
-      daysToMaturity: 5, // "Days to Maturity" - contains days like -201, 72
-      buyingPrice: 6,    // "Average Buying Price" - contains prices like 100.44
-      buyingYield: 7,    // "Yield" (first yield column) - contains yields like 0.078
-      sellingPrice: 8,   // "Average Selling Price" - contains prices like 100.48
-      sellingYield: 9,   // "Yield" (second yield column) - contains yields like 0.075
-      spread: 10         // "Buying & Selling Spread" - contains spreads like 0.044
+  isTbillDataRow(row, columnMap) {
+    if (!row || row.length === 0) return false;
+    const nonEmptyCells = row.filter((cell) => cell && cell.toString().trim() !== '');
+    if (nonEmptyCells.length < 2) return false;
+    const isinIdx = columnMap.isinNumber >= 0 ? columnMap.isinNumber : -1;
+    const seriesIdx = columnMap.series >= 0 ? columnMap.series : 2;
+    const isinCell = isinIdx >= 0 ? String(row[isinIdx] || '').toUpperCase() : '';
+    if (isinCell.includes('LKA') || isinCell.includes('LKB')) return true;
+    const seriesCell = String(row[seriesIdx] || '').trim();
+    if (seriesCell && !/^(series|isin|treasury|maturity)$/i.test(seriesCell)) return true;
+    return nonEmptyCells.length >= 3;
+  }
+
+  resolveBondColumnMap(headers) {
+    const byKeyword = {
+      isinNumber: this.findColumnIndex(headers, ['isin']),
+      series: this.findColumnIndex(headers, ['series']),
+      maturityPeriod: this.findColumnIndex(headers, ['maturity period', 'tenor', 'years']),
+      maturityDate: this.findColumnIndex(headers, ['maturity date']),
+      daysToMaturity: this.findColumnIndex(headers, ['days to maturity', 'days']),
+      buyingPrice: this.findColumnIndex(headers, ['buying price', 'average buying']),
+      buyingYield: this.findColumnIndex(headers, ['buying yield']),
+      sellingPrice: this.findColumnIndex(headers, ['selling price', 'average selling']),
+      sellingYield: this.findColumnIndex(headers, ['selling yield'])
     };
-    
-    console.log('🔗 Column mapping:', columnMap);
-    
+    const fallback = {
+      isinNumber: -1,
+      series: 2,
+      maturityPeriod: 3,
+      maturityDate: 4,
+      daysToMaturity: 5,
+      buyingPrice: 6,
+      buyingYield: 7,
+      sellingPrice: 8,
+      sellingYield: 9
+    };
+    const map = {};
+    for (const key of Object.keys(fallback)) {
+      map[key] = byKeyword[key] >= 0 ? byKeyword[key] : fallback[key];
+    }
+    return map;
+  }
+
+  finalizeQuoteRow(rowData) {
+    if (rowData.buyingPrice && rowData.sellingPrice) {
+      rowData.averagePrice = (rowData.buyingPrice + rowData.sellingPrice) / 2;
+    } else {
+      rowData.averagePrice = rowData.buyingPrice || rowData.sellingPrice || null;
+    }
+    if (rowData.buyingYield && rowData.sellingYield) {
+      rowData.averageYield = (rowData.buyingYield + rowData.sellingYield) / 2;
+    } else {
+      rowData.averageYield = rowData.buyingYield || rowData.sellingYield || null;
+    }
+    return rowData;
+  }
+
+  parseTreasuryBondData(rows, headerRowIndex = 0) {
+    const headers = rows[headerRowIndex].map((h) => (h ? h.toString().toLowerCase().trim() : ''));
+    const dataRows = rows.slice(headerRowIndex + 1);
+    const columnMap = this.resolveBondColumnMap(headers);
     const extractedData = [];
-    
+
     dataRows.forEach((row, index) => {
       try {
-        // Skip empty rows or non-data rows
-        if (!this.isDataRow(row)) {
-          return;
-        }
-        
-        const rowData = {
+        if (!this.isDataRow(row)) return;
+        const rowData = this.finalizeQuoteRow({
+          instrumentType: 'T_BOND',
+          isinNumber: this.cleanText(row[columnMap.isinNumber] || ''),
           series: this.cleanText(row[columnMap.series] || ''),
           maturityPeriod: this.parseNumber(row[columnMap.maturityPeriod]),
           maturityDate: this.parseDate(row[columnMap.maturityDate]),
           daysToMaturity: this.parseNumber(row[columnMap.daysToMaturity]),
           buyingPrice: this.parseNumber(row[columnMap.buyingPrice]),
-          buyingYield: this.parseYield(row[columnMap.buyingYield]), // Convert to percentage
+          buyingYield: this.parseYield(row[columnMap.buyingYield]),
           sellingPrice: this.parseNumber(row[columnMap.sellingPrice]),
-          sellingYield: this.parseYield(row[columnMap.sellingYield]), // Convert to percentage
-          spread: this.parseNumber(row[columnMap.spread])
-        };
-        
-        // Calculate averages
-        if (rowData.buyingPrice && rowData.sellingPrice) {
-          rowData.averagePrice = (rowData.buyingPrice + rowData.sellingPrice) / 2;
-        }
-        
-        if (rowData.buyingYield && rowData.sellingYield) {
-          rowData.averageYield = (rowData.buyingYield + rowData.sellingYield) / 2;
-        }
-        
-        // Only add if we have essential data
-        if (rowData.series && (rowData.buyingPrice || rowData.sellingPrice)) {
+          sellingYield: this.parseYield(row[columnMap.sellingYield])
+        });
+        if ((rowData.series || rowData.isinNumber) && (rowData.buyingPrice || rowData.sellingPrice || rowData.averageYield)) {
           extractedData.push(rowData);
-          console.log(`✅ Parsed row ${index + 1}: ${rowData.series}`);
-        } else {
-          console.log(`⚠️ Skipped row ${index + 1}: Insufficient data`);
         }
-        
       } catch (error) {
-        console.warn(`⚠️ Error parsing row ${index + 1}:`, error.message);
+        console.warn(`⚠️ Error parsing bond row ${index + 1}:`, error.message);
       }
     });
-    
+
+    return extractedData;
+  }
+
+  parseTreasuryBillData(rows, headerRowIndex = 0) {
+    const headers = rows[headerRowIndex].map((h) => (h ? h.toString().toLowerCase().trim() : ''));
+    const dataRows = rows.slice(headerRowIndex + 1);
+    const columnMap = {
+      isinNumber: this.findColumnIndex(headers, ['isin']),
+      series: this.findColumnIndex(headers, ['series', 'tenor', 'period']),
+      maturityDate: this.findColumnIndex(headers, ['maturity date', 'maturity']),
+      daysToMaturity: this.findColumnIndex(headers, ['days to maturity', 'days to', 'remaining']),
+      buyingPrice: this.findColumnIndex(headers, ['buying price', 'average buying', 'buy price']),
+      buyingYield: this.findColumnIndex(headers, ['buying yield', 'buy yield']),
+      sellingPrice: this.findColumnIndex(headers, ['selling price', 'average selling', 'sell price']),
+      sellingYield: this.findColumnIndex(headers, ['selling yield', 'sell yield'])
+    };
+    if (columnMap.buyingYield < 0) {
+      columnMap.buyingYield = this.findColumnIndex(headers, ['yield']);
+    }
+    if (columnMap.series < 0) columnMap.series = 2;
+    if (columnMap.maturityDate < 0) columnMap.maturityDate = 4;
+    if (columnMap.buyingPrice < 0) columnMap.buyingPrice = 6;
+    if (columnMap.buyingYield < 0) columnMap.buyingYield = 7;
+    if (columnMap.sellingPrice < 0) columnMap.sellingPrice = 8;
+    if (columnMap.sellingYield < 0) columnMap.sellingYield = 9;
+
+    const extractedData = [];
+    dataRows.forEach((row, index) => {
+      try {
+        if (!this.isTbillDataRow(row, columnMap)) return;
+        const rowData = this.finalizeQuoteRow({
+          instrumentType: 'T_BILL',
+          isinNumber: this.cleanText(row[columnMap.isinNumber] || ''),
+          series: this.cleanText(row[columnMap.series] || ''),
+          maturityDate: this.parseDate(row[columnMap.maturityDate]),
+          daysToMaturity: this.parseNumber(row[columnMap.daysToMaturity]),
+          buyingPrice: this.parseNumber(row[columnMap.buyingPrice]),
+          buyingYield: this.parseYield(row[columnMap.buyingYield]),
+          sellingPrice: this.parseNumber(row[columnMap.sellingPrice]),
+          sellingYield: this.parseYield(row[columnMap.sellingYield])
+        });
+        if (
+          (rowData.series || rowData.isinNumber || rowData.maturityDate) &&
+          (rowData.buyingPrice || rowData.sellingPrice || rowData.averageYield)
+        ) {
+          extractedData.push(rowData);
+        }
+      } catch (error) {
+        console.warn(`⚠️ Error parsing bill row ${index + 1}:`, error.message);
+      }
+    });
     return extractedData;
   }
 
