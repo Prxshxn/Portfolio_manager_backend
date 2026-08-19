@@ -317,7 +317,8 @@ function renderLetterHtml(ctx) {
 <style>
   @page {
     size: A4;
-    margin: 12mm 10mm 8mm 8mm;
+    /* Even professional letter margins (top/right/bottom/left). */
+    margin: 16mm 18mm 16mm 16mm;
     /* Firefox: suppress browser URL / page-number chrome */
     @top-left { content: none; }
     @top-center { content: none; }
@@ -337,44 +338,47 @@ function renderLetterHtml(ctx) {
     font-family: 'Times New Roman', Times, serif;
     font-size: 13px;
     line-height: 1.55;
+    /* Screen preview uses the same inset as @page so the letter is not flush. */
+    padding: 16mm 18mm 16mm 16mm;
   }
 
-  /* One A4 content area; company footer pinned to the bottom edge so it
-     occupies the space Chrome would otherwise fill with URL / 1/1 when
-     Headers and footers are left on (those are browser chrome — turn them
-     off in the print dialog). */
+  /* Printable A4 after 16mm top+bottom page margins: 265mm.
+     Inner padding keeps body copy, table, and footer off every edge. */
   .sheet {
     position: relative;
     display: flex;
     flex-direction: column;
     width: 100%;
-    min-height: 277mm;
-    height: 277mm;
-    padding: 2mm 2mm 30mm 0;
+    min-height: 265mm;
+    height: 265mm;
+    padding: 2mm 6mm 26mm 4mm;
   }
   .sheet-body {
     display: flex;
     align-items: stretch;
-    gap: 6mm;
+    gap: 8mm;
     flex: 1 1 auto;
     min-height: 0;
   }
   .letterhead-sidebar {
-    flex: 0 0 22mm;
-    width: 22mm;
-    max-width: 22mm;
+    flex: 0 0 20mm;
+    width: 20mm;
+    max-width: 20mm;
     position: relative;
     overflow: visible;
+    /* Match deal-confirmation slips: strip starts near the top margin. */
+    margin-top: 0;
   }
   .letterhead-sidebar svg {
     display: block;
-    width: 22mm;
-    height: 200mm;
+    width: 20mm;
+    height: 195mm;
   }
   .letter {
     flex: 1 1 auto;
     min-width: 0;
-    max-width: 170mm;
+    padding-top: 1mm;
+    padding-right: 2mm;
   }
 
   .sheet-footer {
@@ -386,7 +390,7 @@ function renderLetterHtml(ctx) {
     align-items: flex-end;
     justify-content: space-between;
     gap: 12px;
-    padding: 0 2mm 1mm 28mm;
+    padding: 0 6mm 4mm 32mm;
     font-family: Arial, Helvetica, sans-serif;
   }
   .letterhead-footer {
@@ -459,7 +463,7 @@ function renderLetterHtml(ctx) {
     background: #fff;
     padding: 8px 12px 12px;
     border-bottom: 1px solid #eee;
-    margin-bottom: 12px;
+    margin: -16mm -18mm 12px -16mm;
     display: flex;
     flex-wrap: wrap;
     align-items: center;
@@ -486,10 +490,10 @@ function renderLetterHtml(ctx) {
   }
   @media print {
     .actions { display: none !important; }
-    html, body { height: auto; }
+    html, body { height: auto; padding: 0; }
     .sheet {
-      min-height: 277mm;
-      height: 277mm;
+      min-height: 265mm;
+      height: 265mm;
       page-break-after: avoid;
       page-break-inside: avoid;
     }
@@ -513,7 +517,7 @@ function renderLetterHtml(ctx) {
            letterheads onto the body; SVG rotate stays in the left gutter. -->
       <aside class="letterhead-sidebar" aria-hidden="true">
         <svg viewBox="0 0 44 760" width="44" height="760" xmlns="http://www.w3.org/2000/svg">
-          <g transform="translate(28,740) rotate(-90)">
+          <g transform="translate(28,620) rotate(-90)">
             <text y="0" fill="#1c3f7c" font-family="Arial, Helvetica, sans-serif" letter-spacing="1.2">
               <tspan font-size="22" font-weight="700">SHERWOOD CAPITAL (PRIVATE) LIMITED</tspan>
               <tspan font-size="11" font-weight="400" dx="14">Reg No. PV00241251</tspan>
