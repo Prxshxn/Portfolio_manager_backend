@@ -113,39 +113,10 @@ exports.login = async (req, res) => {
       return res.status(401).json({ error: 'Invalid username or password' });
     }
     
-    // Check for authorizer assignment and override role if present
-    let effectiveRole = user.role;
-    let allowedTabs = user.allowed_tabs || [];
-    // Fetch all assignments for this user
-    const [assignments] = await require('../config/db').query('SELECT * FROM authorizer_assignments WHERE user_id = ?', [user.id]);
-    if (assignments && assignments.length > 0) {
-      // Priority: back_office_final > back_office_verifier > back_office > front_office > authorizer > others
-      // Prefer specialized FO/BO authorizer roles over a generic authorizer assignment.
-      const rolePriority = ['back_office_final', 'back_office_verifier', 'back_office', 'front_office', 'front_office_verifier', 'authorizer'];
-      let bestAssignment = assignments[0];
-      for (const role of rolePriority) {
-        const found = assignments.find(a => a.role === role);
-        if (found) {
-          bestAssignment = found;
-          break;
-        }
-      }
-      effectiveRole = bestAssignment.role;
-      // allowed_pages is a JSON string or array
-      if (bestAssignment.allowed_pages) {
-        let assignmentPages;
-        try {
-          assignmentPages = Array.isArray(bestAssignment.allowed_pages) ? bestAssignment.allowed_pages : JSON.parse(bestAssignment.allowed_pages);
-        } catch {
-          assignmentPages = [bestAssignment.allowed_pages];
-        }
-        // Merge (union) the assignment's pages with the user's own allowed_tabs so that
-        // granting report/master rights via an authorizer assignment is additive rather
-        // than wiping the user's existing tab access.
-        const baseTabs = Array.isArray(allowedTabs) ? allowedTabs : [];
-        allowedTabs = Array.from(new Set([...baseTabs, ...assignmentPages]));
-      }
-    }
+    const { resolveEffectiveWorkflowAuth } = require('../utils/effectiveWorkflowAuth');
+    const actor = await resolveEffectiveWorkflowAuth(user.id);
+    let effectiveRole = actor ? actor.role : user.role;
+    let allowedTabs = actor ? actor.allowedTabs : (user.allowed_tabs || []);
     
     console.log('Login successful for:', username);
     const userPayload = {
@@ -153,7 +124,7 @@ exports.login = async (req, res) => {
       username: user.username, // Ensure username is always included
       role: effectiveRole,
       originalRole: user.role, // Keep original role for reference
-      assignments: assignments || [] // Include assignments if any
+      assignments: actor ? actor.assignments : []
     };
     const token = jwt.sign(userPayload, JWT_SECRET, { expiresIn: '7d' });
     res.json({

@@ -1,29 +1,29 @@
 const jwt = require('jsonwebtoken');
 
+const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
+
 module.exports = (req, res, next) => {
   try {
-    // Get token from headers
     const token = req.headers.authorization?.split(' ')[1];
-    
-    // Also check localStorage data forwarded from frontend
-    const localStorageUser = req.headers['x-user-data'] 
-      ? JSON.parse(req.headers['x-user-data'])
-      : null;
-
-    // Verify token if exists
-    if (token) {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      // Merge decoded token data with localStorage user (so allowed_tabs etc. are preserved)
-      req.user = localStorageUser ? { ...decoded, ...localStorageUser } : decoded;
-    } 
-    // Fallback to localStorage data
-    else if (localStorageUser) {
-      req.user = localStorageUser;
+    if (!token) {
+      return res.status(401).json({ success: false, message: 'Access denied. No token provided.' });
     }
+
+    const decoded = jwt.verify(token, JWT_SECRET);
+    // Identity comes from the JWT only. Client x-user-data must not overwrite
+    // id / role / isAdmin (that let a verifier stamp final-office approval).
+    req.user = {
+      ...decoded,
+      id: decoded.id,
+      username: decoded.username,
+      role: decoded.role,
+      originalRole: decoded.originalRole,
+      isAdmin: decoded.isAdmin === true
+    };
 
     next();
   } catch (error) {
     console.error('Auth error:', error);
-    res.status(401).json({ error: 'Authentication failed' });
+    res.status(401).json({ success: false, error: 'Authentication failed' });
   }
 };
