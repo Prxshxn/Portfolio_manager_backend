@@ -2,6 +2,7 @@ const RepoDeal = require('../models/repoDealModel');
 const { resolveRepoDealNumber } = RepoDeal;
 const holidayValidationService = require('../services/holidayValidationService');
 const { resolveRequestUserId } = require('../utils/requestUser');
+const { resolveEffectiveWorkflowAuth } = require('../utils/effectiveWorkflowAuth');
 
 const parseCounterpartyId = (value) => {
   if (value === undefined || value === null || value === '') return null;
@@ -572,13 +573,12 @@ const repoDealController = {
         return res.status(400).json({ success: false, message: 'Valid action is required (approved, rejected)' });
       }
 
-      const user = req.user;
-      if (!user) {
+      const actor = await resolveEffectiveWorkflowAuth(req.user && req.user.id);
+      if (!actor) {
         return res.status(401).json({ success: false, message: 'Unauthorized' });
       }
 
-      const allowedTabs = user.allowed_tabs || user.allowedTabs || [];
-      if (!Array.isArray(allowedTabs) || !allowedTabs.includes('repo')) {
+      if (!actor.allowedTabs.includes('repo')) {
         return res.status(403).json({ success: false, message: 'Access denied: repo not assigned' });
       }
 
@@ -589,8 +589,8 @@ const repoDealController = {
 
       const currentLevel = existingDeal.current_approval_level || 'front_office';
 
-      const role = user.role;
-      const isAdmin = role === 'admin' || user.isAdmin;
+      const role = actor.role;
+      const isAdmin = actor.isAdmin;
       const requiredRoleByLevel = {
         front_office: 'front_office',
         back_office_verifier: 'back_office_verifier',
@@ -617,7 +617,7 @@ const repoDealController = {
       const approvalResult = await RepoDeal.updateApprovalStatus(parseInt(id), {
         action,
         comment,
-        userId: user.id
+        userId: actor.id
       });
 
       const updatedDeal = await RepoDeal.getById(parseInt(id));
