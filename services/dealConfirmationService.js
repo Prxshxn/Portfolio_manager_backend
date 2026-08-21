@@ -295,16 +295,20 @@ async function buildRepoContent({ refNumber, dealType, counterpartyId, tradeDate
 // caller can lay out a second column at the same starting y independently.
 function renderPartyColumn(doc, { label, party, x, y, width, lineHeight = 13, labelSize = 10, bodySize = 9.5 }) {
   let cursorY = y;
-  doc.font('Helvetica-Bold').fontSize(labelSize).text(label, x, cursorY, { underline: true, width });
-  cursorY += lineHeight + 2;
+  // Long party names wrap inside `width`. After each .text() call, advance to
+  // doc.y (pdfkit's post-wrap cursor) so the address never paints over the name.
+  doc.font('Helvetica-Bold').fontSize(labelSize);
+  doc.text(label || '', x, cursorY, { underline: true, width });
+  cursorY = Math.max(doc.y + 2, cursorY + lineHeight + 2);
 
   const lines = [party.name, ...(party.addressLines || []),
     `Telephone: ${party.telephone || ''}`,
     `Contact Person: ${party.contactPerson || ''}`];
   doc.font('Helvetica').fontSize(bodySize);
   for (const line of lines) {
-    doc.text(line || '', x, cursorY, { width });
-    cursorY += lineHeight;
+    const text = line || '';
+    doc.text(text, x, cursorY, { width });
+    cursorY = Math.max(doc.y + 1, cursorY + lineHeight);
   }
   return cursorY;
 }
