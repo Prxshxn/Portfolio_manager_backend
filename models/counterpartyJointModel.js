@@ -1,6 +1,46 @@
 const db = require('../config/db');
 const { generateCuxNumber } = require('../utils/cuxGenerator');
 
+/** When joint member rows were never persisted, rebuild display slots from combined names. */
+function synthesizeMembersFromJointNames(joint) {
+  const split = (value) =>
+    String(value || '')
+      .split(/\s*&\s*/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  const longs = split(joint.long_name);
+  const shorts = split(joint.short_name);
+  const count = Math.max(longs.length, shorts.length);
+  if (count < 1) return [];
+  const emptyAddress = {
+    houseNumber: '',
+    streetName: '',
+    province: '',
+    postalCode: '',
+    city: '',
+    country: '',
+    telephone: '',
+    email: '',
+    mobile: ''
+  };
+  const members = [];
+  for (let i = 0; i < count; i += 1) {
+    members.push({
+      sequence: i + 1,
+      title: i === 0 ? joint.title || '' : '',
+      shortName: shorts[i] || '',
+      longName: longs[i] || '',
+      idType: joint.id_type || 'NIC',
+      idNumber: '',
+      address: { ...emptyAddress },
+      cds_account: '',
+      custodian_bank: '',
+      _synthesized: true
+    });
+  }
+  return members;
+}
+
 const CounterpartyJoint = {
   getAll: async () => {
     const [rows] = await db.query('SELECT * FROM counterparty_master_joint ORDER BY short_name');
@@ -13,11 +53,16 @@ const CounterpartyJoint = {
     if (joint) {
       // Fetch relationships (with error handling)
       try {
-        const relationships = await CounterpartyJoint.getRelationships(id);
+        let relationships = await CounterpartyJoint.getRelationships(id);
+        // Older joints may have empty relationship rows (save used to fail silently).
+        // Fall back to splitting the stored combined short/long names so View/Edit still show parties.
+        if (!relationships.length) {
+          relationships = synthesizeMembersFromJointNames(joint);
+        }
         joint.counterparties = relationships;
       } catch (error) {
         console.error('Error fetching relationships for joint counterparty:', error.message);
-        joint.counterparties = []; // Return empty array if relationships can't be fetched
+        joint.counterparties = synthesizeMembersFromJointNames(joint);
       }
     }
     
@@ -86,16 +131,11 @@ const CounterpartyJoint = {
     
     // Update relationships if provided
     if (data.counterparties && Array.isArray(data.counterparties)) {
-      try {
-        // Delete existing relationships
-        await db.query('DELETE FROM joint_counterparty_relationships WHERE joint_counterparty_id = ?', [id]);
-        // Insert new relationships
-        if (data.counterparties.length > 0) {
-          await CounterpartyJoint.saveRelationships(id, data.counterparties);
-        }
-      } catch (error) {
-        console.error('Error updating relationships:', error.message);
-        // Continue even if relationships update fails
+      // Delete existing relationships
+      await db.query('DELETE FROM joint_counterparty_relationships WHERE joint_counterparty_id = ?', [id]);
+      // Insert new relationships
+      if (data.counterparties.length > 0) {
+        await CounterpartyJoint.saveRelationships(id, data.counterparties);
       }
     }
     
@@ -106,10 +146,10 @@ const CounterpartyJoint = {
     if (!counterparties || counterparties.length === 0) return;
     
     try {
+      // Live schema has no cds_account / custodian_bank on this table — omit them.
       const sql = `INSERT INTO joint_counterparty_relationships 
         (joint_counterparty_id, sequence_number, title, short_name, long_name, id_type, id_number,
-         house_number, street_name, province, postal_code, city, country, telephone, email, mobile,
-         cds_account, custodian_bank) 
+         house_number, street_name, province, postal_code, city, country, telephone, email, mobile) 
         VALUES ?`;
       
       const values = counterparties.map((cp, index) => [
@@ -128,16 +168,13 @@ const CounterpartyJoint = {
         cp.address?.country || '',
         cp.address?.telephone || '',
         cp.address?.email || '',
-        cp.address?.mobile || '',
-        cp.cds_account || '',
-        cp.custodian_bank || ''
+        cp.address?.mobile || ''
       ]);
       
       await db.query(sql, [values]);
     } catch (error) {
       console.error('Error saving relationships:', error.message);
-      // Don't throw - allow joint counterparty to be created even if relationships fail
-      // This handles cases where table doesn't exist yet
+      throw error;
     }
   },
   
@@ -146,7 +183,7 @@ const CounterpartyJoint = {
     const [rows] = await db.query(
       `SELECT sequence_number, title, short_name, long_name, id_type, id_number,
               house_number, street_name, province, postal_code, city, country, 
-              telephone, email, mobile, cds_account, custodian_bank
+              telephone, email, mobile
        FROM joint_counterparty_relationships 
        WHERE joint_counterparty_id = ? 
        ORDER BY sequence_number`,
@@ -170,8 +207,8 @@ const CounterpartyJoint = {
         email: row.email,
         mobile: row.mobile
       },
-      cds_account: row.cds_account || '',
-      custodian_bank: row.custodian_bank || ''
+      cds_account: '',
+      custodian_bank: ''
     }));
     } catch (error) {
       // If table doesn't exist or other error, return empty array

@@ -110,12 +110,61 @@ async function fetchCounterparty(counterpartyId) {
         `SELECT id, short_name, long_name FROM counterparty_master_joint WHERE id = ? LIMIT 1`,
         [numeric]
       );
-      if (rows[0]) return { ...rows[0], type: 'joint' };
+      if (!rows[0]) return null;
+      let members = [];
+      try {
+        const [relRows] = await db.query(
+          `SELECT sequence_number, long_name, short_name, id_number, id_type
+           FROM joint_counterparty_relationships
+           WHERE joint_counterparty_id = ?
+           ORDER BY sequence_number`,
+          [numeric]
+        );
+        members = relRows || [];
+      } catch (relErr) {
+        console.warn('[GSEC Letter] Joint member lookup failed:', relErr.message);
+      }
+      return { ...rows[0], type: 'joint', members };
     }
   } catch (err) {
     console.warn('[GSEC Letter] Counterparty lookup failed:', err.message);
   }
   return null;
+}
+
+/**
+ * Letter display name. Individuals: Name (NIC) when id_number set.
+ * Joint: Name1 (NIC1) & Name2 (NIC2) from relationship rows when NICs exist;
+ * falls back to joint long/short name if no members.
+ */
+function formatCounterpartyDisplay(counterparty, counterpartyId) {
+  if (!counterparty) {
+    return counterpartyId ? `ID:${counterpartyId}` : 'Counterparty';
+  }
+
+  if (counterparty.type === 'individual') {
+    const name = counterparty.long_name || counterparty.short_name || `ID:${counterpartyId}`;
+    const nic = String(counterparty.id_number || '').trim();
+    return nic ? `${name} (${nic})` : name;
+  }
+
+  if (counterparty.type === 'joint') {
+    const members = Array.isArray(counterparty.members) ? counterparty.members : [];
+    if (members.length > 0) {
+      return members
+        .map((m) => {
+          const name = String(m.long_name || m.short_name || '').trim();
+          const nic = String(m.id_number || '').trim();
+          if (!name) return nic ? `(${nic})` : '';
+          return nic ? `${name} (${nic})` : name;
+        })
+        .filter(Boolean)
+        .join(' & ');
+    }
+    return counterparty.long_name || counterparty.short_name || `ID:${counterpartyId}`;
+  }
+
+  return counterparty.long_name || counterparty.short_name || `ID:${counterpartyId}`;
 }
 
 async function fetchSettlementBank(settlementMode) {
@@ -205,10 +254,7 @@ async function buildLetterContext(dealId) {
     : (fundMovementIsYes ? 'DVP' : 'DVF');
 
   const counterparty = await fetchCounterparty(deal.counterparty_id);
-  const counterpartyDisplay = counterparty
-    ? (counterparty.long_name || counterparty.short_name || `ID:${deal.counterparty_id}`) +
-      (counterparty.type === 'individual' && counterparty.id_number ? ` (${counterparty.id_number})` : '')
-    : (deal.counterparty_id ? `ID:${deal.counterparty_id}` : 'Counterparty');
+  const counterpartyDisplay = formatCounterpartyDisplay(counterparty, deal.counterparty_id);
 
   const settlementBank = await fetchSettlementBank(deal.settlement_mode);
   const recipientBankName = settlementBank?.bank_name || COMPANY.bankName;
