@@ -99,14 +99,22 @@ class ExcelProcessingService {
       if (!row || !row.length) continue;
       const headerText = this.headerText(row);
       if (kind === 'bill') {
+        // Prefer the real column header row, not the sheet title
+        // ("TWO_WAY QUOTES (TREASURY BILLS)").
         if (
-          (headerText.includes('bill') && (headerText.includes('treasury') || headerText.includes('yield'))) ||
+          headerText.includes('remaining maturity') ||
+          (headerText.includes('average buying') && headerText.includes('yield')) ||
           (headerText.includes('isin') && headerText.includes('yield')) ||
           (headerText.includes('series') && headerText.includes('bill'))
         ) {
           return i;
         }
       } else if (headerText.includes('treasury') && headerText.includes('series')) {
+        return i;
+      } else if (
+        headerText.includes('maturity date') &&
+        (headerText.includes('buying') || headerText.includes('yield'))
+      ) {
         return i;
       }
     }
@@ -169,7 +177,39 @@ class ExcelProcessingService {
     for (const key of Object.keys(fallback)) {
       map[key] = byKeyword[key] >= 0 ? byKeyword[key] : fallback[key];
     }
+
+    // CBSL Daily Summary: merged label "Treasury Bond By Series" sits in col B,
+    // while series codes (e.g. 11.25%2026A) are in the next empty-header column.
+    if (map.series >= 0) {
+      const seriesHeader = String(headers[map.series] || '');
+      const nextHeader = String(headers[map.series + 1] || '').trim();
+      if (/treasury/.test(seriesHeader) && /series/.test(seriesHeader) && !nextHeader) {
+        map.series += 1;
+      }
+    }
+
+    // Two bare "Yield" headers: first after buying price, second after selling price.
+    if (byKeyword.buyingYield < 0 && map.buyingPrice >= 0) {
+      const y1 = this.findColumnIndexFrom(headers, ['yield'], map.buyingPrice + 1);
+      if (y1 >= 0) map.buyingYield = y1;
+    }
+    if (byKeyword.sellingYield < 0 && map.sellingPrice >= 0) {
+      const y2 = this.findColumnIndexFrom(headers, ['yield'], map.sellingPrice + 1);
+      if (y2 >= 0) map.sellingYield = y2;
+    }
+
     return map;
+  }
+
+  findColumnIndexFrom(headers, keywords, startIndex = 0) {
+    const start = Math.max(0, startIndex);
+    for (let i = start; i < headers.length; i++) {
+      const header = headers[i];
+      if (header && typeof header === 'string' && keywords.some((keyword) => header.includes(keyword))) {
+        return i;
+      }
+    }
+    return -1;
   }
 
   finalizeQuoteRow(rowData) {
@@ -223,38 +263,60 @@ class ExcelProcessingService {
     const dataRows = rows.slice(headerRowIndex + 1);
     const columnMap = {
       isinNumber: this.findColumnIndex(headers, ['isin']),
-      series: this.findColumnIndex(headers, ['series', 'tenor', 'period']),
+      series: this.findColumnIndex(headers, ['remaining maturity', 'series', 'tenor', 'period']),
       maturityDate: this.findColumnIndex(headers, ['maturity date', 'maturity']),
-      daysToMaturity: this.findColumnIndex(headers, ['days to maturity', 'days to', 'remaining']),
+      daysToMaturity: this.findColumnIndex(headers, ['days to maturity', 'days to']),
       buyingPrice: this.findColumnIndex(headers, ['buying price', 'average buying', 'buy price']),
       buyingYield: this.findColumnIndex(headers, ['buying yield', 'buy yield']),
       sellingPrice: this.findColumnIndex(headers, ['selling price', 'average selling', 'sell price']),
       sellingYield: this.findColumnIndex(headers, ['selling yield', 'sell yield'])
     };
-    if (columnMap.buyingYield < 0) {
-      columnMap.buyingYield = this.findColumnIndex(headers, ['yield']);
+
+    // Tenor-bucket sheet (Remaining Maturity | Avg Buy | Yield | Avg Sell | Yield)
+    const isBucketSheet = headers.some((h) => String(h).includes('remaining maturity'));
+    if (isBucketSheet) {
+      if (columnMap.series < 0) columnMap.series = 1;
+      if (columnMap.buyingPrice < 0) columnMap.buyingPrice = 2;
+      if (columnMap.buyingYield < 0) {
+        columnMap.buyingYield = this.findColumnIndexFrom(headers, ['yield'], columnMap.buyingPrice + 1);
+        if (columnMap.buyingYield < 0) columnMap.buyingYield = 3;
+      }
+      if (columnMap.sellingPrice < 0) columnMap.sellingPrice = 4;
+      if (columnMap.sellingYield < 0) {
+        columnMap.sellingYield = this.findColumnIndexFrom(headers, ['yield'], columnMap.sellingPrice + 1);
+        if (columnMap.sellingYield < 0) columnMap.sellingYield = 5;
+      }
+    } else {
+      if (columnMap.buyingYield < 0) {
+        columnMap.buyingYield = this.findColumnIndex(headers, ['yield']);
+      }
+      if (columnMap.series < 0) columnMap.series = 2;
+      if (columnMap.maturityDate < 0) columnMap.maturityDate = 4;
+      if (columnMap.buyingPrice < 0) columnMap.buyingPrice = 6;
+      if (columnMap.buyingYield < 0) columnMap.buyingYield = 7;
+      if (columnMap.sellingPrice < 0) columnMap.sellingPrice = 8;
+      if (columnMap.sellingYield < 0) columnMap.sellingYield = 9;
     }
-    if (columnMap.series < 0) columnMap.series = 2;
-    if (columnMap.maturityDate < 0) columnMap.maturityDate = 4;
-    if (columnMap.buyingPrice < 0) columnMap.buyingPrice = 6;
-    if (columnMap.buyingYield < 0) columnMap.buyingYield = 7;
-    if (columnMap.sellingPrice < 0) columnMap.sellingPrice = 8;
-    if (columnMap.sellingYield < 0) columnMap.sellingYield = 9;
 
     const extractedData = [];
     dataRows.forEach((row, index) => {
       try {
         if (!this.isTbillDataRow(row, columnMap)) return;
+        const seriesRaw = this.cleanText(row[columnMap.series] || '');
+        // Skip rows where series was mis-read as a numeric price.
+        if (seriesRaw && /^-?\d+(\.\d+)?$/.test(seriesRaw)) return;
+
         const rowData = this.finalizeQuoteRow({
           instrumentType: 'T_BILL',
           isinNumber: this.cleanText(row[columnMap.isinNumber] || ''),
-          series: this.cleanText(row[columnMap.series] || ''),
+          series: seriesRaw,
           maturityDate: this.parseDate(row[columnMap.maturityDate]),
           daysToMaturity: this.parseNumber(row[columnMap.daysToMaturity]),
           buyingPrice: this.parseNumber(row[columnMap.buyingPrice]),
           buyingYield: this.parseYield(row[columnMap.buyingYield]),
           sellingPrice: this.parseNumber(row[columnMap.sellingPrice]),
-          sellingYield: this.parseYield(row[columnMap.sellingYield])
+          sellingYield: this.parseYield(row[columnMap.sellingYield]),
+          curveOnly: isBucketSheet && !this.cleanText(row[columnMap.isinNumber] || '')
         });
         if (
           (rowData.series || rowData.isinNumber || rowData.maturityDate) &&

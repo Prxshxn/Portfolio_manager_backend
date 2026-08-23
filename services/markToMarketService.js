@@ -49,6 +49,23 @@ function daysBetween(fromYmd, toYmd) {
   return Math.round((b - a) / 86400000);
 }
 
+/** Map CBSL T-bill tenor labels (e.g. "3 Month") to approximate days. */
+function tenorLabelToDays(label) {
+  const s = String(label || '').trim().toLowerCase();
+  if (!s) return null;
+  const range = s.match(/^(\d+)\s*-\s*(\d+)\s*days?$/);
+  if (range) {
+    return Math.round((Number(range[1]) + Number(range[2])) / 2);
+  }
+  const days = s.match(/^(\d+)\s*days?$/);
+  if (days) return Number(days[1]);
+  const months = s.match(/^(\d+)\s*months?$/);
+  if (months) return Number(months[1]) * 30;
+  const years = s.match(/^(\d+)\s*years?$/);
+  if (years) return Number(years[1]) * 365;
+  return null;
+}
+
 function interpolateYield(targetDays, points) {
   const pts = (points || [])
     .filter((p) => Number.isFinite(p.days) && Number.isFinite(p.yield))
@@ -105,6 +122,8 @@ class MarkToMarketService {
     const processRows = async (rows, defaultType) => {
       for (const data of rows) {
         try {
+          // Tenor-bucket T-bill rows (no ISIN) feed the curve only — do not upsert.
+          if (data.curveOnly) continue;
           const isinDetails = await this.getIsinDetails(data, defaultType);
           if (!isinDetails) {
             skippedCount += 1;
@@ -149,9 +168,18 @@ class MarkToMarketService {
     await processRows(bonds, 'T_BOND');
     await processRows(bills, 'T_BILL');
 
+    const billCurvePoints = (bills || [])
+      .filter((b) => b && b.curveOnly)
+      .map((b) => ({
+        days: tenorLabelToDays(b.series),
+        yield: Number(b.averageYield)
+      }))
+      .filter((p) => Number.isFinite(p.days) && p.days > 0 && Number.isFinite(p.yield));
+
     const syncResults = await this.syncUnquotedFromMaster({
       excelSource: `interpolated-from-${excelSource || 'upload'}`,
-      quotedIsins
+      quotedIsins,
+      billCurvePoints
     });
 
     return {
@@ -346,7 +374,7 @@ class MarkToMarketService {
   /**
    * Price every live isin_master row that is not already excel-quoted.
    */
-  async syncUnquotedFromMaster({ excelSource, quotedIsins } = {}) {
+  async syncUnquotedFromMaster({ excelSource, quotedIsins, billCurvePoints } = {}) {
     const valueDate = await this.resolveValueDate();
     const quoted = quotedIsins instanceof Set ? quotedIsins : new Set();
     let interpolatedCount = 0;
@@ -388,6 +416,12 @@ class MarkToMarketService {
       ),
       valueDate
     );
+    const uploadBillCurve = (billCurvePoints || []).filter(
+      (p) => Number.isFinite(p.days) && p.days > 0 && Number.isFinite(p.yield)
+    );
+    if (uploadBillCurve.length) {
+      excelBillCurve = uploadBillCurve;
+    }
     if (!excelBillCurve.length) excelBillCurve = excelBondCurve;
 
     const fallbackCurve = this.curveFromRows(mtmRows, valueDate);
