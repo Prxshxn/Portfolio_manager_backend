@@ -132,6 +132,9 @@ router.get('/gsec/sell-history', isinMasterController.getGsecSellHistory);
 // Get recent Gsec transactions
 router.get('/gsec/recent', isinMasterController.getRecentGsecTransactions);
 
+// Final-approved deals for a value date (settlement letters — no row cap)
+router.get('/gsec/final-approved', isinMasterController.getFinalApprovedGsecByValueDate);
+
 /**
  * @swagger
  * /isin-master/gsec-latest-deal-number:

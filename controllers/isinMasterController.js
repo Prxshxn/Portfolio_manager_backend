@@ -533,6 +533,35 @@ module.exports = {
       });
     }
   },
+
+  /**
+   * GET /api/isin-master/gsec/final-approved?valueDate=YYYY-MM-DD
+   * All final_approved GSEC deals for that value date (no 100/150 row cap).
+   */
+  getFinalApprovedGsecByValueDate: async (req, res) => {
+    try {
+      const valueDate = String(req.query.valueDate || req.query.value_date || '').slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(valueDate)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Query parameter valueDate (YYYY-MM-DD) is required'
+        });
+      }
+      const transactions = await Gsec.getFinalApprovedByValueDate(valueDate);
+      res.json({
+        success: true,
+        data: transactions,
+        valueDate,
+        count: transactions.length
+      });
+    } catch (err) {
+      console.error('Error in getFinalApprovedGsecByValueDate:', err);
+      res.status(500).json({
+        success: false,
+        message: err.message || 'Failed to load final-approved GSEC deals'
+      });
+    }
+  },
   
   /**
    * Update a Gsec transaction
