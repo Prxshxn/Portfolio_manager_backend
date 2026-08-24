@@ -51,7 +51,10 @@ function daysBetween(fromYmd, toYmd) {
 
 /** Map CBSL T-bill tenor labels (e.g. "3 Month") to approximate days. */
 function tenorLabelToDays(label) {
-  const s = String(label || '').trim().toLowerCase();
+  const s = String(label || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
   if (!s) return null;
   const range = s.match(/^(\d+)\s*-\s*(\d+)\s*days?$/);
   if (range) {
@@ -61,9 +64,15 @@ function tenorLabelToDays(label) {
   if (days) return Number(days[1]);
   const months = s.match(/^(\d+)\s*months?$/);
   if (months) return Number(months[1]) * 30;
-  const years = s.match(/^(\d+)\s*years?$/);
-  if (years) return Number(years[1]) * 365;
+  const years = s.match(/^(\d+(\.\d+)?)\s*years?$/);
+  if (years) return Math.round(Number(years[1]) * 365);
+  if (s === '1 year' || s === '12 months' || s === '12 month') return 365;
   return null;
+}
+
+function mtmSeriesKey(series, isinNumber) {
+  const s = String(series || '').trim();
+  return s || trimIsin(isinNumber);
 }
 
 function interpolateYield(targetDays, points) {
@@ -141,7 +150,7 @@ class MarkToMarketService {
             averagePrice: data.averagePrice
           });
           await this.upsertMarkToMarketRecord({
-            series: isinDetails.series || data.series || trimIsin(isinDetails.isin_number),
+            series: mtmSeriesKey(isinDetails.series || data.series, isinDetails.isin_number),
             isinNumber: trimIsin(isinDetails.isin_number),
             isinIssuer: isinDetails.isin_issuer,
             maturityDate: data.maturityDate || isinDetails.maturity_date,
@@ -168,13 +177,24 @@ class MarkToMarketService {
     await processRows(bonds, 'T_BOND');
     await processRows(bills, 'T_BILL');
 
+    // Daily Summary T-bill sheet has tenor buckets only (no ISIN/series).
+    // Build a yield curve from those buckets, then price every live LKA ISIN
+    // from isin_master (+ any held tbill rows) by days-to-maturity.
     const billCurvePoints = (bills || [])
-      .filter((b) => b && b.curveOnly)
+      .filter((b) => b && (b.curveOnly || (!trimIsin(b.isinNumber) && b.series)))
       .map((b) => ({
         days: tenorLabelToDays(b.series),
         yield: Number(b.averageYield)
       }))
       .filter((p) => Number.isFinite(p.days) && p.days > 0 && Number.isFinite(p.yield));
+
+    const tbillIsinResults = await this.priceTbillIsinsFromCurve({
+      billCurvePoints,
+      excelSource
+    });
+    for (const isin of tbillIsinResults.pricedIsins || []) {
+      quotedIsins.add(String(isin).toUpperCase());
+    }
 
     const syncResults = await this.syncUnquotedFromMaster({
       excelSource: `interpolated-from-${excelSource || 'upload'}`,
@@ -186,9 +206,135 @@ class MarkToMarketService {
       successCount,
       errorCount,
       skippedCount,
+      tbillIsinsPriced: tbillIsinResults.priced,
+      tbillIsinsSkipped: tbillIsinResults.skipped,
+      tbillIsinList: tbillIsinResults.pricedIsins,
       interpolatedCount: syncResults.interpolatedCount,
       interpolatedErrorCount: syncResults.errorCount
     };
+  }
+
+  /**
+   * Live T-bill ISINs: all LKA rows in isin_master still outstanding on valueDate,
+   * plus any distinct ISINs held on the tbill blotter.
+   */
+  async loadLiveTbillIsins(valueDate) {
+    const [fromMaster] = await db.query(
+      `SELECT ${ISIN_SELECT}
+       FROM isin_master
+       WHERE UPPER(TRIM(isin_number)) LIKE 'LKA%'
+         AND maturity_date IS NOT NULL
+         AND DATE(maturity_date) > DATE(?)`,
+      [valueDate]
+    );
+
+    const byIsin = new Map();
+    for (const row of fromMaster || []) {
+      const key = trimIsin(row.isin_number).toUpperCase();
+      if (key) byIsin.set(key, row);
+    }
+
+    try {
+      const [fromHoldings] = await db.query(
+        `SELECT DISTINCT TRIM(isin_number) AS isin_number
+         FROM tbill
+         WHERE transaction_type = 'Buy'
+           AND status = 'final_approved'
+           AND COALESCE(matured, 0) = 0
+           AND COALESCE(remaining_face_value, face_value, 0) > 0
+           AND isin_number IS NOT NULL
+           AND TRIM(isin_number) <> ''`
+      );
+      for (const h of fromHoldings || []) {
+        const key = trimIsin(h.isin_number).toUpperCase();
+        if (!key || byIsin.has(key)) continue;
+        const [rows] = await db.query(
+          `SELECT ${ISIN_SELECT} FROM isin_master
+           WHERE TRIM(isin_number) COLLATE utf8mb4_unicode_ci = ? COLLATE utf8mb4_unicode_ci
+           LIMIT 1`,
+          [trimIsin(h.isin_number)]
+        );
+        if (rows[0]) byIsin.set(key, rows[0]);
+      }
+    } catch (error) {
+      console.warn('T-bill holdings lookup for MTM failed:', error.message);
+    }
+
+    return [...byIsin.values()];
+  }
+
+  /**
+   * Price each live T-bill ISIN from the Daily Summary tenor curve.
+   * Identification is by ISIN master maturity (days remaining), not Excel series.
+   */
+  async priceTbillIsinsFromCurve({ billCurvePoints, excelSource } = {}) {
+    const valueDate = await this.resolveValueDate();
+    const curve = (billCurvePoints || []).filter(
+      (p) => Number.isFinite(p.days) && p.days > 0 && Number.isFinite(p.yield)
+    );
+    if (!curve.length) {
+      console.log('T-bill ISIN pricing skipped: no tenor curve points from Excel');
+      return { priced: 0, skipped: 0, errorCount: 0, pricedIsins: [] };
+    }
+
+    const liveBills = await this.loadLiveTbillIsins(valueDate);
+    console.log(
+      `Pricing ${liveBills.length} T-bill ISIN(s) from tenor curve (${curve.length} points) as-of ${valueDate}`
+    );
+
+    let priced = 0;
+    let skipped = 0;
+    let errorCount = 0;
+    const pricedIsins = [];
+
+    for (const isinDetails of liveBills) {
+      try {
+        const isinKey = trimIsin(isinDetails.isin_number);
+        const days = daysBetween(valueDate, isinDetails.maturity_date);
+        const interpolatedYield = interpolateYield(days, curve);
+        if (!isinKey || !Number.isFinite(days) || days <= 0 || !Number.isFinite(interpolatedYield)) {
+          skipped += 1;
+          continue;
+        }
+
+        const pricedRow = await this.priceIsin({
+          isinDetails,
+          instrumentType: 'T_BILL',
+          averageYield: interpolatedYield,
+          averagePrice: null
+        });
+
+        await this.upsertMarkToMarketRecord({
+          series: mtmSeriesKey(isinDetails.series, isinKey),
+          isinNumber: isinKey,
+          isinIssuer: isinDetails.isin_issuer,
+          maturityDate: isinDetails.maturity_date,
+          buyingPrice: pricedRow.averagePrice,
+          sellingPrice: pricedRow.averagePrice,
+          averagePrice: pricedRow.averagePrice,
+          buyingYield: interpolatedYield,
+          sellingYield: interpolatedYield,
+          averageYield: interpolatedYield,
+          dirtyPrice: pricedRow.dirtyPrice,
+          // Yield comes from the uploaded Daily Summary tenor sheet; ISIN is
+          // resolved from master by days-to-maturity (Excel has no T-bill ISIN).
+          excelSource: excelSource || 'Daily Summary T-bill tenor curve',
+          instrumentType: 'T_BILL',
+          quoteSource: 'excel'
+        });
+
+        priced += 1;
+        pricedIsins.push(isinKey.toUpperCase());
+        console.log(
+          `  T-bill ${isinKey}: days=${days} yield=${interpolatedYield.toFixed(4)} price=${pricedRow.dirtyPrice}`
+        );
+      } catch (error) {
+        console.error(`T-bill ISIN MTM failed for ${isinDetails.isin_number}:`, error);
+        errorCount += 1;
+      }
+    }
+
+    return { priced, skipped, errorCount, pricedIsins };
   }
 
   async getIsinDetails(data, defaultType) {
@@ -446,7 +592,7 @@ class MarkToMarketService {
         });
 
         await this.upsertMarkToMarketRecord({
-          series: isinDetails.series || isinKey,
+          series: mtmSeriesKey(isinDetails.series, isinDetails.isin_number),
           isinNumber: trimIsin(isinDetails.isin_number),
           isinIssuer: isinDetails.isin_issuer,
           maturityDate: isinDetails.maturity_date,
