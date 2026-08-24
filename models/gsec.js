@@ -726,6 +726,44 @@ const Gsec = {
   },
 
   /**
+   * All final_approved GSEC deals for a value date (no row cap — settlement letters blotter).
+   * @param {string} valueDateYmd YYYY-MM-DD
+   */
+  getFinalApprovedByValueDate: async (valueDateYmd) => {
+    const day = String(valueDateYmd || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+      throw new Error('valueDate must be YYYY-MM-DD');
+    }
+    const sql = `
+      SELECT
+        g.*,
+        g.isin_number AS isin,
+        COALESCE(
+          corp.short_name,
+          ind.short_name,
+          joint.short_name,
+          CONCAT('ID:', g.counterparty_id)
+        ) AS counterparty_name
+      FROM gsec g
+      LEFT JOIN counterparty_master_corporate corp ON (g.counterparty_id LIKE 'c%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = corp.id) OR (g.counterparty_id = corp.id)
+      LEFT JOIN counterparty_master_individual ind ON (g.counterparty_id LIKE 'i%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = ind.id) OR (g.counterparty_id = ind.id)
+      LEFT JOIN counterparty_master_joint joint ON (g.counterparty_id LIKE 'j%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = joint.id) OR (g.counterparty_id = joint.id)
+      WHERE LOWER(TRIM(g.status)) = 'final_approved'
+        AND DATE(g.value_date) = DATE(?)
+      ORDER BY g.id DESC
+    `;
+    const [results] = await db.query(sql, [day]);
+    return (results || []).map((transaction) => ({
+      ...transaction,
+      accrued_interest: transaction.accrued_interest != null ? parseFloat(transaction.accrued_interest).toFixed(4) : null,
+      clean_price: transaction.clean_price != null ? parseFloat(transaction.clean_price).toFixed(4) : null,
+      dirty_price: transaction.dirty_price != null ? parseFloat(transaction.dirty_price).toFixed(4) : null,
+      face_value: transaction.face_value != null ? parseFloat(transaction.face_value).toFixed(2) : null,
+      counterparty_name: transaction.counterparty_name || transaction.counterparty_id || 'Unknown'
+    }));
+  },
+
+  /**
    * Look up source Buy rows by deal number (for sell / buyback authorizer slips).
    */
   getBuyDealsByDealNumbers: async (dealNumbers) => {
