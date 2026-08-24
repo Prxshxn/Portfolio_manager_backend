@@ -51,7 +51,9 @@ class MarkToMarketController {
           recordsProcessed: bonds.length + bills.length,
           bondRecords: bonds.length,
           billRecords: bills.length,
-          updateResults
+          updateResults,
+          tbillIsinsPriced: updateResults.tbillIsinsPriced || 0,
+          tbillIsinList: updateResults.tbillIsinList || []
         }
       });
 
