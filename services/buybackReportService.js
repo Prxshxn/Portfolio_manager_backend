@@ -1,5 +1,6 @@
 const db = require('../config/db');
 const { deriveLeg2Prices } = require('./buybackLeg2PriceHelper');
+const { isTransactionsView, resolveTransactionDateRange, pushValueDateRange } = require('./reportViewHelper');
 
 let buybackDealsColumnSetPromise = null;
 
@@ -47,7 +48,7 @@ function formatPercentage(value, decimals = 4) {
   });
 }
 
-exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturityDate, transactionPair, page, pageSize }) => {
+exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturityDate, dateFrom, dateTo, transactionPair, page, pageSize, view }) => {
   // Always refresh the column set so columns added after server start (via ensureColumnExists
   // in BuybackDeal.create) are never missed by a stale module-level cache.
   buybackDealsColumnSetPromise = null;
@@ -85,18 +86,23 @@ exports.getBuybackReport = async ({ asAtDate, portfolio, isin, valueDate, maturi
     whereParts.push('(bd.leg1_isin = ? OR bd.leg2_isin = ?)');
     params.push(isin, isin);
   }
-  if (valueDate) {
-    whereParts.push('DATE(bd.leg1_value_date) = DATE(?)');
-    params.push(valueDate);
-  }
   if (maturityDate) {
     whereParts.push('DATE(bd.leg2_value_date) = DATE(?)');
     params.push(maturityDate);
   }
-  if (asAtDate) {
-    whereParts.push('DATE(bd.leg1_value_date) <= DATE(?)');
-    whereParts.push('DATE(bd.leg2_value_date) > DATE(?)');
-    params.push(asAtDate, asAtDate);
+  if (isTransactionsView(view)) {
+    const range = resolveTransactionDateRange({ dateFrom, dateTo, asAtDate, valueDate });
+    pushValueDateRange(whereParts, params, 'bd.leg1_value_date', range);
+  } else {
+    if (valueDate) {
+      whereParts.push('DATE(bd.leg1_value_date) = DATE(?)');
+      params.push(valueDate);
+    }
+    if (asAtDate) {
+      whereParts.push('DATE(bd.leg1_value_date) <= DATE(?)');
+      whereParts.push('DATE(bd.leg2_value_date) > DATE(?)');
+      params.push(asAtDate, asAtDate);
+    }
   }
 
   const whereSql = whereParts.length ? `WHERE ${whereParts.join(' AND ')}` : '';

@@ -1,6 +1,32 @@
 const db = require('../config/db');
+const { isTransactionsView, resolveTransactionDateRange, appendValueDateRange } = require('./reportViewHelper');
 
-exports.getRepoReport = async ({ asAtDate, portfolio, isin, valueDate, maturityDate, dealType, page, pageSize }) => {
+function applyRepoDateFilters(sql, params, { asAtDate, valueDate, maturityDate, dateFrom, dateTo, view }) {
+  if (maturityDate) {
+    sql += ' AND rd.maturity_date = ?';
+    params.push(maturityDate);
+  }
+
+  if (isTransactionsView(view)) {
+    const range = resolveTransactionDateRange({ dateFrom, dateTo, asAtDate, valueDate });
+    return appendValueDateRange(sql, params, 'rd.value_date', range);
+  }
+
+  if (valueDate) {
+    sql += ' AND rd.value_date = ?';
+    params.push(valueDate);
+  }
+  if (asAtDate) {
+    sql += ' AND rd.value_date <= ?';
+    params.push(asAtDate);
+    // Open positions only as at the report date — exclude matured repo / reverse-repo deals.
+    sql += ' AND (rd.maturity_date IS NULL OR DATE(rd.maturity_date) > DATE(?))';
+    params.push(asAtDate);
+  }
+  return sql;
+}
+
+exports.getRepoReport = async ({ asAtDate, portfolio, isin, valueDate, maturityDate, dateFrom, dateTo, dealType, page, pageSize, view }) => {
   // Build query with filters for repo deals (Repo + Reverse Repo)
   let sql = `
     SELECT
@@ -64,23 +90,7 @@ exports.getRepoReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     params.push(isin);
   }
 
-  if (valueDate) {
-    sql += ' AND rd.value_date = ?';
-    params.push(valueDate);
-  }
-
-  if (maturityDate) {
-    sql += ' AND rd.maturity_date = ?';
-    params.push(maturityDate);
-  }
-
-  if (asAtDate) {
-    sql += ' AND rd.value_date <= ?';
-    params.push(asAtDate);
-    // Open positions only as at the report date — exclude matured repo / reverse-repo deals.
-    sql += ' AND (rd.maturity_date IS NULL OR DATE(rd.maturity_date) > DATE(?))';
-    params.push(asAtDate);
-  }
+  sql = applyRepoDateFilters(sql, params, { asAtDate, valueDate, maturityDate, dateFrom, dateTo, view });
 
   sql += ' ORDER BY rd.value_date DESC, rd.id DESC';
 
@@ -134,20 +144,7 @@ exports.getRepoReport = async ({ asAtDate, portfolio, isin, valueDate, maturityD
     countSql += ' AND rd.isin_number = ?';
     countParams.push(isin);
   }
-  if (valueDate) {
-    countSql += ' AND rd.value_date = ?';
-    countParams.push(valueDate);
-  }
-  if (maturityDate) {
-    countSql += ' AND rd.maturity_date = ?';
-    countParams.push(maturityDate);
-  }
-  if (asAtDate) {
-    countSql += ' AND rd.value_date <= ?';
-    countParams.push(asAtDate);
-    countSql += ' AND (rd.maturity_date IS NULL OR DATE(rd.maturity_date) > DATE(?))';
-    countParams.push(asAtDate);
-  }
+  countSql = applyRepoDateFilters(countSql, countParams, { asAtDate, valueDate, maturityDate, dateFrom, dateTo, view });
 
   const [[{ count }]] = await db.query(countSql, countParams);
 

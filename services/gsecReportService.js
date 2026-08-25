@@ -7,6 +7,7 @@ const {
   computeGsecPerDayAccrual
 } = require('./gsecCouponPeriod');
 const { buildSoldByDealMap } = require('./gsecSellDeductionService');
+const { isTransactionsView, resolveTransactionDateRange, pushValueDateRange } = require('./reportViewHelper');
 
 // Helper to truncate to 4 decimals
 function truncate4(val) {
@@ -87,8 +88,105 @@ function resolveEffectiveRemainingFace(row) {
   return Math.max(0, Number(row.remaining_face_value_report ?? face) || 0);
 }
 
-exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityDate, page, pageSize }) => {
+const BUYBACK_LETTER_SKIP_SQL = `NOT (
+          g.buyback_deal_id IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM buyback_deals bd_letter
+            WHERE bd_letter.id = g.buyback_deal_id
+              AND bd_letter.leg1_transaction_type = 'Buy'
+              AND bd_letter.leg2_transaction_type = 'Sell'
+          )
+        )`;
+
+async function getGsecTransactionsReport({ asAtDate, portfolio, isin, valueDate, maturityDate, dateFrom, dateTo, page, pageSize }) {
+  const range = resolveTransactionDateRange({ dateFrom, dateTo, asAtDate, valueDate });
+  const whereParts = [
+    `g.transaction_type IN ('Buy', 'Sell')`,
+    `COALESCE(g.status, '') NOT IN ('cancelled', 'rejected')`,
+    BUYBACK_LETTER_SKIP_SQL
+  ];
+  const params = [];
+
+  if (portfolio) {
+    whereParts.push('g.portfolio = ?');
+    params.push(portfolio);
+  }
+  if (isin) {
+    whereParts.push('g.isin_number = ?');
+    params.push(isin);
+  }
+  pushValueDateRange(whereParts, params, 'g.value_date', range);
+  if (maturityDate) {
+    whereParts.push('DATE(g.maturity_date) = DATE(?)');
+    params.push(maturityDate);
+  }
+
+  const whereSql = `WHERE ${whereParts.join(' AND ')}`;
+  const fromSql = `
+      FROM gsec g
+      LEFT JOIN isin_master im ON g.isin_number COLLATE utf8mb4_unicode_ci = im.isin_number COLLATE utf8mb4_unicode_ci
+      LEFT JOIN counterparty_master_corporate corp ON (g.counterparty_id LIKE 'c%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = corp.id) OR (g.counterparty_id = corp.id)
+      LEFT JOIN counterparty_master_individual ind ON (g.counterparty_id LIKE 'i%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = ind.id) OR (g.counterparty_id = ind.id)
+      LEFT JOIN counterparty_master_joint joint ON (g.counterparty_id LIKE 'j%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = joint.id) OR (g.counterparty_id = joint.id)
+      ${whereSql}`;
+
+  const countSql = `SELECT COUNT(*) AS count ${fromSql}`;
+  const [[{ count }]] = await db.query(countSql, params);
+
+  let selectSql = `
+      SELECT g.id, g.portfolio, g.deal_number, g.face_value, g.trade_date, g.value_date, g.maturity_date,
+             g.isin_number AS isin, g.coupon_interest, g.clean_price, g.dirty_price, g.yield,
+             g.settlement_amount, g.status, g.counterparty_id, g.transaction_type,
+             COALESCE(
+               corp.short_name,
+               ind.short_name,
+               joint.short_name,
+               CONCAT('ID:', g.counterparty_id)
+             ) AS counterparty_name,
+             im.coupon_rate, im.issue_date
+      ${fromSql}
+      ORDER BY g.value_date DESC, g.id DESC`;
+  const selectParams = [...params];
+  if (page && pageSize) {
+    const limit = Number(pageSize);
+    const offset = (Number(page) - 1) * Number(pageSize);
+    selectSql += ' LIMIT ? OFFSET ?';
+    selectParams.push(limit, offset);
+  }
+
+  const [rows] = await db.query(selectSql, selectParams);
+  const data = rows.map((row) => ({
+    id: row.id,
+    product_type: 'GSec',
+    portfolio: row.portfolio,
+    custodian: '',
+    deal_number: row.deal_number || '',
+    transaction_type: row.transaction_type || '',
+    trade_date: row.trade_date,
+    value_date: row.value_date,
+    maturity_date: row.maturity_date,
+    issue_date: row.issue_date || null,
+    isin: row.isin,
+    face_value: formatCurrency(row.face_value, 2),
+    coupon_rate: formatPercentage(row.coupon_rate, 4),
+    coupon_interest: formatPrice(row.coupon_interest, 4),
+    clean_price: formatPrice(row.clean_price, 4),
+    dirty_price: formatPrice(row.dirty_price, 4),
+    yield: formatPercentage(row.yield, 4),
+    settlement_amount: formatCurrency(row.settlement_amount, 2),
+    counterparty: row.counterparty_name || (row.counterparty_id ? String(row.counterparty_id) : ''),
+    status: row.status || ''
+  }));
+
+  return { data, total: Number(count) || 0, totalPortfolioBalance: null, summary: [] };
+}
+
+exports.getGsecReport = async ({ asAtDate, portfolio, isin, valueDate, maturityDate, dateFrom, dateTo, page, pageSize, view }) => {
   try {
+    if (isTransactionsView(view)) {
+      return getGsecTransactionsReport({ asAtDate, portfolio, isin, valueDate, maturityDate, dateFrom, dateTo, page, pageSize });
+    }
+
     // Debug: Log the asAtDate parameter
     console.log(`[GSEC Report] Called with asAtDate: ${asAtDate}, portfolio: ${portfolio}, isin: ${isin}`);
     

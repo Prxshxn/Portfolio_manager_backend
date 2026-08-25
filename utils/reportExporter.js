@@ -170,6 +170,24 @@ const TBILL_EXPORT_COLUMNS = [
   { key: 'deal_number', label: 'Deal Number' }
 ];
 
+const GSEC_TRANSACTIONS_EXPORT_COLUMNS = [
+  { key: 'deal_number', label: 'Deal Number' },
+  { key: 'transaction_type', label: 'Transaction Type' },
+  { key: 'portfolio', label: 'Portfolio' },
+  { key: 'counterparty', label: 'Counterparty' },
+  { key: 'isin', label: 'ISIN' },
+  { key: 'trade_date', label: 'Trade Date' },
+  { key: 'value_date', label: 'Value Date' },
+  { key: 'maturity_date', label: 'Maturity Date' },
+  { key: 'face_value', label: 'Face Value' },
+  { key: 'clean_price', label: 'Clean Price' },
+  { key: 'dirty_price', label: 'Dirty Price' },
+  { key: 'yield', label: 'Yield' },
+  { key: 'settlement_amount', label: 'Settlement Amount' },
+  { key: 'coupon_rate', label: 'Coupon Rate' },
+  { key: 'status', label: 'Status' }
+];
+
 // Daily Maturity Handling screen — matches on-screen table columns
 const MATURITY_CASHFLOW_EXPORT_COLUMNS = [
   { key: 'event_type', label: 'Event' },
@@ -1856,6 +1874,112 @@ exports.exportDailyMaturityCashflow = async (format, rows, totals = {}) => {
 
     doc.end();
     return new Promise((resolve) => {
+      doc.on('end', () => resolve(Buffer.concat(buffers)));
+    });
+  }
+
+  throw new Error('Unsupported export format');
+};
+
+function preprocessGsecTransactionsExportData(data) {
+  return (data || []).map((row) => {
+    const mapped = {};
+    GSEC_TRANSACTIONS_EXPORT_COLUMNS.forEach((col) => {
+      let val = row[col.key];
+      if (col.key === 'trade_date' || col.key === 'value_date' || col.key === 'maturity_date') {
+        val = formatDate(val);
+      }
+      mapped[col.key] = val !== undefined && val !== null ? val : '';
+    });
+    return mapped;
+  });
+}
+
+exports.exportGsecTransactions = async (format, data) => {
+  const processedData = preprocessGsecTransactionsExportData(data);
+
+  if (format === 'csv') {
+    const parser = new Parser({
+      fields: GSEC_TRANSACTIONS_EXPORT_COLUMNS.map((col) => ({ label: col.label, value: col.key }))
+    });
+    return parser.parse(processedData);
+  }
+
+  if (format === 'excel') {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('GSec Transactions');
+    sheet.columns = GSEC_TRANSACTIONS_EXPORT_COLUMNS.map((col) => ({
+      header: col.label,
+      key: col.key
+    }));
+    const numeric2dpKeys = new Set(['face_value', 'settlement_amount']);
+    const numeric4dpKeys = new Set(['clean_price', 'dirty_price', 'yield', 'coupon_rate']);
+    const excelRows = processedData.map((row) => {
+      const next = { ...row };
+      for (const k of numeric2dpKeys) next[k] = toExcelNumber(next[k]);
+      for (const k of numeric4dpKeys) next[k] = toExcelNumber4(next[k]);
+      return next;
+    });
+    sheet.addRows(excelRows);
+    for (const k of numeric2dpKeys) {
+      const col = sheet.getColumn(k);
+      if (col) col.numFmt = '#,##0.00';
+    }
+    for (const k of numeric4dpKeys) {
+      const col = sheet.getColumn(k);
+      if (col) col.numFmt = '#,##0.0000';
+    }
+    return workbook.xlsx.writeBuffer();
+  }
+
+  if (format === 'pdf') {
+    const doc = new PDFDocument({ margin: 30, size: 'A4', layout: 'landscape' });
+    const buffers = [];
+    doc.on('data', buffers.push.bind(buffers));
+    doc.on('end', () => {});
+    doc.fontSize(16).font('Helvetica-Bold').text('GSec Transactions Report', { align: 'center' });
+    doc.moveDown(0.5);
+    const columns = GSEC_TRANSACTIONS_EXPORT_COLUMNS.map((col) => ({
+      key: col.key,
+      label: col.label,
+      width: 70,
+      align: ['face_value', 'clean_price', 'dirty_price', 'yield', 'settlement_amount', 'coupon_rate'].includes(col.key)
+        ? 'right'
+        : 'left'
+    }));
+    const maxWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+    const totalWidth = columns.reduce((sum, col) => sum + col.width, 0);
+    if (totalWidth > maxWidth) {
+      const scale = maxWidth / totalWidth;
+      columns.forEach((col) => { col.width = Math.floor(col.width * scale); });
+    }
+    const rowHeight = 16;
+    const drawHeader = (y) => {
+      let x = doc.page.margins.left;
+      doc.fontSize(7).font('Helvetica-Bold');
+      columns.forEach((col) => {
+        doc.text(col.label, x, y, { width: col.width, align: col.align });
+        x += col.width;
+      });
+      return y + rowHeight;
+    };
+    let y = drawHeader(doc.y + 4);
+    doc.font('Helvetica').fontSize(7);
+    processedData.forEach((row) => {
+      if (y > doc.page.height - doc.page.margins.bottom - rowHeight) {
+        doc.addPage();
+        y = drawHeader(doc.page.margins.top);
+        doc.font('Helvetica').fontSize(7);
+      }
+      let x = doc.page.margins.left;
+      columns.forEach((col) => {
+        doc.text(String(row[col.key] ?? ''), x, y, { width: col.width, align: col.align });
+        x += col.width;
+      });
+      y += rowHeight;
+    });
+    doc.end();
+    return await new Promise((resolve) => {
       doc.on('end', () => resolve(Buffer.concat(buffers)));
     });
   }
