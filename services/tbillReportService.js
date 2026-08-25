@@ -1,5 +1,6 @@
 const db = require('../config/db');
 const { differenceInDays, parseISO } = require('date-fns');
+const { isTransactionsView, resolveTransactionDateRange, appendValueDateRange } = require('./reportViewHelper');
 
 function formatCurrency(value, decimals = 2) {
   if (value === null || value === undefined || value === '') return '';
@@ -61,9 +62,7 @@ function resolvePortfolioDisplay(row) {
   return '';
 }
 
-exports.getTbillReport = async ({ asAtDate, portfolio, isin, valueDate, maturityDate, page, pageSize }) => {
-  try {
-    let sql = `
+const TBILL_SELECT_SQL = `
       SELECT t.id, t.deal_number, t.trade_date, t.value_date, t.transaction_type,
              t.isin_number, t.maturity_date, t.face_value, t.discount_rate_pct,
              t.days_to_maturity, t.price_per_100, t.settlement_amount,
@@ -89,7 +88,83 @@ exports.getTbillReport = async ({ asAtDate, portfolio, isin, valueDate, maturity
         OR (t.counterparty = joint.id)
       LEFT JOIN portfolio_master pm
         ON CAST(t.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci
-         = CAST(pm.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci
+         = CAST(pm.portfolio_id AS CHAR) COLLATE utf8mb4_unicode_ci`;
+
+async function getTbillTransactionsReport({ asAtDate, portfolio, isin, valueDate, maturityDate, dateFrom, dateTo, page, pageSize }) {
+  const range = resolveTransactionDateRange({ dateFrom, dateTo, asAtDate, valueDate });
+  let sql = `${TBILL_SELECT_SQL}
+      WHERE t.transaction_type IN ('Buy', 'Sell')
+        AND t.status = 'final_approved'`;
+  const params = [];
+
+  if (portfolio) {
+    sql += ' AND t.portfolio_id = ?';
+    params.push(String(portfolio));
+  }
+  if (isin) {
+    sql += ' AND t.isin_number = ?';
+    params.push(isin);
+  }
+  sql = appendValueDateRange(sql, params, 't.value_date', range);
+  if (maturityDate) {
+    sql += ' AND DATE(t.maturity_date) = DATE(?)';
+    params.push(maturityDate);
+  }
+
+  sql += ' ORDER BY t.value_date DESC, t.id DESC';
+  const [rows] = await db.query(sql, params);
+
+  const data = rows.map((row) => {
+    const originalFace = Number(row.face_value) || 0;
+    const originalSettlement = Number(row.settlement_amount) || 0;
+    const maturityDateObj = safeParseISO(row.maturity_date);
+    const valueDateObj = safeParseISO(row.value_date);
+    let dtm = '';
+    if (maturityDateObj && valueDateObj) {
+      dtm = Math.max(0, differenceInDays(maturityDateObj, valueDateObj));
+    }
+    return {
+      id: row.id,
+      product_type: 'T-Bill',
+      deal_number: row.deal_number || '',
+      trade_date: row.trade_date,
+      value_date: row.value_date,
+      transaction_type: row.transaction_type || '',
+      counterparty: row.counterparty_name || (row.counterparty ? String(row.counterparty) : ''),
+      isin_number: row.isin_number || '',
+      maturity_date: row.maturity_date,
+      face_value: formatCurrency(originalFace, 2),
+      discount_rate_pct: formatPercentage(row.discount_rate_pct, 2),
+      days_to_maturity: dtm !== '' ? String(dtm) : '',
+      price_per_100: formatPrice(row.price_per_100, 2),
+      settlement_amount: formatCurrency(originalSettlement, 2),
+      portfolio: resolvePortfolioDisplay(row),
+      buy_deal_number: '',
+      remaining_face_value: '',
+      per_day_accrual: formatPrice(row.per_day_accrual, 2),
+      accrued_interest_to_date: formatPrice(row.accrued_interest_to_date, 2)
+    };
+  });
+
+  const total = data.length;
+  let paginatedData = data;
+  if (page && pageSize) {
+    const pageSizeNum = parseInt(pageSize, 10);
+    const pageNum = parseInt(page, 10);
+    const offset = (pageNum - 1) * pageSizeNum;
+    paginatedData = data.slice(offset, offset + pageSizeNum);
+  }
+
+  return { data: paginatedData, total, totalPortfolioBalance: null };
+}
+
+exports.getTbillReport = async ({ asAtDate, portfolio, isin, valueDate, maturityDate, dateFrom, dateTo, page, pageSize, view }) => {
+  try {
+    if (isTransactionsView(view)) {
+      return getTbillTransactionsReport({ asAtDate, portfolio, isin, valueDate, maturityDate, dateFrom, dateTo, page, pageSize });
+    }
+
+    let sql = `${TBILL_SELECT_SQL}
       WHERE t.transaction_type = 'Buy'
         AND t.status = 'final_approved'`;
     const params = [];
