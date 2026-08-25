@@ -21,16 +21,25 @@ exports.getGsecReport = async (req, res) => {
       isin,
       valueDate,
       maturityDate,
+      dateFrom,
+      dateTo,
       format,
       page,
       pageSize,
-      summaryOnly
+      summaryOnly,
+      view
     } = req.query;
 
     const isSummaryOnly = summaryOnly === '1' || summaryOnly === 'true';
+    const isTransactions = String(view || '').toLowerCase() === 'transactions'
+      || String(view || '').toLowerCase() === 'transaction';
 
     // Validate required params
-    if (!asAtDate && !isin) {
+    if (isTransactions) {
+      if (!dateFrom && !dateTo && !asAtDate && !valueDate && !isin) {
+        return res.status(400).json({ error: 'A date range (From/To) or ISIN is required' });
+      }
+    } else if (!asAtDate && !isin) {
       return res.status(400).json({ error: 'Either asAtDate or ISIN is required' });
     }
 
@@ -40,7 +49,10 @@ exports.getGsecReport = async (req, res) => {
       portfolio,
       isin,
       valueDate,
-      maturityDate
+      maturityDate,
+      dateFrom,
+      dateTo,
+      view
     };
     
     // Only add pagination if provided (for regular display)
@@ -60,6 +72,8 @@ exports.getGsecReport = async (req, res) => {
 
     // Handle export formats
     if (format === 'csv' || format === 'excel' || format === 'pdf') {
+      const isTransactions = String(view || '').toLowerCase() === 'transactions'
+        || String(view || '').toLowerCase() === 'transaction';
       if (isSummaryOnly) {
         // ISIN-wise summary report (its own tab) – export summary only
         const fileBuffer = await reportExporter.exportGsecSummary(format, summary || []);
@@ -68,8 +82,13 @@ exports.getGsecReport = async (req, res) => {
         return res.send(fileBuffer);
       }
       // Use GSec exporter so all GSec report fields are included
-      const fileBuffer = await reportExporter.export(format, data);
-      res.setHeader('Content-Disposition', `attachment; filename=gsec_report.${format === 'excel' ? 'xlsx' : format}`);
+      const fileBuffer = isTransactions
+        ? await reportExporter.exportGsecTransactions(format, data)
+        : await reportExporter.export(format, data);
+      const filename = isTransactions
+        ? `gsec_transactions_report.${format === 'excel' ? 'xlsx' : format}`
+        : `gsec_report.${format === 'excel' ? 'xlsx' : format}`;
+      res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
       res.setHeader('Content-Type', reportExporter.getMimeType(format));
       return res.send(fileBuffer);
     }
@@ -288,10 +307,13 @@ exports.getBuybackReport = async (req, res) => {
       isin,
       valueDate,
       maturityDate,
+      dateFrom,
+      dateTo,
       transactionPair,
       format,
       page,
-      pageSize
+      pageSize,
+      view
     } = req.query;
 
     // Fetch report data
@@ -301,7 +323,10 @@ exports.getBuybackReport = async (req, res) => {
       isin,
       valueDate,
       maturityDate,
-      transactionPair
+      dateFrom,
+      dateTo,
+      transactionPair,
+      view
     };
     
     // Only add pagination if provided (for regular display)
@@ -319,7 +344,12 @@ exports.getBuybackReport = async (req, res) => {
     // Handle export formats
     if (format === 'csv' || format === 'excel' || format === 'pdf') {
       const fileBuffer = await reportExporter.exportBuyback(format, data);
-      res.setHeader('Content-Disposition', `attachment; filename=buyback_report.${format === 'excel' ? 'xlsx' : format}`);
+      const isTransactions = String(view || '').toLowerCase() === 'transactions'
+        || String(view || '').toLowerCase() === 'transaction';
+      const filename = isTransactions
+        ? `buyback_transactions_report.${format === 'excel' ? 'xlsx' : format}`
+        : `buyback_report.${format === 'excel' ? 'xlsx' : format}`;
+      res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
       res.setHeader('Content-Type', reportExporter.getMimeType(format));
       return res.send(fileBuffer);
     }
@@ -352,10 +382,13 @@ exports.getRepoReport = async (req, res) => {
       isin,
       valueDate,
       maturityDate,
+      dateFrom,
+      dateTo,
       dealType,
       format,
       page,
-      pageSize
+      pageSize,
+      view
     } = req.query;
 
     const reportParams = {
@@ -364,7 +397,10 @@ exports.getRepoReport = async (req, res) => {
       isin,
       valueDate,
       maturityDate,
-      dealType
+      dateFrom,
+      dateTo,
+      dealType,
+      view
     };
 
     if (page && pageSize) {
@@ -376,7 +412,12 @@ exports.getRepoReport = async (req, res) => {
 
     if (format === 'csv' || format === 'excel' || format === 'pdf') {
       const fileBuffer = await reportExporter.exportRepo(format, data);
-      res.setHeader('Content-Disposition', `attachment; filename=repo_report.${format === 'excel' ? 'xlsx' : format}`);
+      const isTransactions = String(view || '').toLowerCase() === 'transactions'
+        || String(view || '').toLowerCase() === 'transaction';
+      const filename = isTransactions
+        ? `repo_transactions_report.${format === 'excel' ? 'xlsx' : format}`
+        : `repo_report.${format === 'excel' ? 'xlsx' : format}`;
+      res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
       res.setHeader('Content-Type', reportExporter.getMimeType(format));
       return res.send(fileBuffer);
     }
@@ -402,16 +443,26 @@ exports.getTbillReport = async (req, res) => {
       isin,
       valueDate,
       maturityDate,
+      dateFrom,
+      dateTo,
       format,
       page,
-      pageSize
+      pageSize,
+      view
     } = req.query;
 
-    if (!asAtDate && !isin) {
+    const isTransactions = String(view || '').toLowerCase() === 'transactions'
+      || String(view || '').toLowerCase() === 'transaction';
+
+    if (isTransactions) {
+      if (!dateFrom && !dateTo && !asAtDate && !valueDate && !isin) {
+        return res.status(400).json({ error: 'A date range (From/To) or ISIN is required' });
+      }
+    } else if (!asAtDate && !isin) {
       return res.status(400).json({ error: 'Either asAtDate or ISIN is required' });
     }
 
-    const reportParams = { asAtDate, portfolio, isin, valueDate, maturityDate };
+    const reportParams = { asAtDate, portfolio, isin, valueDate, maturityDate, dateFrom, dateTo, view };
     if (page && pageSize) {
       reportParams.page = Number(page);
       reportParams.pageSize = Number(pageSize);
@@ -421,7 +472,12 @@ exports.getTbillReport = async (req, res) => {
 
     if (format === 'csv' || format === 'excel' || format === 'pdf') {
       const fileBuffer = await reportExporter.exportTbill(format, data);
-      res.setHeader('Content-Disposition', `attachment; filename=tbill_report.${format === 'excel' ? 'xlsx' : format}`);
+      const isTransactions = String(view || '').toLowerCase() === 'transactions'
+        || String(view || '').toLowerCase() === 'transaction';
+      const filename = isTransactions
+        ? `tbill_transactions_report.${format === 'excel' ? 'xlsx' : format}`
+        : `tbill_report.${format === 'excel' ? 'xlsx' : format}`;
+      res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
       res.setHeader('Content-Type', reportExporter.getMimeType(format));
       return res.send(fileBuffer);
     }
