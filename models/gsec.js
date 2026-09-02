@@ -14,7 +14,8 @@ const ensureGsecColumns = async () => {
     gsecColumnEnsurePromise = (async () => {
       const requiredColumns = {
         fund_movement: "VARCHAR(10) NULL DEFAULT 'no'",
-        comment: 'TEXT NULL'
+        comment: 'TEXT NULL',
+        created_by: 'INT NULL'
       };
 
       const columnNames = Object.keys(requiredColumns);
@@ -184,8 +185,8 @@ const Gsec = {
         coupon_interest, clean_price, dirty_price, accrued_interest_calculation, accrued_interest_six_decimals,
         accrued_interest_for_100, settlement_amount, settlement_mode, issue_date, maturity_date, coupon_dates,
         yield, brokerage, currency, portfolio, strategy, broker, accrued_interest_adjustment, clean_price_adjustment,
-        buy_deal_number, sell_deal_allocations, status, current_approval_level, fund_movement, per_day_accrual, remaining_face_value, per_day_amortization, custodian
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+        buy_deal_number, sell_deal_allocations, status, current_approval_level, fund_movement, per_day_accrual, remaining_face_value, per_day_amortization, custodian, created_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
       
       const values = [
         data.transactionType,
@@ -227,8 +228,8 @@ const Gsec = {
         cleanNumericValue(data.per_day_accrual),
         cleanNumericValue(data.remaining_face_value),
         cleanNumericValue(data.per_day_amortization),
-        data.custodian || null
-        // created_at has DEFAULT CURRENT_TIMESTAMP, so we don't need to include it
+        data.custodian || null,
+        data.created_by || data.createdBy || data.userId || data.user_id || null
       ];
       try {
         // Backend-side validation: prevent overselling from a Buy deal.
@@ -1898,5 +1899,7 @@ Gsec.syncFutureCouponCashflowsForBuyDeal = async (buyDealNumber, connection = nu
     throw error;
   }
 };
+
+Gsec.ensureColumns = ensureGsecColumns;
 
 module.exports = Gsec;

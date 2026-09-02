@@ -350,7 +350,7 @@ module.exports = {
         ...req.body,
         transaction_type: req.body.transaction_type || req.body.transactionType, // Ensure always set
         status: 'pending',
-        created_by: req.body.userId || null,
+        created_by: req.body.userId || req.body.user_id || (req.user && req.user.id) || null,
         created_at: new Date()
       };
       

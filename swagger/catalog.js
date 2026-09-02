@@ -916,6 +916,9 @@ const paths = {
   '/api/daily-deal-blotter': {
     get: op({ summary: 'Daily deal blotter', tags: 'Blotters', parameters: [q('date', 'YYYY-MM-DD')] })
   },
+  '/api/daily-transaction-blotter': {
+    get: op({ summary: 'Daily transaction blotter (value date)', tags: 'Blotters', parameters: [q('date', 'YYYY-MM-DD')] })
+  },
   '/api/coupon-maturity-blotter': {
     get: op({ summary: 'Coupon maturity blotter', tags: 'Blotters', parameters: [q('date', 'YYYY-MM-DD')] })
   },

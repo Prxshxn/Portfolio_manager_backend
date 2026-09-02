@@ -67,6 +67,49 @@ async function resolveAnnualCouponRatePercent(buyDeal) {
 
 /** Same default as buy compound path when settlement_accounts / mappings are missing */
 const DEFAULT_GSEC_BANK_LEDGER_CODE = '131-101-410-164-44';
+const DEFAULT_GSEC_BROKERAGE_PAID_CODE = '651-101-120-530-44';
+const DEFAULT_GSEC_BROKERAGE_PAYABLE_CODE = '249-101-270-266-44';
+
+/**
+ * Separate balanced pair after a successful GSec buy/sell journal.
+ * Skips missing / non-finite / <= 0 brokerage. Logs failures; does not throw.
+ */
+async function postGsecBrokerageIfAny(transaction, options = {}) {
+  if (options.dryRun) return;
+  const amount = Number(transaction.brokerage);
+  if (!Number.isFinite(amount) || amount <= 0) return;
+
+  const ledgerController = require('../controllers/ledgerController');
+  const accountMapping = require('./accountMappingService');
+  const prefix = options.descriptionPrefix || '';
+  const dealId = options.dealIdOverride || transaction.deal_number;
+  const date = toYmdUtc(transaction.value_date) || toYmdUtc(new Date());
+
+  const paidAccount =
+    (await accountMapping.getAccountCodeOptional(accountMapping.MAPPING_KEYS.GSEC_BROKERAGE_PAID)) ||
+    DEFAULT_GSEC_BROKERAGE_PAID_CODE;
+  const payableAccount =
+    (await accountMapping.getAccountCodeOptional(accountMapping.MAPPING_KEYS.GSEC_BROKERAGE_PAYABLE)) ||
+    DEFAULT_GSEC_BROKERAGE_PAYABLE_CODE;
+
+  try {
+    const result = await ledgerController.postLedgerEntry({
+      date,
+      dr_account: paidAccount,
+      cr_account: payableAccount,
+      amount,
+      deal_id: dealId,
+      description: `${prefix}GSec Brokerage - ${transaction.deal_number}`
+    });
+    if (!result.success) {
+      console.error('Failed to post GSec brokerage ledger entry:', result.error);
+      return;
+    }
+    console.log(`Posted GSec brokerage ${amount} for ${dealId}`);
+  } catch (err) {
+    console.error('Failed to post GSec brokerage ledger entry:', err);
+  }
+}
 
 function isPositiveFiniteAmount(x) {
   const n = Number(x);
@@ -200,6 +243,7 @@ async function postFinalApprovedBuyLedger(transaction, options = {}) {
   }
   console.log(`Successfully created compound ledger entries for GSEC Buy transaction ${dealId}`);
   console.log(`  Treasury Bonds (net): ${netAmount}, Accrued Interest: ${accruedInterest}, Bank total: ${bankTotal}`);
+  await postGsecBrokerageIfAny(transaction, options);
   return { success: true };
 }
 
@@ -371,6 +415,7 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
       console.error('Failed to post legacy GSec sell ledger entry:', ledgerResult.error);
       return { success: false, error: ledgerResult.error, legacy: true };
     }
+    await postGsecBrokerageIfAny(transaction, options);
     return { success: true, legacy: true };
   }
 
@@ -658,6 +703,7 @@ async function postFinalApprovedSellLedger(transaction, options = {}) {
     }
   }
 
+  await postGsecBrokerageIfAny(transaction, options);
   console.log(`Successfully created sell multi-line ledger entries for ${dealId}`);
   return { success: true };
 }

@@ -75,6 +75,9 @@ router.use('/coupon-maturity-blotter', require('./couponMaturityBlotterRoutes'))
 // Mount Daily Deal Blotter API
 router.use('/daily-deal-blotter', require('./dailyDealBlotterRoutes'));
 
+// Mount Daily Transaction Blotter API (value-date)
+router.use('/daily-transaction-blotter', require('./dailyTransactionBlotterRoutes'));
+
 // Mount Holiday Calendar API
 router.use('/holiday-calendar', require('./holidayCalendarRoutes'));
 
