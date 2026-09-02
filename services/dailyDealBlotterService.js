@@ -73,15 +73,28 @@ function resolveEnteredBy(raw, lookup) {
   return key;
 }
 
+function normalizeKey(value) {
+  return (value || '').toString().trim().toLowerCase().replace(/[\s-]+/g, '_');
+}
+
+function prettyApprovalLevel(level) {
+  const key = normalizeKey(level);
+  if (key === 'back_office_final') return 'Back Office Final';
+  if (key === 'back_office_verifier') return 'Back Office Verifier';
+  if (key === 'front_office' || key === 'front_office_verifier') return 'Front Office';
+  if (key === 'final_approved') return 'Final Approved';
+  return level || null;
+}
+
 // Normalizes the many inconsistent status/approval-level spellings used across
 // deal tables (see CLAUDE.md note on raw-SQL, per-table workflow columns) into
 // a single display bucket for the combined blotter.
 function normalizeStatus(rawStatus, approvalLevel) {
-  const status = (rawStatus || '').toString().trim().toLowerCase();
-  const level = (approvalLevel || '').toString().trim().toLowerCase();
+  const status = normalizeKey(rawStatus);
+  const level = normalizeKey(approvalLevel);
 
   if (['rejected', 'returned', 'cancelled'].includes(status)) return 'Rejected';
-  if (['draft'].includes(status)) return 'Draft';
+  if (status === 'draft') return 'Draft';
   if (['approved', 'final_approved', 'settled', 'matured', 'active'].includes(status)) return 'Approved';
 
   if (status === 'pending' || status === 'pending_verification' || status === 'verified' || status === 'pending_final_approval') {
@@ -93,7 +106,44 @@ function normalizeStatus(rawStatus, approvalLevel) {
   return rawStatus || 'Unknown';
 }
 
-function mapRow(dealType, row) {
+/** Workflow stop for Daily Transaction Blotter — not a flattened Approved. */
+function normalizeWorkflowStop(rawStatus, approvalLevel) {
+  const status = normalizeKey(rawStatus);
+  const level = normalizeKey(approvalLevel);
+
+  if (['rejected', 'returned', 'cancelled'].includes(status)) return 'Rejected';
+  if (status === 'draft') return 'Draft';
+  if (status === 'final_approved' || level === 'final_approved') return 'Final Approved';
+  if (['approved', 'settled', 'matured', 'active'].includes(status)) return 'Approved';
+
+  if (
+    status === 'pending' ||
+    status === 'pending_verification' ||
+    status === 'verified' ||
+    status === 'pending_final_approval' ||
+    !status
+  ) {
+    if (level === 'back_office_final' || status === 'pending_final_approval') return 'Pending Final Approval';
+    if (level === 'back_office_verifier' || status === 'verified' || status === 'pending_verification') {
+      return 'Pending Back Office Verification';
+    }
+    return 'Pending Front Office';
+  }
+
+  if (level === 'front_office' || level === 'front_office_verifier') return 'Pending Front Office';
+  if (level === 'back_office_verifier') return 'Pending Back Office Verification';
+  if (level === 'back_office_final') return 'Pending Final Approval';
+
+  return rawStatus || 'Unknown';
+}
+
+function mapRow(dealType, row, options = {}) {
+  const workflowStop = Boolean(options.workflowStop);
+  const status = workflowStop
+    ? normalizeWorkflowStop(row.status, row.approval_level)
+    : normalizeStatus(row.status, row.approval_level);
+  const levelLabel = prettyApprovalLevel(row.approval_level);
+  const pending = String(status).startsWith('Pending');
   return {
     dealType,
     dealNumber: row.deal_number,
@@ -105,22 +155,31 @@ function mapRow(dealType, row) {
     rate: row.rate !== undefined && row.rate !== null ? Number(row.rate) : null,
     rawStatus: row.status,
     approvalLevel: row.approval_level,
-    status: normalizeStatus(row.status, row.approval_level),
+    status,
+    statusDetail: pending && levelLabel ? `Pending — ${levelLabel}` : status,
     enteredBy: row.entered_by
   };
 }
 
-async function safeQuery(dealType, sql, params) {
+async function safeQuery(dealType, sql, params, mapOptions = {}) {
   try {
     const [rows] = await pool.query(sql, params);
-    return rows.map(row => mapRow(dealType, row));
+    return rows.map((row) => mapRow(dealType, row, mapOptions));
   } catch (error) {
     console.error(`[dailyDealBlotter] Failed to fetch ${dealType} deals:`, error.message);
     return [];
   }
 }
 
-async function getTransactions(date) {
+const DATE_MODE = {
+  TRADE: 'trade',
+  VALUE: 'value'
+};
+
+async function getTransactions(date, mode, mapOptions) {
+  const where = mode === DATE_MODE.VALUE
+    ? 'WHERE DATE(t.value_date) = ?'
+    : 'WHERE DATE(COALESCE(t.trade_date, t.date)) = ?';
   return safeQuery('TRANSACTION', `
     SELECT
       t.transaction_code AS deal_number,
@@ -131,14 +190,17 @@ async function getTransactions(date) {
       t.amount AS amount,
       t.interest_rate AS rate,
       t.status AS status,
-      NULL AS approval_level,
+      t.current_approval_level AS approval_level,
       COALESCE(NULLIF(t.submitted_by, 0), NULLIF(t.user, 0)) AS entered_by
     FROM transactions t
-    WHERE DATE(COALESCE(t.trade_date, t.date)) = ?
-  `, [date]);
+    ${where}
+  `, [date], mapOptions);
 }
 
-async function getMoneyMarketDeals(date) {
+async function getMoneyMarketDeals(date, mode, mapOptions) {
+  const where = mode === DATE_MODE.VALUE
+    ? 'WHERE DATE(mm.value_date) = ?'
+    : 'WHERE DATE(mm.trade_date) = ?';
   return safeQuery('MONEY_MARKET', `
     SELECT
       mm.deal_number AS deal_number,
@@ -149,14 +211,25 @@ async function getMoneyMarketDeals(date) {
       mm.principal_amount AS amount,
       mm.interest_rate AS rate,
       mm.status AS status,
-      mm.current_approval_level AS approval_level,
+      NULL AS approval_level,
       NULL AS entered_by
     FROM money_market_deals mm
-    WHERE DATE(mm.trade_date) = ?
-  `, [date]);
+    ${where}
+  `, [date], mapOptions);
 }
 
-async function getGsecDeals(date) {
+async function getGsecDeals(date, mode, mapOptions) {
+  const Gsec = require('../models/gsec');
+  if (typeof Gsec.ensureColumns === 'function') {
+    await Gsec.ensureColumns();
+  }
+  // Sell/Buy buyback leg2 is booked as a GSec Buy (maturity). Keep those off
+  // the daily transaction blotter — they belong on maturity cashflow.
+  const buybackMaturityBuy =
+    "AND NOT (g.buyback_deal_id IS NOT NULL AND LOWER(COALESCE(g.transaction_type, '')) = 'buy')";
+  const where = mode === DATE_MODE.VALUE
+    ? `WHERE DATE(g.value_date) = ? ${buybackMaturityBuy}`
+    : `WHERE DATE(g.trade_date) = ? ${buybackMaturityBuy}`;
   return safeQuery('GSEC', `
     SELECT
       g.deal_number AS deal_number,
@@ -168,13 +241,17 @@ async function getGsecDeals(date) {
       g.yield AS rate,
       g.status AS status,
       g.current_approval_level AS approval_level,
-      NULL AS entered_by
+      u.username AS entered_by
     FROM gsec g
-    WHERE DATE(g.trade_date) = ?
-  `, [date]);
+    LEFT JOIN users u ON u.id = g.created_by
+    ${where}
+  `, [date], mapOptions);
 }
 
-async function getTbillDeals(date) {
+async function getTbillDeals(date, mode, mapOptions) {
+  const where = mode === DATE_MODE.VALUE
+    ? 'WHERE DATE(tb.value_date) = ?'
+    : 'WHERE DATE(tb.trade_date) = ?';
   return safeQuery('TBILL', `
     SELECT
       tb.deal_number AS deal_number,
@@ -189,11 +266,16 @@ async function getTbillDeals(date) {
       u.username AS entered_by
     FROM tbill tb
     LEFT JOIN users u ON u.id = tb.user_id
-    WHERE DATE(tb.trade_date) = ?
-  `, [date]);
+    ${where}
+  `, [date], mapOptions);
 }
 
-async function getBuybackDeals(date) {
+async function getBuybackDeals(date, mode, mapOptions) {
+  // Daily transactions: opening (leg1) only. Sell/Buy Buy (leg2) is a maturity.
+  const where = mode === DATE_MODE.VALUE
+    ? 'WHERE DATE(b.leg1_value_date) = ?'
+    : 'WHERE DATE(b.leg1_trade_date) = ? OR DATE(b.leg2_trade_date) = ?';
+  const params = mode === DATE_MODE.VALUE ? [date] : [date, date];
   return safeQuery('BUYBACK', `
     SELECT
       b.deal_number AS deal_number,
@@ -208,11 +290,14 @@ async function getBuybackDeals(date) {
       u.username AS entered_by
     FROM buyback_deals b
     LEFT JOIN users u ON u.id = b.created_by
-    WHERE DATE(b.leg1_trade_date) = ? OR DATE(b.leg2_trade_date) = ?
-  `, [date, date]);
+    ${where}
+  `, params, mapOptions);
 }
 
-async function getFixedDepositDeals(date) {
+async function getFixedDepositDeals(date, mode, mapOptions) {
+  const where = mode === DATE_MODE.VALUE
+    ? 'WHERE DATE(fd.value_date) = ?'
+    : 'WHERE DATE(COALESCE(fd.submitted_at, fd.created_at)) = ?';
   return safeQuery('FIXED_DEPOSIT', `
     SELECT
       fd.request_no AS deal_number,
@@ -223,18 +308,21 @@ async function getFixedDepositDeals(date) {
       fd.requested_amount AS amount,
       fd.target_yield AS rate,
       fd.status AS status,
-      fd.current_approval_level AS approval_level,
+      NULL AS approval_level,
       u.username AS entered_by
     FROM fixed_deposit_requests fd
     LEFT JOIN users u ON u.id = fd.submitted_by
-    WHERE DATE(COALESCE(fd.submitted_at, fd.created_at)) = ?
-  `, [date]);
+    ${where}
+  `, [date], mapOptions);
 }
 
-async function getRepoDeals(date) {
+async function getRepoDeals(date, mode, mapOptions) {
+  const where = mode === DATE_MODE.VALUE
+    ? 'WHERE DATE(r.value_date) = ?'
+    : 'WHERE DATE(r.trade_date) = ?';
   return safeQuery('REPO', `
     SELECT
-      CONCAT('REPO-', r.id) AS deal_number,
+      COALESCE(NULLIF(TRIM(r.deal_number), ''), CONCAT('REPO-', r.id)) AS deal_number,
       r.trade_date AS deal_date,
       r.value_date AS value_date,
       r.counterparty_id AS counterparty,
@@ -246,11 +334,11 @@ async function getRepoDeals(date) {
       u.username AS entered_by
     FROM repo_deals r
     LEFT JOIN users u ON u.id = r.created_by
-    WHERE DATE(r.trade_date) = ?
-  `, [date]);
+    ${where}
+  `, [date], mapOptions);
 }
 
-async function getDailyDealBlotter(date) {
+async function assembleBlotter(date, mode, mapOptions = {}, sortBy = 'dealDate') {
   const [cpLookup, users] = await Promise.all([
     counterpartyModel.getAll().then(buildCounterpartyLookup),
     User.getAll()
@@ -258,13 +346,13 @@ async function getDailyDealBlotter(date) {
   const userLookup = buildUserLookup(users);
 
   const results = await Promise.all([
-    getTransactions(date),
-    getMoneyMarketDeals(date),
-    getGsecDeals(date),
-    getTbillDeals(date),
-    getBuybackDeals(date),
-    getFixedDepositDeals(date),
-    getRepoDeals(date)
+    getTransactions(date, mode, mapOptions),
+    getMoneyMarketDeals(date, mode, mapOptions),
+    getGsecDeals(date, mode, mapOptions),
+    getTbillDeals(date, mode, mapOptions),
+    getBuybackDeals(date, mode, mapOptions),
+    getFixedDepositDeals(date, mode, mapOptions),
+    getRepoDeals(date, mode, mapOptions)
   ]);
 
   const deals = results.flat().map((deal) => ({
@@ -273,9 +361,11 @@ async function getDailyDealBlotter(date) {
     enteredBy: resolveEnteredBy(deal.enteredBy, userLookup) || deal.enteredBy || null
   }));
   deals.sort((a, b) => {
-    const dateDiff = new Date(a.dealDate) - new Date(b.dealDate);
-    if (dateDiff !== 0) return dateDiff;
-    return a.dealType.localeCompare(b.dealType);
+    const primary = sortBy === 'valueDate'
+      ? new Date(a.valueDate || 0) - new Date(b.valueDate || 0)
+      : new Date(a.dealDate || 0) - new Date(b.dealDate || 0);
+    if (primary !== 0) return primary;
+    return String(a.dealType || '').localeCompare(String(b.dealType || ''));
   });
 
   const summary = deals.reduce((acc, deal) => {
@@ -288,4 +378,12 @@ async function getDailyDealBlotter(date) {
   return { deals, summary };
 }
 
-module.exports = { getDailyDealBlotter };
+async function getDailyDealBlotter(date) {
+  return assembleBlotter(date, DATE_MODE.TRADE);
+}
+
+async function getDailyTransactionBlotter(date) {
+  return assembleBlotter(date, DATE_MODE.VALUE, { workflowStop: true }, 'valueDate');
+}
+
+module.exports = { getDailyDealBlotter, getDailyTransactionBlotter };
