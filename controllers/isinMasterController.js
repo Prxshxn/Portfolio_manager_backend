@@ -575,10 +575,7 @@ module.exports = {
       updated_at: new Date(),
       updated_by: req.body.userId || null
     };
-    // #region agent log
-    (typeof fetch === 'function') && fetch('http://127.0.0.1:7242/ingest/29dc6e6a-2fb8-4497-a57e-c480a1e8f80b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'989560'},body:JSON.stringify({sessionId:'989560',runId:'pre-fix',hypothesisId:'H1_H2_H4_H5',location:'isinMasterController.js:updateGsecTransaction',message:'updateGsecTransaction entry',data:{id,method:req.method,path:req.originalUrl,incomingStatus:req.body?.status,forcedStatus:updateData?.status,transactionType:req.body?.transactionType||req.body?.transaction_type,dealNumber:req.body?.dealNumber||req.body?.deal_number},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
-    
+
     try {
       // Holiday validation - check if updated transaction dates are holidays
       const currency = updateData.currency || 'LKR';
@@ -666,7 +663,7 @@ module.exports = {
     
     // Pass approved/rejected; Gsec.updateStatus advances 3-tier (front_office -> back_office_verifier -> back_office_final -> final_approved)
     // On rejection, persist the reviewer comment so the front-office checker can see why it was rejected.
-    const updateData = { status };
+    const updateData = { status, userId };
     if (status === 'rejected' && typeof comment === 'string') {
       updateData.comment = comment;
     } else if (status === 'approved') {
