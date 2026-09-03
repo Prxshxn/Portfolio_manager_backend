@@ -30,11 +30,11 @@ const IsinMaster = {
     }
   },
   getAll: async () => {
-    const [results] = await db.query('SELECT * FROM isin_master');
+    const [results] = await db.query('SELECT * FROM isin_master ORDER BY isin_number ASC');
     return results;
   },
   searchByIsin: async (query) => {
-    const sql = 'SELECT isin_number FROM isin_master WHERE isin_number LIKE ? LIMIT 10';
+    const sql = 'SELECT isin_number FROM isin_master WHERE isin_number LIKE ? ORDER BY isin_number ASC LIMIT 10';
     const [results] = await db.query(sql, [`%${query}%`]);
     return results;
   },
