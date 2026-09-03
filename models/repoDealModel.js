@@ -1,6 +1,42 @@
 const db = require('../config/db');
 const CashflowCaptureService = require('../services/cashflowCaptureService');
 
+let repoApprovalColumnsEnsurePromise = null;
+
+// Standalone ensure, used by callers (e.g. the daily blotter) that need the
+// per-tier approver columns to exist before SELECTing them, without going
+// through a full updateApprovalStatus() call.
+const ensureRepoApprovalColumns = async () => {
+  if (!repoApprovalColumnsEnsurePromise) {
+    repoApprovalColumnsEnsurePromise = (async () => {
+      const requiredColumns = {
+        front_office_by: 'INT NULL',
+        back_office_verifier_by: 'INT NULL',
+        final_approved_by: 'INT NULL'
+      };
+      const columnNames = Object.keys(requiredColumns);
+      const placeholders = columnNames.map(() => '?').join(', ');
+      const [rows] = await db.query(
+        `SELECT COLUMN_NAME
+         FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE()
+           AND TABLE_NAME = 'repo_deals'
+           AND COLUMN_NAME IN (${placeholders})`,
+        columnNames
+      );
+      const present = new Set((rows || []).map((r) => r.COLUMN_NAME));
+      for (const columnName of columnNames) {
+        if (present.has(columnName)) continue;
+        await db.query(`ALTER TABLE repo_deals ADD COLUMN ${columnName} ${requiredColumns[columnName]}`);
+      }
+    })().catch((err) => {
+      repoApprovalColumnsEnsurePromise = null;
+      throw err;
+    });
+  }
+  return repoApprovalColumnsEnsurePromise;
+};
+
 const parseCounterpartyId = (value) => {
   if (value === undefined || value === null || value === '') return null;
   const s = String(value).trim();
@@ -495,7 +531,10 @@ const RepoDeal = {
       'current_approval_level',
       'comment',
       'authorized_by',
-      'authorized_at'
+      'authorized_at',
+      'front_office_by',
+      'back_office_verifier_by',
+      'final_approved_by'
     ];
 
     const placeholders = approvalColumns.map(() => '?').join(', ');
@@ -516,11 +555,20 @@ const RepoDeal = {
       current_approval_level: 'VARCHAR(32) NULL',
       comment: 'TEXT NULL',
       authorized_by: 'INT NULL',
-      authorized_at: 'DATETIME NULL'
+      authorized_at: 'DATETIME NULL',
+      front_office_by: 'INT NULL',
+      back_office_verifier_by: 'INT NULL',
+      final_approved_by: 'INT NULL'
     };
 
     const shouldEnsureAll = !present.has('approval_status') && !present.has('current_approval_level');
-    const shouldEnsureAny = shouldEnsureAll || !present.has('comment') || !present.has('authorized_by') || !present.has('authorized_at');
+    const shouldEnsureAny = shouldEnsureAll
+      || !present.has('comment')
+      || !present.has('authorized_by')
+      || !present.has('authorized_at')
+      || !present.has('front_office_by')
+      || !present.has('back_office_verifier_by')
+      || !present.has('final_approved_by');
 
     if (shouldEnsureAny) {
       for (const col of approvalColumns) {
@@ -561,17 +609,23 @@ const RepoDeal = {
 
     let newApprovalStatus = currentApprovalStatus;
     let newApprovalLevel = currentLevel;
+    // Which approver-tracking column to stamp with userId, keyed by the tier
+    // being completed (i.e. the level before this transition).
+    let approverColumn = null;
 
     if (action === 'approved') {
       if (currentLevel === 'front_office') {
         newApprovalLevel = 'back_office_verifier';
         newApprovalStatus = 'pending';
+        approverColumn = 'front_office_by';
       } else if (currentLevel === 'back_office_verifier') {
         newApprovalLevel = 'back_office_final';
         newApprovalStatus = 'pending';
+        approverColumn = 'back_office_verifier_by';
       } else if (currentLevel === 'back_office_final') {
         newApprovalLevel = 'final_approved';
         newApprovalStatus = 'final_approved';
+        approverColumn = 'final_approved_by';
       }
     } else if (action === 'rejected') {
       // Send rejected repo deals back to the front office checker queue so the
@@ -606,6 +660,10 @@ const RepoDeal = {
     if (present2.has('authorized_at')) {
       setClauses.push('authorized_at = ?');
       values.push(authorizedAt);
+    }
+    if (approverColumn && present2.has(approverColumn) && userId != null) {
+      setClauses.push(`${approverColumn} = ?`);
+      values.push(userId);
     }
 
     if (setClauses.length === 0) {
@@ -857,3 +915,4 @@ RepoDeal.backfillMissingDealNumbers = async () => {
 
 module.exports = RepoDeal;
 module.exports.resolveRepoDealNumber = resolveRepoDealNumber;
+module.exports.ensureApprovalColumns = ensureRepoApprovalColumns;
