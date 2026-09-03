@@ -605,7 +605,20 @@ const buybackDealController = {
         timestampField = 'verified_at';
       }
 
-      const result = await BuybackDeal.updateStatus(id, status, userId, field, timestampField);
+      // The legacy verified_by/approved_by columns above are keyed by `action`, which is
+      // 'verify' for both the front-office check and the back-office-verifier approval -
+      // so they can't tell those two tiers apart. Use the target `status`, which IS unique
+      // per tier, to stamp a dedicated column for each of the three approval stages.
+      let tierField = null;
+      if (status === 'Verified') {
+        tierField = 'front_office_by';
+      } else if (status === 'Pending_Final_Approval') {
+        tierField = 'back_office_verifier_by';
+      } else if (status === 'Approved') {
+        tierField = 'final_approved_by';
+      }
+
+      const result = await BuybackDeal.updateStatus(id, status, userId, field, timestampField, tierField);
       
       if (result.affectedRows === 0) {
         return res.status(404).json({
