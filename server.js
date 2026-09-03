@@ -184,6 +184,8 @@ app.use(bodyParser.urlencoded({ extended: true }));
 const accountRoutes = require('./routes/accounts');
 const portfolioRoutes = require('./routes/portfolioRoutes');
 const reportRoutes = require('./routes/reportRoutes');
+const bankChargesRoutes = require('./routes/bankChargesRoutes');
+const interestIncomeRoutes = require('./routes/interestIncomeRoutes');
 const transactionTypeRoutes = require('./routes/transactionTypes');
 const securityRoutes = require('./routes/securities');
 const counterpartyRoutes = require('./routes/counterparties');
@@ -224,6 +226,8 @@ app.use('/api/mark-to-market', markToMarketRoutes); // FIXED: Mark-to-Market rou
 app.use('/api/account-mappings', accountMappingRoutes);
 app.use('/api/chart-of-accounts', chartOfAccountsRoutes);
 app.use('/api/fixed-deposit', fixedDepositRoutes);
+app.use('/api/bank-charges', bankChargesRoutes);
+app.use('/api/reports/interest-income', interestIncomeRoutes);
 
 // Add a direct register endpoint that will definitely work
 app.post('/api/auth/register', async (req, res) => {
