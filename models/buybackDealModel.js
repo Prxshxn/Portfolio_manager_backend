@@ -1,6 +1,41 @@
 const db = require('../config/db');
 
 let buybackDealsColumnSetPromise = null;
+let buybackApprovalColumnsEnsurePromise = null;
+
+// Self-healing schema, mirroring the pattern used for gsec/repo_deals: adds the
+// per-tier approver columns if this DB predates them, instead of requiring a
+// separate manual migration to be run first.
+const ensureBuybackApprovalColumns = async () => {
+  if (!buybackApprovalColumnsEnsurePromise) {
+    buybackApprovalColumnsEnsurePromise = (async () => {
+      const requiredColumns = {
+        front_office_by: 'INT NULL',
+        back_office_verifier_by: 'INT NULL',
+        final_approved_by: 'INT NULL'
+      };
+      const columnNames = Object.keys(requiredColumns);
+      const placeholders = columnNames.map(() => '?').join(', ');
+      const [rows] = await db.query(
+        `SELECT COLUMN_NAME
+         FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE()
+           AND TABLE_NAME = 'buyback_deals'
+           AND COLUMN_NAME IN (${placeholders})`,
+        columnNames
+      );
+      const present = new Set((rows || []).map((r) => r.COLUMN_NAME));
+      for (const columnName of columnNames) {
+        if (present.has(columnName)) continue;
+        await db.query(`ALTER TABLE buyback_deals ADD COLUMN ${columnName} ${requiredColumns[columnName]}`);
+      }
+    })().catch((err) => {
+      buybackApprovalColumnsEnsurePromise = null;
+      throw err;
+    });
+  }
+  return buybackApprovalColumnsEnsurePromise;
+};
 
 const getBuybackDealsColumnSet = async (forceRefresh = false) => {
   if (forceRefresh) {
@@ -263,7 +298,14 @@ const BuybackDeal = {
   },
 
   // Update deal status
-  updateStatus: async (id, status, userId, field = 'verified_by', timestampField = 'verified_at') => {
+  updateStatus: async (id, status, userId, field = 'verified_by', timestampField = 'verified_at', tierField = null) => {
+    if (tierField) {
+      try {
+        await ensureBuybackApprovalColumns();
+      } catch (ensureErr) {
+        console.warn('ensureBuybackApprovalColumns failed; will skip tier approver column write:', ensureErr?.message || ensureErr);
+      }
+    }
     // Refresh schema to avoid stale column cache skipping approval timestamps.
     const cols = await getBuybackDealsColumnSet(true);
 
@@ -277,6 +319,11 @@ const BuybackDeal = {
 
     if (timestampField && cols.has(timestampField)) {
       setters.push(`${timestampField} = NOW()`);
+    }
+
+    if (tierField && cols.has(tierField) && userId != null) {
+      setters.push(`${tierField} = ?`);
+      params.push(userId);
     }
 
     const sql = `UPDATE buyback_deals
@@ -360,5 +407,7 @@ const BuybackDeal = {
     return `BB${dateStr}${dailyCount.toString().padStart(3, '0')}`;
   }
 };
+
+BuybackDeal.ensureApprovalColumns = ensureBuybackApprovalColumns;
 
 module.exports = BuybackDeal;
