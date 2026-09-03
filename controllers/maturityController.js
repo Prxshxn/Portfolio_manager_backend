@@ -655,6 +655,136 @@ async function getMaturitiesWithApprovalLevel(db, productType, date) {
 }
 
 // Extended handlers for maturity handling, processing, and export
+MaturityController.getMaturityHandlingPeriod = async (req, res) => {
+  try {
+    const { dateFrom, dateTo, type } = req.query;
+    if (!dateFrom || !dateTo) {
+      return res.status(400).json({ success: false, error: 'dateFrom and dateTo are required' });
+    }
+    const db = require('../config/database');
+    const typeFilter = type && type !== 'all' ? type : null;
+
+    const rows = [];
+
+    // Money Market
+    if (!typeFilter || typeFilter === 'money_market') {
+      const [mm] = await db.query(
+        `SELECT 'money_market' AS deal_type, mmd.deal_number, mmd.maturity_date,
+                mmd.principal_amount AS face_value, mmd.maturity_value AS maturity_amount,
+                COALESCE(corp.short_name, ind.short_name, joint.short_name, mmd.counterparty_id) AS counterparty,
+                mmd.status
+         FROM money_market_deals mmd
+         LEFT JOIN counterparty_master_corporate corp ON mmd.counterparty_id = corp.id
+         LEFT JOIN counterparty_master_individual ind ON mmd.counterparty_id = ind.id
+         LEFT JOIN counterparty_master_joint joint ON mmd.counterparty_id = joint.id
+         WHERE mmd.maturity_date >= ? AND mmd.maturity_date <= ?
+           AND mmd.status = 'final_approved'
+         ORDER BY mmd.maturity_date ASC`,
+        [dateFrom, dateTo]
+      );
+      rows.push(...mm);
+    }
+
+    // GSec
+    if (!typeFilter || typeFilter === 'gsec') {
+      const [gs] = await db.query(
+        `SELECT 'gsec' AS deal_type, g.deal_number, g.maturity_date,
+                g.face_value, NULL AS maturity_amount,
+                COALESCE(corp.short_name, ind.short_name, joint.short_name, g.counterparty_id) AS counterparty,
+                g.status
+         FROM gsec g
+         LEFT JOIN counterparty_master_corporate corp ON
+           (g.counterparty_id LIKE 'c%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = corp.id)
+         LEFT JOIN counterparty_master_individual ind ON
+           (g.counterparty_id LIKE 'i%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = ind.id)
+         LEFT JOIN counterparty_master_joint joint ON
+           (g.counterparty_id LIKE 'j%' AND CAST(SUBSTRING(g.counterparty_id, 2) AS UNSIGNED) = joint.id)
+         WHERE g.maturity_date >= ? AND g.maturity_date <= ?
+           AND g.transaction_type = 'Buy'
+           AND g.status = 'final_approved'
+         ORDER BY g.maturity_date ASC`,
+        [dateFrom, dateTo]
+      );
+      rows.push(...gs);
+    }
+
+    // T-Bill
+    if (!typeFilter || typeFilter === 'tbill') {
+      const [tb] = await db.query(
+        `SELECT 'tbill' AS deal_type, t.deal_number, t.maturity_date,
+                t.face_value, NULL AS maturity_amount,
+                COALESCE(corp.short_name, ind.short_name, joint.short_name, t.counterparty) AS counterparty,
+                t.status
+         FROM tbill t
+         LEFT JOIN counterparty_master_corporate corp ON
+           (t.counterparty LIKE 'c%' AND CAST(SUBSTRING(t.counterparty, 2) AS UNSIGNED) = corp.id)
+         LEFT JOIN counterparty_master_individual ind ON
+           (t.counterparty LIKE 'i%' AND CAST(SUBSTRING(t.counterparty, 2) AS UNSIGNED) = ind.id)
+         LEFT JOIN counterparty_master_joint joint ON
+           (t.counterparty LIKE 'j%' AND CAST(SUBSTRING(t.counterparty, 2) AS UNSIGNED) = joint.id)
+         WHERE t.maturity_date >= ? AND t.maturity_date <= ?
+           AND t.transaction_type = 'Buy'
+           AND t.status = 'final_approved'
+         ORDER BY t.maturity_date ASC`,
+        [dateFrom, dateTo]
+      );
+      rows.push(...tb);
+    }
+
+    // Repo
+    if (!typeFilter || typeFilter === 'repo') {
+      const [rp] = await db.query(
+        `SELECT 'repo' AS deal_type, rd.deal_number, rd.maturity_date,
+                rd.face_value, rd.maturity_amount,
+                COALESCE(corp.short_name, ind.short_name, joint.short_name, rd.counterparty_id) AS counterparty,
+                rd.status
+         FROM repo_deals rd
+         LEFT JOIN counterparty_master_corporate corp ON rd.counterparty_id = corp.id
+         LEFT JOIN counterparty_master_individual ind ON rd.counterparty_id = ind.id
+         LEFT JOIN counterparty_master_joint joint ON rd.counterparty_id = joint.id
+         WHERE rd.maturity_date >= ? AND rd.maturity_date <= ?
+           AND rd.status = 'final_approved'
+         ORDER BY rd.maturity_date ASC`,
+        [dateFrom, dateTo]
+      );
+      rows.push(...rp);
+    }
+
+    // Buyback
+    if (!typeFilter || typeFilter === 'buyback') {
+      const [bb] = await db.query(
+        `SELECT 'buyback' AS deal_type, bd.deal_number, bd.maturity_date,
+                bd.leg1_face_value AS face_value, NULL AS maturity_amount,
+                COALESCE(corp.short_name, ind.short_name, joint.short_name, bd.leg1_counterparty) AS counterparty,
+                bd.deal_status AS status
+         FROM buyback_deals bd
+         LEFT JOIN counterparty_master_corporate corp ON
+           (bd.leg1_counterparty LIKE 'c%' AND CAST(SUBSTRING(bd.leg1_counterparty, 2) AS UNSIGNED) = corp.id)
+         LEFT JOIN counterparty_master_individual ind ON
+           (bd.leg1_counterparty LIKE 'i%' AND CAST(SUBSTRING(bd.leg1_counterparty, 2) AS UNSIGNED) = ind.id)
+         LEFT JOIN counterparty_master_joint joint ON
+           (bd.leg1_counterparty LIKE 'j%' AND CAST(SUBSTRING(bd.leg1_counterparty, 2) AS UNSIGNED) = joint.id)
+         WHERE bd.maturity_date >= ? AND bd.maturity_date <= ?
+           AND bd.deal_status = 'final_approved'
+         ORDER BY bd.maturity_date ASC`,
+        [dateFrom, dateTo]
+      );
+      rows.push(...bb);
+    }
+
+    rows.sort((a, b) => {
+      const da = new Date(a.maturity_date || 0);
+      const db2 = new Date(b.maturity_date || 0);
+      return da - db2;
+    });
+
+    return res.json({ success: true, data: rows, total: rows.length });
+  } catch (error) {
+    console.error('Error fetching maturity period data:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
 MaturityController.getMaturityHandling = async (req, res) => {
   try {
     const { date, type, status } = req.query;
