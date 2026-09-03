@@ -157,7 +157,10 @@ function mapRow(dealType, row, options = {}) {
     approvalLevel: row.approval_level,
     status,
     statusDetail: pending && levelLabel ? `Pending — ${levelLabel}` : status,
-    enteredBy: row.entered_by
+    enteredBy: row.entered_by,
+    frontOfficeBy: row.front_office_by ?? null,
+    backOfficeVerifierBy: row.back_office_verifier_by ?? null,
+    finalApprovedBy: row.final_approved_by ?? null
   };
 }
 
@@ -241,9 +244,15 @@ async function getGsecDeals(date, mode, mapOptions) {
       g.yield AS rate,
       g.status AS status,
       g.current_approval_level AS approval_level,
-      u.username AS entered_by
+      u.username AS entered_by,
+      fo.username AS front_office_by,
+      bov.username AS back_office_verifier_by,
+      fin.username AS final_approved_by
     FROM gsec g
     LEFT JOIN users u ON u.id = g.created_by
+    LEFT JOIN users fo ON fo.id = g.front_office_by
+    LEFT JOIN users bov ON bov.id = g.back_office_verifier_by
+    LEFT JOIN users fin ON fin.id = g.final_approved_by
     ${where}
   `, [date], mapOptions);
 }
@@ -271,6 +280,14 @@ async function getTbillDeals(date, mode, mapOptions) {
 }
 
 async function getBuybackDeals(date, mode, mapOptions) {
+  const BuybackDeal = require('../models/buybackDealModel');
+  if (typeof BuybackDeal.ensureApprovalColumns === 'function') {
+    try {
+      await BuybackDeal.ensureApprovalColumns();
+    } catch (ensureErr) {
+      console.error('[dailyDealBlotter] Failed to ensure buyback approval columns:', ensureErr.message);
+    }
+  }
   // Daily transactions: opening (leg1) only. Sell/Buy Buy (leg2) is a maturity.
   const where = mode === DATE_MODE.VALUE
     ? 'WHERE DATE(b.leg1_value_date) = ?'
@@ -287,9 +304,15 @@ async function getBuybackDeals(date, mode, mapOptions) {
       b.leg1_yield_rate AS rate,
       b.deal_status AS status,
       NULL AS approval_level,
-      u.username AS entered_by
+      u.username AS entered_by,
+      fo.username AS front_office_by,
+      bov.username AS back_office_verifier_by,
+      fin.username AS final_approved_by
     FROM buyback_deals b
     LEFT JOIN users u ON u.id = b.created_by
+    LEFT JOIN users fo ON fo.id = b.front_office_by
+    LEFT JOIN users bov ON bov.id = b.back_office_verifier_by
+    LEFT JOIN users fin ON fin.id = b.final_approved_by
     ${where}
   `, params, mapOptions);
 }
@@ -317,6 +340,14 @@ async function getFixedDepositDeals(date, mode, mapOptions) {
 }
 
 async function getRepoDeals(date, mode, mapOptions) {
+  const RepoDeal = require('../models/repoDealModel');
+  if (typeof RepoDeal.ensureApprovalColumns === 'function') {
+    try {
+      await RepoDeal.ensureApprovalColumns();
+    } catch (ensureErr) {
+      console.error('[dailyDealBlotter] Failed to ensure repo approval columns:', ensureErr.message);
+    }
+  }
   const where = mode === DATE_MODE.VALUE
     ? 'WHERE DATE(r.value_date) = ?'
     : 'WHERE DATE(r.trade_date) = ?';
@@ -331,9 +362,15 @@ async function getRepoDeals(date, mode, mapOptions) {
       r.rate AS rate,
       COALESCE(r.approval_status, r.status) AS status,
       r.current_approval_level AS approval_level,
-      u.username AS entered_by
+      u.username AS entered_by,
+      fo.username AS front_office_by,
+      bov.username AS back_office_verifier_by,
+      fin.username AS final_approved_by
     FROM repo_deals r
     LEFT JOIN users u ON u.id = r.created_by
+    LEFT JOIN users fo ON fo.id = r.front_office_by
+    LEFT JOIN users bov ON bov.id = r.back_office_verifier_by
+    LEFT JOIN users fin ON fin.id = r.final_approved_by
     ${where}
   `, [date], mapOptions);
 }
@@ -358,7 +395,10 @@ async function assembleBlotter(date, mode, mapOptions = {}, sortBy = 'dealDate')
   const deals = results.flat().map((deal) => ({
     ...deal,
     counterparty: resolveCounterpartyName(deal.counterparty, cpLookup) || deal.counterparty,
-    enteredBy: resolveEnteredBy(deal.enteredBy, userLookup) || deal.enteredBy || null
+    enteredBy: resolveEnteredBy(deal.enteredBy, userLookup) || deal.enteredBy || null,
+    frontOfficeBy: resolveEnteredBy(deal.frontOfficeBy, userLookup) || deal.frontOfficeBy || null,
+    backOfficeVerifierBy: resolveEnteredBy(deal.backOfficeVerifierBy, userLookup) || deal.backOfficeVerifierBy || null,
+    finalApprovedBy: resolveEnteredBy(deal.finalApprovedBy, userLookup) || deal.finalApprovedBy || null
   }));
   deals.sort((a, b) => {
     const primary = sortBy === 'valueDate'
