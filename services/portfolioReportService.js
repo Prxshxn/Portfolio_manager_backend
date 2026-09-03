@@ -362,6 +362,87 @@ exports.getPortfolioReport = async ({ startDate, endDate, product, portfolio, pa
     });
   }
   
+  // Query T-Bill deals
+  if (!product || product === 'tbill') {
+    const tbillDateFilter = buildDateFilter('t.value_date');
+
+    let tbillPortfolioWhere = '';
+    const tbillPortfolioParams = [];
+    if (portfolio) {
+      tbillPortfolioWhere = ` AND CAST(t.portfolio_id AS CHAR) = ?`;
+      tbillPortfolioParams.push(String(portfolio));
+    }
+
+    const tbillSql = `
+      SELECT
+        'T-Bill' AS product_type,
+        t.deal_number,
+        t.value_date,
+        t.trade_date,
+        t.isin_number AS isin,
+        t.face_value,
+        NULL AS clean_price,
+        t.price_per_100 AS dirty_price,
+        t.settlement_amount,
+        t.maturity_date,
+        NULL AS maturity_amount,
+        t.portfolio_id AS portfolio_raw,
+        pm.portfolio_name AS portfolio,
+        t.counterparty,
+        COALESCE(corp.short_name, ind.short_name, joint.short_name, t.counterparty) AS counterparty_name,
+        t.transaction_type,
+        t.status,
+        'LKR' AS currency
+      FROM tbill t
+      LEFT JOIN portfolio_master pm
+        ON CAST(t.portfolio_id AS CHAR) = CAST(pm.portfolio_id AS CHAR)
+      LEFT JOIN counterparty_master_corporate corp
+        ON (t.counterparty LIKE 'c%' AND CAST(SUBSTRING(t.counterparty, 2) AS UNSIGNED) = corp.id)
+        OR (t.counterparty = corp.id)
+      LEFT JOIN counterparty_master_individual ind
+        ON (t.counterparty LIKE 'i%' AND CAST(SUBSTRING(t.counterparty, 2) AS UNSIGNED) = ind.id)
+        OR (t.counterparty = ind.id)
+      LEFT JOIN counterparty_master_joint joint
+        ON (t.counterparty LIKE 'j%' AND CAST(SUBSTRING(t.counterparty, 2) AS UNSIGNED) = joint.id)
+        OR (t.counterparty = joint.id)
+      WHERE 1=1
+    `;
+
+    const tbillParams = [...tbillDateFilter.params, ...tbillPortfolioParams];
+    const [tbillRows] = await db.query(
+      tbillSql + tbillDateFilter.filter + tbillPortfolioWhere + ' ORDER BY t.value_date DESC, t.deal_number',
+      tbillParams
+    );
+
+    tbillRows.forEach(row => {
+      const maturityDate = row.maturity_date ? new Date(row.maturity_date) : null;
+      const endDateObj = endDate ? new Date(endDate) : new Date();
+      const isMatured = maturityDate && maturityDate <= endDateObj;
+      const amount = isMatured && row.maturity_amount ? row.maturity_amount : (row.settlement_amount || row.face_value);
+
+      results.push({
+        product_type: 'T-Bill',
+        deal_number: row.deal_number,
+        value_date: row.value_date,
+        trade_date: row.trade_date,
+        isin: row.isin,
+        face_value: row.face_value,
+        clean_price: null,
+        dirty_price: row.dirty_price,
+        settlement_amount: !isMatured ? (row.settlement_amount || row.face_value) : null,
+        maturity_amount: isMatured && row.maturity_amount ? row.maturity_amount : null,
+        amount,
+        maturity_date: row.maturity_date,
+        portfolio: row.portfolio || row.portfolio_raw,
+        custodian: null,
+        counterparty: row.counterparty_name || row.counterparty,
+        transaction_type: row.transaction_type,
+        status: row.status,
+        currency: 'LKR'
+      });
+    });
+  }
+
   // Sort all results by value_date descending
   results.sort((a, b) => {
     const dateA = new Date(a.value_date || 0);
