@@ -155,6 +155,7 @@ router.get('/summary', MaturityController.getMaturitySummary);
  *                         enum: [pending, processed, failed]
  */
 router.get('/handling', MaturityController.getMaturityHandling);
+router.get('/handling-period', MaturityController.getMaturityHandlingPeriod);
 router.get('/deal-ticket/:productType/:id', MaturityController.getDealTicket);
 
 // Issue the next Matured Deal Slip ticket number (format YYYYMM-####).

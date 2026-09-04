@@ -74,6 +74,7 @@ exports.getBrokerReport = async ({ startDate, endDate, broker }) => {
   rows.sort((a, b) => (a.broker_name || '').localeCompare(b.broker_name || ''));
 
   const totalBrokerage = rows.reduce((sum, r) => sum + (Number(r.brokerage) || 0), 0);
+  const totalFaceValue = rows.reduce((sum, r) => sum + (Number(r.face_value) || 0), 0);
 
   return {
     data: rows.map((r) => ({
@@ -85,6 +86,7 @@ exports.getBrokerReport = async ({ startDate, endDate, broker }) => {
       product_type: r.product_type
     })),
     total: rows.length,
-    totalBrokerage
+    totalBrokerage,
+    totalFaceValue
   };
 };

@@ -5,6 +5,9 @@ const mysql = require('mysql2/promise');
 
 const Gsec = require('../models/gsec');
 const holidayValidationService = require('../services/holidayValidationService');
+const { resolveEffectiveWorkflowAuth } = require('../utils/effectiveWorkflowAuth');
+const { resolveRequestUserId } = require('../utils/requestUser');
+const { actorCanActAtStage } = require('../utils/workflowStageAuth');
 
 module.exports = {
   // Save both legs of a G-Sec buyback as a single row in buyback_gsec
@@ -575,10 +578,7 @@ module.exports = {
       updated_at: new Date(),
       updated_by: req.body.userId || null
     };
-    // #region agent log
-    (typeof fetch === 'function') && fetch('http://127.0.0.1:7242/ingest/29dc6e6a-2fb8-4497-a57e-c480a1e8f80b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'989560'},body:JSON.stringify({sessionId:'989560',runId:'pre-fix',hypothesisId:'H1_H2_H4_H5',location:'isinMasterController.js:updateGsecTransaction',message:'updateGsecTransaction entry',data:{id,method:req.method,path:req.originalUrl,incomingStatus:req.body?.status,forcedStatus:updateData?.status,transactionType:req.body?.transactionType||req.body?.transaction_type,dealNumber:req.body?.dealNumber||req.body?.deal_number},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
-    
+
     try {
       // Holiday validation - check if updated transaction dates are holidays
       const currency = updateData.currency || 'LKR';
@@ -644,29 +644,49 @@ module.exports = {
    */
   updateGsecTransactionStatus: async (req, res) => {
     const id = req.params.id;
-    const { status, comment, userId, current_approval_level } = req.body;
-    
+    const { status, comment } = req.body;
+
     // Validate status
     if (!['approved', 'rejected'].includes(status)) {
       return res.status(400).json({ success: false, error: 'Invalid status. Must be approved or rejected.' });
     }
-    
+
     // Note: Comment column doesn't exist in gsec table, so we don't require it
     // If needed in the future, a rejection_reason or notes column can be added
-    
+
     try {
       // First get the current transaction to determine the approval level
       const [currentTransaction] = await db.query('SELECT * FROM gsec WHERE id = ?', [id]);
-      
+
       if (currentTransaction.length === 0) {
         return res.status(404).json({ success: false, error: 'Transaction not found' });
       }
-      
+
       const transaction = currentTransaction[0];
-    
+
+      // Only the role that owns the deal's CURRENT stage may advance or reject
+      // it. Gsec.updateStatus always advances exactly one tier server-side, so
+      // this can't be skip-a-stage exploited the way buyback's status field
+      // was - but without this, any authenticated caller could approve a deal
+      // through all three tiers themselves regardless of role.
+      const actor = await resolveEffectiveWorkflowAuth(resolveRequestUserId(req));
+      if (!actor) {
+        return res.status(401).json({ success: false, error: 'Unauthorized' });
+      }
+      if (!actor.isAdmin && !actor.allowedTabs.includes('fixed_income_gsec')) {
+        return res.status(403).json({ success: false, error: 'Access denied: GSec not assigned' });
+      }
+      const currentLevel = transaction.current_approval_level || 'front_office';
+      if (!actorCanActAtStage(actor, currentLevel)) {
+        return res.status(403).json({
+          success: false,
+          error: `Access denied: role required for the ${currentLevel} stage.`
+        });
+      }
+
     // Pass approved/rejected; Gsec.updateStatus advances 3-tier (front_office -> back_office_verifier -> back_office_final -> final_approved)
     // On rejection, persist the reviewer comment so the front-office checker can see why it was rejected.
-    const updateData = { status };
+    const updateData = { status, userId: actor.id };
     if (status === 'rejected' && typeof comment === 'string') {
       updateData.comment = comment;
     } else if (status === 'approved') {

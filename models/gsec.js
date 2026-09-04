@@ -15,7 +15,10 @@ const ensureGsecColumns = async () => {
       const requiredColumns = {
         fund_movement: "VARCHAR(10) NULL DEFAULT 'no'",
         comment: 'TEXT NULL',
-        created_by: 'INT NULL'
+        created_by: 'INT NULL',
+        front_office_by: 'INT NULL',
+        back_office_verifier_by: 'INT NULL',
+        final_approved_by: 'INT NULL'
       };
 
       const columnNames = Object.keys(requiredColumns);
@@ -695,14 +698,6 @@ const Gsec = {
           counterparty_name: transaction.counterparty_name || transaction.counterparty_id || 'Unknown'
         };
       });
-      const rejectedRowsForDebug = formattedResults
-        .filter(t => t.status === 'rejected')
-        .slice(0, 20)
-        .map(t => ({ id: t.id, deal_number: t.deal_number, created_by: t.created_by, status: t.status, current_approval_level: t.current_approval_level }));
-      // #region agent log
-      (typeof fetch === 'function') && fetch('http://127.0.0.1:7242/ingest/29dc6e6a-2fb8-4497-a57e-c480a1e8f80b',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'989560'},body:JSON.stringify({sessionId:'989560',runId:'pre-fix',hypothesisId:'H4',location:'gsec.js:getRecent',message:'Rejected rows returned to UI',data:{countRejected:rejectedRowsForDebug.length,rejectedRows:rejectedRowsForDebug},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
-      
       // Debug: Log dirty price data being returned
       console.log('=== GETRECENT DIRTY PRICE DEBUG ===');
       if (formattedResults.length > 0) {
@@ -1327,19 +1322,25 @@ const Gsec = {
     let newStatus = data.status;
     let newApprovalLevel;
     let finalApproval = false;
+    // Which approver-tracking column to stamp with data.userId for this transition,
+    // keyed by the tier that is being *completed* (i.e. the level before the update).
+    let approverColumn = null;
 
     if (data.status === 'approved') {
       // 3-tier: advance front_office -> back_office_verifier -> back_office_final -> final_approved
       if (currentLevel === 'front_office') {
         newApprovalLevel = 'back_office_verifier';
         newStatus = 'pending';
+        approverColumn = 'front_office_by';
       } else if (currentLevel === 'back_office_verifier') {
         newApprovalLevel = 'back_office_final';
         newStatus = 'pending';
+        approverColumn = 'back_office_verifier_by';
       } else if (currentLevel === 'back_office_final') {
         newApprovalLevel = 'final_approved';
         newStatus = 'final_approved';
         finalApproval = true;
+        approverColumn = 'final_approved_by';
       } else {
         newApprovalLevel = currentLevel;
         newStatus = newStatus === 'final_approved' ? 'final_approved' : 'pending';
@@ -1378,14 +1379,37 @@ const Gsec = {
 
     const wantsCommentWrite = Object.prototype.hasOwnProperty.call(data, 'comment') && data.comment !== undefined;
     const hasComment = wantsCommentWrite && commentColumnAvailable;
-    const sql = hasComment
-      ? `UPDATE gsec SET status = ?, current_approval_level = ?, comment = ? WHERE id = ?`
-      : `UPDATE gsec SET status = ?, current_approval_level = ? WHERE id = ?`;
 
-    const values = hasComment
-      ? [newStatus, newApprovalLevel, data.comment || null, id]
-      : [newStatus, newApprovalLevel, id];
-    
+    // Same best-effort pattern as the comment column above: only stamp the
+    // approver column if it actually exists (ensureGsecColumns should have
+    // just created it, but don't hard-fail the approval if that didn't happen).
+    let approverColumnAvailable = false;
+    if (approverColumn && data.userId != null) {
+      try {
+        const [colRows] = await db.query(
+          `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+           WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'gsec' AND COLUMN_NAME = ?`,
+          [approverColumn]
+        );
+        approverColumnAvailable = Array.isArray(colRows) && colRows.length > 0;
+      } catch (probeErr) {
+        approverColumnAvailable = false;
+      }
+    }
+
+    const setClauses = ['status = ?', 'current_approval_level = ?'];
+    const values = [newStatus, newApprovalLevel];
+    if (hasComment) {
+      setClauses.push('comment = ?');
+      values.push(data.comment || null);
+    }
+    if (approverColumnAvailable) {
+      setClauses.push(`${approverColumn} = ?`);
+      values.push(data.userId);
+    }
+    values.push(id);
+    const sql = `UPDATE gsec SET ${setClauses.join(', ')} WHERE id = ?`;
+
     try {
       const [result] = await db.query(sql, values);
 
