@@ -1,5 +1,6 @@
 const BuybackDeal = require('../models/buybackDealModel');
 const { resolveRequestUserId } = require('../utils/requestUser');
+const { resolveEffectiveWorkflowAuth } = require('../utils/effectiveWorkflowAuth');
 const Gsec = require('../models/gsec');
 const db = require('../config/database');
 const { getSystemDay } = require('../models/systemDayModel');
@@ -505,7 +506,6 @@ const buybackDealController = {
     try {
       const { id } = req.params;
       const { status, action } = req.body;
-      const userId = req.user?.id || 1; // TODO: Get from auth middleware
       const buybackIdNum = Number(id);
       const [buybackLinkColRows] = await db.query(
         `SELECT 1
@@ -524,6 +524,55 @@ const buybackDealController = {
           error: 'Invalid status for update'
         });
       }
+
+      // Enforce the 3-tier workflow sequence and stage ownership. Without this,
+      // this endpoint (like status updates elsewhere) would accept ANY target
+      // status from ANY caller regardless of the deal's current stage, letting
+      // a deal jump e.g. Pending_Verification -> Pending_Final_Approval directly
+      // and skip the Back Office Verifier check entirely. Mirrors the same
+      // current-stage-owns-the-action model as repoDealController.updateApprovalStatus.
+      const STAGE_OWNER_ROLES = {
+        Pending_Verification: ['front_office', 'front_office_verifier'],
+        Verified: ['back_office_verifier'],
+        Pending_Final_Approval: ['back_office_final']
+      };
+      const NEXT_STATUS_BY_CURRENT = {
+        Pending_Verification: ['Verified', 'Rejected'],
+        Verified: ['Pending_Final_Approval', 'Rejected'],
+        Pending_Final_Approval: ['Approved', 'Rejected']
+      };
+
+      const actor = await resolveEffectiveWorkflowAuth(resolveRequestUserId(req));
+      if (!actor) {
+        return res.status(401).json({ success: false, error: 'Unauthorized' });
+      }
+      if (!actor.isAdmin && !actor.allowedTabs.includes('buyback')) {
+        return res.status(403).json({ success: false, error: 'Access denied: buyback not assigned' });
+      }
+
+      const [currentDealRows] = await db.query(
+        'SELECT deal_status FROM buyback_deals WHERE id = ? LIMIT 1',
+        [id]
+      );
+      if (!currentDealRows.length) {
+        return res.status(404).json({ success: false, error: 'Buyback deal not found' });
+      }
+      const currentStatus = currentDealRows[0].deal_status;
+      const allowedNextStatuses = NEXT_STATUS_BY_CURRENT[currentStatus];
+      if (!allowedNextStatuses || !allowedNextStatuses.includes(status)) {
+        return res.status(400).json({
+          success: false,
+          error: `Cannot move deal to ${status}: current status is ${currentStatus}.`
+        });
+      }
+      const requiredRoles = STAGE_OWNER_ROLES[currentStatus] || [];
+      if (!actor.isAdmin && !requiredRoles.includes(actor.role)) {
+        return res.status(403).json({
+          success: false,
+          error: `Access denied: ${requiredRoles.join(' or ')} role required at this stage.`
+        });
+      }
+      const userId = actor.id;
 
       // Authoritative oversell guard at the moment of final approval: deduction posts
       // the FULL allocated amount to the ledger but the holding can only be reduced by
@@ -855,7 +904,7 @@ const buybackDealController = {
                     cleanPriceAdjustment: null,
                     custodian: buybackDeal.leg2_custodian,
                     tradeDate: buybackDeal.leg2_trade_date || buybackDeal.leg2_value_date,
-                    userId: req.user?.id || 1,
+                    userId,
                     current_approval_level: null,
                     status: 'final_approved',
                     // Carry the buyback's fund-movement flag onto the buy row -
