@@ -1,6 +1,9 @@
 const db = require('../config/db');
 const Tbill = require('../models/tbillModel');
 const tbillPricing = require('../services/tbillPricingService');
+const { resolveEffectiveWorkflowAuth } = require('../utils/effectiveWorkflowAuth');
+const { resolveRequestUserId } = require('../utils/requestUser');
+const { actorCanActAtStage } = require('../utils/workflowStageAuth');
 
 function normalizeTransactionType(body) {
   return String(body.transactionType || body.transaction_type || 'Buy');
@@ -228,7 +231,7 @@ exports.getRecent = async (req, res) => {
 
 exports.updateStatus = async (req, res) => {
   const id = req.params.id;
-  const { status, comment, userId } = req.body || {};
+  const { status, comment } = req.body || {};
 
   if (!['approved', 'rejected'].includes(status)) {
     return res.status(400).json({
@@ -243,9 +246,28 @@ exports.updateStatus = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Transaction not found' });
     }
 
+    // Only the role that owns the deal's CURRENT stage may advance or reject
+    // it - same gap and same fix as GSEC/buyback: Tbill.updateStatus always
+    // advances exactly one tier server-side, but without this check any
+    // authenticated caller could approve a deal through all three tiers alone.
+    const actor = await resolveEffectiveWorkflowAuth(resolveRequestUserId(req));
+    if (!actor) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+    if (!actor.isAdmin && !actor.allowedTabs.includes('fixed_income_tbill')) {
+      return res.status(403).json({ success: false, message: 'Access denied: T-Bill not assigned' });
+    }
+    const currentLevel = existing.current_approval_level || 'front_office';
+    if (!actorCanActAtStage(actor, currentLevel)) {
+      return res.status(403).json({
+        success: false,
+        message: `Access denied: role required for the ${currentLevel} stage.`
+      });
+    }
+
     const updateData = {
       status,
-      authorized_by: userId ? String(userId) : null
+      authorized_by: String(actor.id)
     };
 
     if (status === 'rejected' && typeof comment === 'string') {
