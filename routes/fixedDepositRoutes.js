@@ -2,6 +2,39 @@ const express = require('express');
 const router = express.Router();
 const db = require('../config/db');
 const { checkAuth } = require('../middleware/auth');
+const { resolveEffectiveWorkflowAuth } = require('../utils/effectiveWorkflowAuth');
+const { resolveRequestUserId } = require('../utils/requestUser');
+
+// Fixed Deposit approval is single-tier (back_office_final only, no
+// intermediate verifier). Shared guard for both /approve and /reject below -
+// without it, any authenticated user could approve or reject any request
+// regardless of role, and a request could be re-approved/re-rejected after
+// it already left the pending state.
+async function requireFdApprover(req, res, id) {
+  const actor = await resolveEffectiveWorkflowAuth(resolveRequestUserId(req));
+  if (!actor) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return null;
+  }
+  if (!actor.isAdmin && !actor.allowedTabs.includes('fixed_deposit')) {
+    res.status(403).json({ error: 'Access denied: Fixed Deposit not assigned' });
+    return null;
+  }
+  if (!actor.isAdmin && actor.role !== 'back_office_final') {
+    res.status(403).json({ error: 'Access denied: back_office_final role required' });
+    return null;
+  }
+  const [rows] = await db.query('SELECT status FROM fixed_deposit_requests WHERE id = ?', [id]);
+  if (!rows.length) {
+    res.status(404).json({ error: 'Request not found' });
+    return null;
+  }
+  if (String(rows[0].status || '').trim().toLowerCase() !== 'pending') {
+    res.status(400).json({ error: `Cannot act on request: current status is ${rows[0].status}, not pending.` });
+    return null;
+  }
+  return actor;
+}
 
 /**
  * Get FD deals that can fund "part amount" - matured (approved, final_approved, maturity_date <= today) or pre-approved
@@ -566,20 +599,22 @@ router.put('/requests/:id', checkAuth, async (req, res) => {
 router.put('/requests/:id/approve', checkAuth, async (req, res) => {
   try {
     const { id } = req.params;
-    const user = req.user || JSON.parse(req.headers['x-user'] || '{}');
     const { approverNotes } = req.body;
-    
+
+    const actor = await requireFdApprover(req, res, id);
+    if (!actor) return;
+
     // Update the request status
     await db.query(
-      `UPDATE fixed_deposit_requests 
-       SET status = 'Approved', 
+      `UPDATE fixed_deposit_requests
+       SET status = 'Approved',
            current_approval_level = 'final_approved',
            approver_notes = ?,
            approved_by = ?,
            approved_at = NOW(),
            updated_at = NOW()
        WHERE id = ?`,
-      [approverNotes || null, user.id || user.userId, id]
+      [approverNotes || null, actor.id, id]
     );
     
     // Create ledger entries after final approval
@@ -741,23 +776,25 @@ router.put('/requests/:id/approve', checkAuth, async (req, res) => {
 router.put('/requests/:id/reject', checkAuth, async (req, res) => {
   try {
     const { id } = req.params;
-    const user = req.user || JSON.parse(req.headers['x-user'] || '{}');
     const { approverNotes } = req.body;
-    
+
     if (!approverNotes || !approverNotes.trim()) {
       return res.status(400).json({ error: 'Rejection comment is required' });
     }
-    
+
+    const actor = await requireFdApprover(req, res, id);
+    if (!actor) return;
+
     await db.query(
-      `UPDATE fixed_deposit_requests 
-       SET status = 'Returned', 
+      `UPDATE fixed_deposit_requests
+       SET status = 'Returned',
            current_approval_level = 'back_office_final',
            approver_notes = ?,
            rejected_by = ?,
            rejected_at = NOW(),
            updated_at = NOW()
        WHERE id = ?`,
-      [approverNotes, user.id || user.userId, id]
+      [approverNotes, actor.id, id]
     );
     
     res.json({ success: true, message: 'Request rejected successfully' });
