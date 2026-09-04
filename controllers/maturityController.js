@@ -1,5 +1,6 @@
 const MaturityAmountService = require('../services/maturityAmountService');
 const CashflowCaptureService = require('../services/cashflowCaptureService');
+const { postRepoMaturityLedger } = require('../services/repoMaturityLedgerService');
 
 const toYmd = (value) => {
   if (!value) return null;
@@ -3117,27 +3118,64 @@ MaturityController.processPrematureMaturity = async (req, res) => {
             `, [dateStr, userId, `Premature maturity: Original maturity date updated to ${dateStr}`, dealId]);
           }
         } else if (product === 'repo') {
-          const [repoResult] = await db.query(`
-            UPDATE repo_deals
-            SET maturity_date = ?,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-              AND COALESCE(matured, 0) = 0
-              AND approval_status = 'final_approved'
-          `, [dateStr, dealId]);
+          const [repoRows] = await db.query(
+            `SELECT id, deal_number, deal_type, principal_amount, interest_amount,
+                    settlement_mode, maturity_date, matured, approval_status
+             FROM repo_deals
+             WHERE id = ?
+               AND COALESCE(matured, 0) = 0
+               AND approval_status = 'final_approved'
+             LIMIT 1`,
+            [dealId]
+          );
 
-          if (repoResult.affectedRows > 0) {
-            updatedCount++;
-            dealUpdated = true;
-            await db.query(`
-              INSERT INTO maturity_processing_log
-              (deal_id, deal_number, maturity_action, principal_amount, interest_amount, total_amount,
-               processed_date, processed_by, authorization_level, notes)
-              SELECT
-                id, deal_number, 'premature_maturity', principal_amount, interest_amount, maturity_amount,
-                ?, ?, 'system', ?
-              FROM repo_deals WHERE id = ?
-            `, [dateStr, userId, `Premature maturity: Original maturity date updated to ${dateStr}`, dealId]);
+          if (repoRows.length > 0) {
+            const repoDeal = repoRows[0];
+            const [repoResult] = await db.query(
+              `UPDATE repo_deals
+               SET maturity_date = ?,
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE id = ?
+                 AND COALESCE(matured, 0) = 0
+                 AND approval_status = 'final_approved'`,
+              [dateStr, dealId]
+            );
+
+            if (repoResult.affectedRows > 0) {
+              updatedCount++;
+              dealUpdated = true;
+              let logNote = `Premature maturity: Original maturity date updated to ${dateStr}`;
+              const systemDayStr = toYmd(systemDay?.system_date);
+              if (systemDayStr && dateStr <= systemDayStr) {
+                const posted = await postRepoMaturityLedger(
+                  { ...repoDeal, maturity_date: dateStr },
+                  { entryDate: dateStr }
+                );
+                if (!posted.success) {
+                  errors.push(
+                    `Deal ${repoDeal.deal_number}: maturity date updated but ledger post failed: ${posted.error}`
+                  );
+                  logNote += `; ledger post failed: ${posted.error}`;
+                } else if (posted.posted) {
+                  logNote +=
+                    '; posted Repo maturity journal (DR 780/CR 752 interest reversal, DR 308/CR Bank principal, DR 768/CR Bank interest)';
+                } else {
+                  logNote += `; ledger ${posted.skipped || 'already present'}`;
+                }
+              } else {
+                logNote += '; ledger will post on EOD when the new maturity date is due';
+              }
+              await db.query(
+                `INSERT INTO maturity_processing_log
+                 (deal_id, deal_number, maturity_action, principal_amount, interest_amount, total_amount,
+                  processed_date, processed_by, authorization_level, notes)
+                 SELECT
+                   id, deal_number, 'premature_maturity', principal_amount, interest_amount, maturity_amount,
+                   ?, ?, 'system', ?
+                 FROM repo_deals WHERE id = ?`,
+                [dateStr, userId, logNote, dealId]
+              );
+            }
           }
         } else if (product === 'buyback') {
           const [bbResult] = await db.query(`
