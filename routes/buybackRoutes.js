@@ -1,26 +1,27 @@
 const express = require('express');
 const router = express.Router();
 const buybackDealController = require('../controllers/buybackDealController');
+const { checkAuth } = require('../middleware/auth');
 
 // Create a new buyback deal
-router.post('/', buybackDealController.createDeal);
+router.post('/', checkAuth, buybackDealController.createDeal);
 
 // Get all buyback deals
-router.get('/', buybackDealController.getAllDeals);
+router.get('/', checkAuth, buybackDealController.getAllDeals);
 
 // Get deals by status
-router.get('/status/:status', buybackDealController.getDealsByStatus);
+router.get('/status/:status', checkAuth, buybackDealController.getDealsByStatus);
 
 // Get a specific buyback deal
-router.get('/:id', buybackDealController.getDealById);
+router.get('/:id', checkAuth, buybackDealController.getDealById);
 
 // Update deal status (verification/approval)
-router.patch('/:id/status', buybackDealController.updateDealStatus);
+router.patch('/:id/status', checkAuth, buybackDealController.updateDealStatus);
 
 // Update deal data
-router.put('/:id', buybackDealController.updateDeal);
+router.put('/:id', checkAuth, buybackDealController.updateDeal);
 
 // Delete deal
-router.delete('/:id', buybackDealController.deleteDeal);
+router.delete('/:id', checkAuth, buybackDealController.deleteDeal);
 
 module.exports = router;
