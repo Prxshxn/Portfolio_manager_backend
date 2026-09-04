@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const isinMasterController = require('../controllers/isinMasterController');
+const { checkAuth } = require('../middleware/auth');
 
 router.post('/', isinMasterController.createIsin);
 router.get('/', isinMasterController.getAllIsins);
@@ -240,7 +241,7 @@ router.put('/gsec/:id', isinMasterController.updateGsecTransaction);
  *         description: G-Sec transaction not found
  */
 // Update Gsec transaction status (approve/reject)
-router.put('/gsec/:id/status', isinMasterController.updateGsecTransactionStatus);
+router.put('/gsec/:id/status', checkAuth, isinMasterController.updateGsecTransactionStatus);
 
 /**
  * @swagger
