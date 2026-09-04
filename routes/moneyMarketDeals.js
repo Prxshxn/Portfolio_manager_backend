@@ -4,6 +4,33 @@ const router = express.Router();
 // Import your DB connection (adjust path as needed)
 const pool = require('../db');
 const CashflowCaptureService = require('../services/cashflowCaptureService');
+const { checkAuth } = require('../middleware/auth');
+const { resolveEffectiveWorkflowAuth } = require('../utils/effectiveWorkflowAuth');
+const { resolveRequestUserId } = require('../utils/requestUser');
+
+// Legal (status, current_approval_level) transitions for the 3-tier workflow,
+// keyed by the deal's state BEFORE the update, and who may perform each one.
+// Without this, PUT /:deal_number wrote whatever status/current_approval_level
+// the client sent straight to the DB - any caller could jump a deal directly
+// to final_approved, or approve through all three tiers themselves.
+const MM_STAGE_TRANSITIONS = {
+  'pending|front_office': {
+    targets: ['pending|back_office_verifier', 'rejected|front_office'],
+    ownerRoles: ['front_office', 'front_office_verifier']
+  },
+  'pending|back_office_verifier': {
+    targets: ['pending|back_office_final', 'rejected|front_office'],
+    ownerRoles: ['back_office_verifier']
+  },
+  'pending|back_office_final': {
+    targets: ['final_approved|back_office_final', 'rejected|front_office'],
+    ownerRoles: ['back_office_final']
+  },
+  'rejected|front_office': {
+    targets: ['pending|front_office'],
+    ownerRoles: ['front_office', 'front_office_verifier']
+  }
+};
 
 /**
  * @swagger
@@ -264,15 +291,54 @@ function formatDateTime(dateTime) {
 }
 
 // PUT /api/money-market-deals/:deal_number - Update status/authorization
-router.put('/:deal_number', async (req, res) => {
+router.put('/:deal_number', checkAuth, async (req, res) => {
   const dealNumber = req.params.deal_number;
   const {
     status,
     current_approval_level,
     comment,
-    authorized_by,
     authorized_at
   } = req.body;
+  let { authorized_by } = req.body;
+
+  // Every caller of this endpoint (approve/reject/resubmit) sends both status
+  // and current_approval_level together, so use their presence to gate the
+  // workflow check - and enforce it BEFORE any field is written.
+  if (status !== undefined || current_approval_level !== undefined) {
+    const actor = await resolveEffectiveWorkflowAuth(resolveRequestUserId(req));
+    if (!actor) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+    if (!actor.isAdmin && !actor.allowedTabs.includes('money_market')) {
+      return res.status(403).json({ success: false, message: 'Access denied: Money Market not assigned' });
+    }
+
+    const [beforeRows] = await pool.query(
+      'SELECT status, current_approval_level FROM money_market_deals WHERE deal_number = ?',
+      [dealNumber]
+    );
+    if (!beforeRows.length) {
+      return res.status(404).json({ success: false, message: 'Deal not found' });
+    }
+    const before = beforeRows[0];
+    const currentKey = `${before.status}|${before.current_approval_level || 'front_office'}`;
+    const targetKey = `${status}|${current_approval_level}`;
+    const rule = MM_STAGE_TRANSITIONS[currentKey];
+
+    if (!actor.isAdmin && (!rule || !rule.targets.includes(targetKey))) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot move deal from ${currentKey.replace('|', '/')} to ${targetKey.replace('|', '/')}.`
+      });
+    }
+    if (!actor.isAdmin && !rule.ownerRoles.includes(actor.role)) {
+      return res.status(403).json({
+        success: false,
+        message: `Access denied: ${rule.ownerRoles.join(' or ')} role required at this stage.`
+      });
+    }
+    authorized_by = actor.id;
+  }
 
   // Build dynamic update query
   const fields = [];
